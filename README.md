@@ -29,3 +29,9 @@ Two pieces:
 State detection is hook-driven (event truth from the agent itself); agent
 panes (by `pane_current_command`) without hook state render with a dim `t`
 marker — visible rollout fallback, not silent drift.
+
+**Wake-word dry-run** (`/usr/lib/claude-fleet/wake-dryrun` + the
+`wake-dryrun` user unit; needs the optdepends): log-only openWakeWord
+scorer feeding `~/.local/state/claude-fleet/wake-dryrun.jsonl` — the
+empirical gate for hands-free operation. Enable with
+`systemctl --user enable --now wake-dryrun` on the machine with the mic.

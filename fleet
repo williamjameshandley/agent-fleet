@@ -140,7 +140,7 @@ def merge():
                 doomed.append(st["session_id"])
         if doomed:
             sh(host, 'cd "${XDG_STATE_HOME:-$HOME/.local/state}/claude-fleet" && rm -f '
-               + " ".join(f"{sid}.json" for sid in doomed))
+               + " ".join(shlex.quote(f"{sid}.json") for sid in doomed))
         for pid, st in best.items():
             p = panes[pid]
             rows[(host, pid)] = dict(host=host, src="hook", state=st["state"],
@@ -442,7 +442,7 @@ def cmd_mode(args):
                  json.dumps(dict(origin=origin, actionable=ring, all=keys(snap["rows"]))))
     # land on the top of the ring immediately: gear alone reaches the top
     # waiting session; Esc still returns to origin
-    if origin not in ring and ring:
+    if ring and origin != ring[0]:
         step_to(screen, ring[0])
     # arm the table last: switch-client resets a client's key table, so any
     # earlier arming would be undone by the landing jump
@@ -536,6 +536,7 @@ def llm_resolve(utterance, snap):
 
 
 def cmd_say(args):
+    args.utterance = " ".join(args.utterance)
     if not args.utterance:
         sys.exit("fleet: nothing to say")
     words = args.utterance.split()
@@ -712,7 +713,7 @@ def main():
         (["ring"], dict(nargs="?", default="actionable", choices=["actionable", "all"])))
     add("exit", cmd_exit)
     add("abort", cmd_abort)
-    add("say", cmd_say, (["utterance"], dict(nargs="?")))
+    add("say", cmd_say, (["utterance"], dict(nargs="*")))
     args = p.parse_args()
     args.fn(args)
 
