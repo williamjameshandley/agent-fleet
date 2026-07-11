@@ -1,6 +1,6 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=claude-fleet
-pkgver=0.1.0.r1.g193ce44.dirty
+pkgver=0.1.0.r2.g25cd90a.dirty
 pkgrel=1
 pkgdesc='Awareness panel and one-keypress switching for terminal AI-agent sessions in tmux'
 arch=('any')

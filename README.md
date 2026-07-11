@@ -26,6 +26,6 @@ Two pieces:
     sessions named `host@screen` — `@` is reserved for fleet-created
     sessions, which are never listed as rows.
 
-State detection is hook-driven (event truth from the agent itself); panes
-with a Claude title but no hook state render with a dim `t` marker — visible
-rollout fallback, not silent drift.
+State detection is hook-driven (event truth from the agent itself); agent
+panes (by `pane_current_command`) without hook state render with a dim `t`
+marker — visible rollout fallback, not silent drift.

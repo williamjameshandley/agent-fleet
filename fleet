@@ -35,9 +35,13 @@ AGENT_CMDS = {"claude": "claude"}  # codex joins when its hooks demonstrably fir
 GROUPS = ["needs-action", "waiting", "working"]
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# @@PANES_OK is emitted only when list-panes itself succeeded: state deletion
+# (merge rule 3) is only safe against a *successful* pane inventory — a
+# transient tmux failure must read as host-unusable, never as "all panes died".
 POLL_SH = (
     'cat "${XDG_STATE_HOME:-$HOME/.local/state}/claude-fleet"/*.json 2>/dev/null; '
-    'echo "@@PANES"; tmux list-panes -a -F ' + shlex.quote(PANE_FMT) + ' 2>/dev/null; '
+    'echo "@@PANES"; tmux list-panes -a -F ' + shlex.quote(PANE_FMT) + ' 2>/dev/null '
+    '&& echo "@@PANES_OK"; '
     'echo "@@CLIENTS"; for f in "${XDG_CACHE_HOME:-$HOME/.cache}/claude-fleet/clients/"*; do '
     '[ -f "$f" ] || continue; tty=$(cat "$f"); '
     'printf "%s %s %s\\n" "$(basename "$f")" "$tty" '
@@ -85,12 +89,14 @@ def decode_states(blob):
 def poll(host):
     """One host's hook states, pane inventory, and screen registrations."""
     r = sh(host, POLL_SH)
-    if r.returncode != 0 and "@@PANES" not in r.stdout:
-        return None  # host unreachable
+    if "@@PANES_OK\n" not in r.stdout:
+        return None  # host unreachable, or no trustworthy pane inventory
     state_blob, rest = r.stdout.split("@@PANES\n", 1)
     pane_blob, client_blob = rest.split("@@CLIENTS\n", 1)
     panes = {}
     for line in pane_blob.splitlines():
+        if line == "@@PANES_OK":
+            continue
         sess, win, idx, pid, bell, cmd, cwd, title = shlex.split(line)
         if "@" in sess:  # fleet-created bridge/shadow sessions are not rows
             continue
@@ -222,6 +228,10 @@ def screen_of(args):
             if f.read_text().strip() == args.client:
                 return f.name
         sys.exit(f"fleet: client {args.client} is not a registered screen")
+    # screen names become filenames, shell-command fragments, and tmux
+    # session-name fragments — enforce the contract at the single choke point
+    if not NAME_RE.match(args.screen):
+        sys.exit(f"fleet: screen names are [A-Za-z0-9_-]+, got {args.screen!r}")
     return args.screen
 
 
