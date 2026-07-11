@@ -1,0 +1,55 @@
+#!/usr/bin/python3
+"""Wake-word dry-run harness — log-only by construction.
+
+Streams the default microphone through openWakeWord and appends every frame
+score above SCORE_FLOOR to a JSONL. There is no execution path here at all:
+the Tier 2 gate (plan Phase 3) is decided by sweeping thresholds over this
+log after 10-14 days of real household audio, never by acting live.
+"""
+
+import json
+import time
+from pathlib import Path
+
+import numpy as np
+import sounddevice as sd
+import openwakeword
+from openwakeword.model import Model
+
+LOG = Path.home() / ".local/state/claude-fleet/wake-dryrun.jsonl"
+MODELS_DIR = Path.home() / ".local/share/openwakeword"
+# pretrained control models; a custom "alan" model joins once trained
+NAMES = ["hey_jarvis_v0.1", "hey_mycroft_v0.1", "alexa_v0.1"]
+SCORE_FLOOR = 0.1   # below this is silence/noise — logging it would be noise about noise
+SAMPLE_RATE = 16000
+FRAME = 1280        # 80 ms — openWakeWord's native chunk size
+
+if not (MODELS_DIR / "melspectrogram.onnx").exists():
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    openwakeword.utils.download_models(target_directory=str(MODELS_DIR))
+
+model = Model(
+    wakeword_models=[str(MODELS_DIR / f"{n}.onnx") for n in NAMES],
+    melspec_model_path=str(MODELS_DIR / "melspectrogram.onnx"),
+    embedding_model_path=str(MODELS_DIR / "embedding_model.onnx"),
+    inference_framework="onnx",
+)
+
+LOG.parent.mkdir(parents=True, exist_ok=True)
+
+
+def main():
+    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
+                        blocksize=FRAME) as stream, LOG.open("a") as log:
+        while True:
+            frame, _ = stream.read(FRAME)
+            for name, score in model.predict(np.squeeze(frame)).items():
+                if score > SCORE_FLOOR:
+                    log.write(json.dumps(
+                        {"ts": round(time.time(), 2), "model": name,
+                         "score": round(float(score), 3)}) + "\n")
+                    log.flush()
+
+
+if __name__ == "__main__":
+    main()

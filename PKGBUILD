@@ -1,6 +1,6 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=claude-fleet
-pkgver=0.1.0.r3.g03df77e.dirty
+pkgver=0.1.0.r4.g696c5da.dirty
 pkgrel=1
 pkgdesc='Awareness panel and one-keypress switching for terminal AI-agent sessions in tmux'
 arch=('any')
@@ -22,4 +22,7 @@ pkgver() {
 package() {
   install -Dm755 "$startdir/fleet" "$pkgdir/usr/bin/fleet"
   install -Dm755 "$startdir/hook" "$pkgdir/usr/lib/claude-fleet/hook"
+  # wake-word dry-run harness (viewing-side machines; needs python-openwakeword)
+  install -Dm755 "$startdir/wake-dryrun" "$pkgdir/usr/lib/claude-fleet/wake-dryrun"
+  install -Dm644 "$startdir/wake-dryrun.service" "$pkgdir/usr/lib/systemd/user/wake-dryrun.service"
 }

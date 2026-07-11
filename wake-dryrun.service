@@ -1,0 +1,9 @@
+[Unit]
+Description=Wake-word dry-run logger (log-only, no execution path)
+
+[Service]
+ExecStart=/usr/lib/claude-fleet/wake-dryrun
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
