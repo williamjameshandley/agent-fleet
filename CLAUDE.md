@@ -44,6 +44,34 @@ function does more than glue, find the tool that already does it.
 - `@` in a tmux session name marks it fleet-created (frames, shadows);
   user sessions never contain it and such sessions are never listed.
 
+## Coding principles
+
+These rules are themselves subject to "lean code". Don't apply them to
+absurdity — if a rule pushes you toward hundreds of lines of validation for
+hypothetical drift, you're using it wrong.
+
+- **Lean code.** Minimum lines, minimum dependencies, minimum abstraction.
+  Three similar lines beat one premature abstraction. Audit for dead code.
+  This rule wins ties.
+- **No over-engineering.** No features, config knobs, or abstractions until
+  needed. No validation for failure modes that require an attacker who
+  already has the keys.
+- **No migration code.** Pre-alpha. No backwards-compatibility shims, no
+  transition logic, no marker files. If old state files break, delete
+  `~/.cache/claude-fleet` and `~/.local/state/claude-fleet` and move on.
+- **Crash on drift, don't paper over.** When code parses a value (a state,
+  an event name, a target, a snapshot field), enumerate the known cases and
+  crash on anything else. No `default` branches that silently fall through,
+  no `try: except: pass`, no `or []` over missing data. Scope: values this
+  code parses — not fingerprinting every artifact it can reach.
+- **Boundaries translate errors, don't hide them.** ssh, tmux, and LLM
+  boundaries convert failures into loud user-visible exits, never silent
+  drops or substituted defaults. The one sanctioned suppression is the
+  documented empty-glob `2>/dev/null` in the poll.
+- **Reviewers check principles, not just plans.** A reviewer given this file
+  MUST flag plan rows or code shapes that violate these principles even if
+  a plan approved them. The plan can be wrong; the principles ground it.
+
 ## Failure posture
 
 Crash loudly on drift: missing registration, unknown screen, unresolvable
