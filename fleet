@@ -23,7 +23,6 @@ import sys
 import time
 from pathlib import Path
 
-STATE = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "agent-fleet"
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "agent-fleet"
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "agent-fleet"
 CADENCE = 2  # seconds; watch's default interval, the human-glance cadence
@@ -515,7 +514,7 @@ def llm_resolve(utterance, snap):
         model = json.load(urllib.request.urlopen(f"{base}/models"))["data"][0]["id"]
     except OSError as e:  # the LLM boundary translates failures, loudly
         sys.exit(f"fleet: LLM endpoint {base} unreachable: {e}")
-    except (KeyError, IndexError, json.JSONDecodeError) as e:
+    except (KeyError, IndexError, ValueError) as e:  # incl. JSONDecodeError
         sys.exit(f"fleet: LLM /models response was not understood: {e}")
     rows = [dict(num=r["num"], session=r["session"], state=r["state"],
                  host=r["host"], dir=Path(r["cwd"]).name) for r in snap["rows"]]
@@ -532,11 +531,15 @@ def llm_resolve(utterance, snap):
         {"Content-Type": "application/json"})
     try:
         text = json.load(urllib.request.urlopen(req))["choices"][0]["message"]["content"]
-        return json.loads(text[text.index("{"):text.rindex("}") + 1])
+        verdict = json.loads(text[text.index("{"):text.rindex("}") + 1])
     except OSError as e:
         sys.exit(f"fleet: LLM call failed: {e}")
     except (KeyError, IndexError, ValueError) as e:  # incl. JSONDecodeError
         sys.exit(f"fleet: LLM reply was not understood: {e}")
+    if not isinstance(verdict, dict) or verdict.get("action") not in (
+            "switch", "scroll_up", "scroll_down", "next", "none"):
+        sys.exit(f"fleet: LLM reply was not the verdict schema: {verdict!r}")
+    return verdict
 
 
 def cmd_say(args):
