@@ -1,6 +1,6 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=agent-fleet
-pkgver=0.1.0.r23.g8a925da.dirty
+pkgver=0.1.0.r24.g39cc16a.dirty
 pkgrel=1
 pkgdesc='Awareness and one-keypress switching for a fleet of terminal AI-agent sessions in tmux'
 arch=('any')

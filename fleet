@@ -308,9 +308,6 @@ def snapshot_write():
     reconcile(rows, unreachable)
     snap = dict(snapshot_ts=int(time.time()), rows=rows, unreachable=unreachable)
     write_atomic(CACHE / "state.json", json.dumps(snap))
-    # wake event-driven musters (selection changes poke the same channel
-    # via the after-select-window hook; signals latch, nothing is lost)
-    tmux(flagship(), "wait-for", "-S", "fleet-muster")
     return snap
 
 
@@ -374,6 +371,25 @@ def cmd_muster(args):
 
 # ---------- fleet up (build the fleet session; owns no rows) ----------
 
+# The muster column: a dedicated session whose client sits permanently in a
+# native choose-tree over fleet@main's windows. #{window_active} mirrors the
+# fleet's current window; Enter selects it there (the muster client never
+# moves); a guarded pane-mode-changed hook re-opens the chooser whenever it
+# closes, so the surface cannot be lost. No repaint loop exists — tmux owns
+# the screen.
+MUSTER_FMT = ("#{?#{@fleet_state},"
+              "#{?window_active,#[reverse],}"
+              "#{?#{==:#{@fleet_state},needs-action},#[fg=red],"
+              "#{?#{==:#{@fleet_state},waiting},#[fg=yellow],#[fg=green]}}"
+              "#{@fleet_num} #{window_name}"
+              "#{?#{==:#{@fleet_t},t} t,}#[default]"
+              "#[dim] #{@fleet_host} #{@fleet_cwd}#[default]"
+              ",#{?window_active,#[reverse],}muster}")
+MUSTER_CHOOSE = ('choose-tree -Zw -t "=fleet@muster:0" '
+                 '-f "#{==:#{session_name},fleet@main}" '
+                 '-F "' + MUSTER_FMT + '" '
+                 '"select-window -t \\"%%\\""')
+
 def cmd_up(args):
     """Exactly four things: create =fleet@<screen> if absent, set its
     session-scoped options, create window 0 (the muster watch) if absent,
@@ -394,10 +410,16 @@ def cmd_up(args):
     tmux(flagship(), "set-option", "-t", fs, "status-right",
          "#{?#{==:#{client_key_table},fleet},#[fg=magenta bold]-- CONN -- #[default],}"
          "#[fg=color3]%d %b %R ")
-    # selection changes repaint event-driven musters instantly (verified:
-    # fires for select-window and next-window alike)
-    tmux(flagship(), "set-hook", "-t", fs, "after-select-window",
-         "wait-for -S fleet-muster")
+    if screen == "main":  # the muster column, one fleet-wide (see above)
+        if run(["tmux", "has-session", "-t", "=fleet@muster"]).returncode != 0:
+            tmux(flagship(), "new-session", "-d", "-s", "fleet@muster",
+                 "-n", "muster", "exec sleep infinity")
+        tmux(flagship(), "set-option", "-t", "fleet@muster", "status", "off")
+        tmux(flagship(), "set-hook", "-t", "fleet@muster",
+             "client-attached", MUSTER_CHOOSE)
+        escaped = MUSTER_CHOOSE.replace("\\", "\\\\").replace('"', '\\"')
+        tmux(flagship(), "set-hook", "-t", "fleet@muster", "pane-mode-changed",
+             f'if -F "#{{==:#{{pane_in_mode}},0}}" "{escaped}"')
     if not any(line.startswith("0 ") for line in
                tmux(flagship(), "list-windows", "-t", f"={fs}",
                     "-F", "#{window_index} ").splitlines()):
