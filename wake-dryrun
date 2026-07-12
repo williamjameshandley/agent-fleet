@@ -8,6 +8,7 @@ log after 10-14 days of real household audio, never by acting live.
 """
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -16,8 +17,8 @@ import sounddevice as sd
 import openwakeword
 from openwakeword.model import Model
 
-LOG = Path.home() / ".local/state/claude-fleet/wake-dryrun.jsonl"
-MODELS_DIR = Path.home() / ".local/share/openwakeword"
+LOG = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "agent-fleet/wake-dryrun.jsonl"
+MODELS_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "openwakeword"
 # pretrained control models; a custom "alan" model joins once trained
 NAMES = ["hey_jarvis_v0.1", "hey_mycroft_v0.1", "alexa_v0.1"]
 SCORE_FLOOR = 0.1   # below this is silence/noise — logging it would be noise about noise
