@@ -282,14 +282,24 @@ def reconcile(rows, unreachable):
     for (host, win), r in want.items():
         if (host, win) in have:
             continue
+        # identity stamps ride the creation invocation: a window that dies
+        # instantly vanishes wholesale, never surviving half-stamped
+        ident = ["set-option", "-w", "-t", f"{fs}:{r['num']}", "@fleet_host", host,
+                 ";", "set-option", "-w", "-t", f"{fs}:{r['num']}", "@fleet_win", win]
         if host == flagship():
-            tmux(flagship(), "link-window", "-s", win, "-t", f"={fs}:{r['num']}")
+            tmux(flagship(), "link-window", "-s", win, "-t", f"={fs}:{r['num']}",
+                 ";", *ident)
         else:
+            # the ship's login shell may be zsh (=word expansion eats exact
+            # targets): the attach runs under sh, like every remote script
             attach = (f"exec tmux -u new -A -t {shlex.quote('=' + r['session'])} "
                       f"-s {shlex.quote(shadow(win))} \\; select-window -t {win}")
             tmux(flagship(), "new-window", "-d", "-t", f"={fs}:{r['num']}",
-                 "-n", r["session"], f"ssh -t {shlex.quote(host)} {shlex.quote(attach)}")
-            tmux(flagship(), "set-option", "-w", "-t", f"{fs}:{r['num']}",
+                 "-n", r["session"],
+                 f"exec ssh -t {shlex.quote(host)} "
+                 + shlex.quote("exec sh -c " + shlex.quote(attach)),
+                 ";", *ident,
+                 ";", "set-option", "-w", "-t", f"{fs}:{r['num']}",
                  "@fleet_src", r["session"])
     stamps = []  # restamp every row, batched into one tmux invocation
     for r in rows:
