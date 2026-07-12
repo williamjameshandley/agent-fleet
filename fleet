@@ -364,7 +364,8 @@ def cmd_muster(args):
 
 # ---------- fleet up (build the fleet session; owns no rows) ----------
 
-MUSTER_FMT = ("#{?#{@fleet_stale},#[dim]#{@fleet_num} #{@fleet_name} "
+MUSTER_FMT = ("#{?#{@fleet_stale},"
+              "#{?window_active,#[reverse],}#[dim]#{@fleet_num} #{@fleet_name} "
               "#{@fleet_host} unreachable#[default],"
               "#{?#{@fleet_state},"
               "#{?window_active,#[reverse],}"
