@@ -30,10 +30,11 @@ Three pieces, one package:
     Exactly one muster runs `--write` (in `fleet@main:0`): it polls every
     host in `~/.config/agent-fleet/hosts` (ssh aliases; **first line is
     the flagship itself**), merges hook state with live pane inventories,
-    allocates pennant numbers (= fleet window indices, stable and never
-    reordered), publishes the manifest, and reconciles the fleet
-    session's windows against it. `watch` owns the refresh; fleet never
-    loops or draws.
+    orders rows by urgency then newest change — the fleet window index IS
+    the pennant number, recomputed at cadence and meaningful only as
+    displayed; reordering pauses while the conn is armed — publishes the
+    manifest, and reconciles the fleet session's windows against it.
+    `watch` owns the refresh; fleet never loops or draws.
   - `fleet conn` — Tier-1 stepping mode (a tmux key-table, armed on the
     fleet session's clients): bare `j/k` step windows, `n/p` hop
     unacknowledged alerts, `l` last, digits jump, `Esc` back to origin,

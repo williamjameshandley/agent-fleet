@@ -49,7 +49,8 @@ function does more than glue, find the tool that already does it.
   group into their window's row by urgency (a working sibling never
   masks a waiting pane).
 - Hook state is event truth; panes without it render with a visible `t`
-  marker — fallback must be *seen*, never silently absorbed. Bells override.
+  marker — fallback must be *seen*, never silently absorbed. Bells are only
+  the unacknowledged-event hop channel; they never change row state.
   Delete state only after a *successful* pane inventory (a failed poll is
   host-unusable, never "all panes died").
 - All fleet hosts (first line: the flagship itself) are the ssh aliases in `~/.config/agent-fleet/hosts` — the alias is

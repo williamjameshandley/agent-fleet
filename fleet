@@ -279,13 +279,17 @@ def reconcile(rows, unreachable):
                  ";", *ident,
                  ";", "set-option", "-w", "-t", f"{fs}:{r['num']}",
                  "@fleet_src", r["session"])
-    stamps = []  # restamp every row, batched into one tmux invocation
+    stamps = []
     for r in rows:
         for opt, val in dict(host=r["host"], win=r["win"], state=r["state"],
                              num=str(r["num"]), cwd=Path(r["cwd"]).name,
-                             t="t" if r["t"] else "").items():
+                             name=f"{r['session']}:{r['window']}",
+                             t="t" if r["t"] else "", stale="").items():
             stamps += ["set-option", "-w", "-t", f"{fs}:{r['num']}",
                        f"@fleet_{opt}", val, ";"]
+    for k in set(have) - set(want):
+        stamps += ["set-option", "-w", "-t", f"{fs}:{have[k]['idx']}",
+                   "@fleet_stale", "1", ";"]
     if stamps:
         tmux(flagship(), *stamps[:-1])
 
@@ -358,14 +362,16 @@ def cmd_muster(args):
 # ---------- fleet up (build the fleet session; owns no rows) ----------
 
 # the muster column: a client held permanently in choose-tree by hooks
-MUSTER_FMT = ("#{?#{@fleet_state},"
+MUSTER_FMT = ("#{?#{@fleet_stale},#[dim]#{@fleet_num} #{@fleet_name} "
+              "#{@fleet_host} unreachable#[default],"
+              "#{?#{@fleet_state},"
               "#{?window_active,#[reverse],}"
               "#{?#{==:#{@fleet_state},needs-action},#[fg=red],"
               "#{?#{==:#{@fleet_state},waiting},#[fg=yellow],#[fg=green]}}"
-              "#{@fleet_num} #{window_name}"
+              "#{@fleet_num} #{@fleet_name}"
               "#{?#{==:#{@fleet_t},t} t,}#[default]"
               "#[dim] #{@fleet_host} #{@fleet_cwd}#[default]"
-              ",#{?window_active,#[reverse],}muster}")
+              ",#{?window_active,#[reverse],}muster}}")
 MUSTER_CHOOSE = ('choose-tree -Zw -t "=fleet@muster:0" '
                  '-f "#{==:#{session_name},fleet@main}" '
                  '-F "' + MUSTER_FMT + '" '
@@ -398,16 +404,21 @@ def cmd_up(args):
         tmux(flagship(), "set-option", "-t", "fleet@muster", "status", "off")
         tmux(flagship(), "set-hook", "-t", "fleet@muster",
              "client-attached", MUSTER_CHOOSE)
-        escaped = MUSTER_CHOOSE.replace("\\", "\\\\").replace('"', '\\"')
+        esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+        park = ('run-shell -C \'send-keys -t "=fleet@muster:0" '
+                '-N #{@fleet_park} Down\'')
+        tmux(flagship(), "set-option", "-t", "fleet@muster", "@fleet_park", "1")
         tmux(flagship(), "set-hook", "-t", "fleet@muster", "pane-mode-changed",
-             f'if -F "#{{==:#{{pane_in_mode}},0}}" "{escaped}"')
-        # rebuild the chooser (q; a hook reopens) and park the cursor on the
-        # selected row: the list is [session header, window 0, ...], so +1
+             f'if -F "#{{==:#{{pane_in_mode}},0}}" "{esc(MUSTER_CHOOSE)}" ; '
+             f'if -F "#{{==:#{{pane_in_mode}},1}}" "{esc(park)}"')
+        # selection stores the park count and closes the chooser; the
+        # pane-mode-changed hook reopens it and parks on the open event —
+        # reopen and park share one queue, so there is no ordering race.
+        # the list is [session header, window 0, ...], hence index + 1
         tmux(flagship(), "set-hook", "-t", fs, "after-select-window",
-             'send-keys -t "=fleet@muster:0" q ; '
-             'run-shell -C \'send-keys -t "=fleet@muster:0" '
-             '-N #{e|+:#{window_index},1} Down\' ; '
-             'send-keys -t "=fleet@muster:0" Left')
+             'run-shell -C \'set-option -t fleet@muster @fleet_park '
+             '#{e|+:#{window_index},1}\' ; '
+             'send-keys -t "=fleet@muster:0" q')
     if not any(line.startswith("0 ") for line in
                tmux(flagship(), "list-windows", "-t", f"={fs}",
                     "-F", "#{window_index} ").splitlines()):
