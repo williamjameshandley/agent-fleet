@@ -140,9 +140,12 @@ def merge():
         # rule 4: newest state per pane wins; rule 3: dead/agentless panes go
         best, doomed = {}, []
         for st in got["states"]:
+            if st["agent"] not in AGENT_CMDS:  # parsed enum: crash on drift
+                sys.exit(f"fleet: state {st['session_id']} on {host} names "
+                         f"unknown agent {st['agent']!r}")
             pid = st["pane_id"]  # a state file without pane_id is drift: crash
             pane = panes.get(pid)
-            if not pane or pane["cmd"] != AGENT_CMDS.get(st["agent"]):
+            if not pane or pane["cmd"] != AGENT_CMDS[st["agent"]]:
                 doomed.append(st["session_id"])
             elif pid not in best or st["ts"] > best[pid]["ts"]:
                 if pid in best:
@@ -150,9 +153,10 @@ def merge():
                 best[pid] = st
             else:
                 doomed.append(st["session_id"])
-        if doomed:
-            sh(host, 'cd "${XDG_STATE_HOME:-$HOME/.local/state}/agent-fleet" && rm -f '
-               + " ".join(shlex.quote(f"{sid}.json") for sid in doomed))
+        if doomed and sh(
+                host, 'cd "${XDG_STATE_HOME:-$HOME/.local/state}/agent-fleet" && rm -f '
+                + " ".join(shlex.quote(f"{sid}.json") for sid in doomed)).returncode:
+            sys.exit(f"fleet: state cleanup on {host} failed")
         for pid, st in best.items():
             pane_rows[(host, pid)] = dict(host=host, src="hook", state=st["state"],
                                           ts=st["ts"], agent=st["agent"], **panes[pid])
@@ -226,37 +230,57 @@ def reconcile(rows, unreachable):
     fs = "fleet@main"
     have = {}
     # host aliases and window ids are grammar-safe words, so space-separated
-    # #{q:} fields shlex-split cleanly; short lines are unstamped windows
+    # #{q:} fields shlex-split cleanly; short lines are unstamped windows.
+    # @fleet_src is the remote build record (which session the shadow was
+    # grouped onto), written once at creation and never restamped — local
+    # rows carry none, so their lines are one field shorter.
     for line in tmux(flagship(), "list-windows", "-t", f"={fs}", "-F",
-                     "#{window_index} #{q:@fleet_host} #{q:@fleet_win}").splitlines():
+                     "#{window_index} #{q:@fleet_host} #{q:@fleet_win} "
+                     "#{q:@fleet_src}").splitlines():
         parts = shlex.split(line)
         if parts[0] == "0":
             continue  # the muster window
-        if len(parts) != 3:
+        if len(parts) < 3:
             sys.exit(f"fleet: unstamped window {fs}:{parts[0]} — not fleet's, refusing to own it")
-        have[(parts[1], parts[2])] = parts[0]
+        key = (parts[1], parts[2])
+        if key in have:
+            sys.exit(f"fleet: windows {fs}:{have[key]['idx']} and {fs}:{parts[0]} "
+                     f"both claim {parts[1]}:{parts[2]}")
+        have[key] = dict(idx=parts[0], src=parts[3] if len(parts) > 3 else "")
     want = {(r["host"], r["win"]): r for r in rows}
+    # a row's window must sit at its pennant index, and a remote shadow must
+    # still group the session it was built onto — anything else is drift:
+    # kill and recreate at cadence, visible as churn, never a wrong view
     doomed_shadows = {}
-    for (host, win), idx in have.items():
-        if (host, win) in want or host in unreachable:
+    for (host, win), w in list(have.items()):
+        r = want.get((host, win))
+        if r is not None and w["idx"] == str(r["num"]) and w["src"] in ("", r["session"]):
             continue
+        if host in unreachable:
+            continue  # a failed poll is host-unusable, never "all rows died"
         if host == flagship():
-            tmux(flagship(), "unlink-window", "-t", f"={fs}:{idx}")
+            tmux(flagship(), "unlink-window", "-t", f"={fs}:{w['idx']}")
         else:
-            tmux(flagship(), "kill-window", "-t", f"={fs}:{idx}")
-            doomed_shadows.setdefault(host, []).append(shadow(win))
+            tmux(flagship(), "kill-window", "-t", f"={fs}:{w['idx']}")
+            if r is None or w["src"] != r["session"]:  # dead or migrated
+                doomed_shadows.setdefault(host, []).append(shadow(win))
+        del have[(host, win)]
     for host, names in doomed_shadows.items():
-        sh(host, "; ".join(f"tmux kill-session -t {shlex.quote('=' + n)}" for n in names))
+        if sh(host, "; ".join(f"tmux kill-session -t {shlex.quote('=' + n)}"
+                              for n in names)).returncode:
+            sys.exit(f"fleet: shadow cleanup on {host} failed")
     for (host, win), r in want.items():
         if (host, win) in have:
             continue
         if host == flagship():
             tmux(flagship(), "link-window", "-s", win, "-t", f"={fs}:{r['num']}")
         else:
-            attach = (f"exec tmux -u new -A -t {shlex.quote(r['session'])} "
-                      f"-s {shadow(win)} \\; select-window -t {win}")
+            attach = (f"exec tmux -u new -A -t {shlex.quote('=' + r['session'])} "
+                      f"-s {shlex.quote(shadow(win))} \\; select-window -t {win}")
             tmux(flagship(), "new-window", "-d", "-t", f"={fs}:{r['num']}",
                  "-n", r["session"], f"ssh -t {shlex.quote(host)} {shlex.quote(attach)}")
+            tmux(flagship(), "set-option", "-w", "-t", f"{fs}:{r['num']}",
+                 "@fleet_src", r["session"])
     stamps = []  # restamp every row, batched into one tmux invocation
     for r in rows:
         for opt, val in dict(host=r["host"], win=r["win"], state=r["state"],
@@ -326,8 +350,9 @@ def cmd_muster(args):
 
 def cmd_up(args):
     """Exactly four things: create =fleet@<screen> if absent, set its
-    session-scoped options, ensure window 0 runs the muster watch, exit.
-    Row windows belong to the poller."""
+    session-scoped options, create window 0 (the muster watch) if absent,
+    exit. A dead watch closes its window, so death is re-created here;
+    row windows belong to the poller — no repair loops, no choreography."""
     screen = check_screen(args.screen)
     fs = f"fleet@{screen}"
     watch = "watch -t -c fleet muster --color --write"
@@ -368,7 +393,9 @@ def cmd_conn(args):
         return
     origin = tmux(flagship(), "display", "-p", "-t", f"={fs}:", "#{window_id}").strip()
     tmux(flagship(), "set-option", "-t", fs, "@fleet_origin", origin)
-    run(["tmux", "next-window", "-a", "-t", f"={fs}"])  # no alerts -> stay
+    r = run(["tmux", "next-window", "-a", "-t", f"={fs}"])  # no alerts -> stay
+    if r.returncode and "no next window" not in r.stderr:  # verified 3.6b wording
+        sys.exit(f"fleet: tmux next-window on {fs}: {r.stderr.strip()}")
     # arm last: switch-client resets a client's key table
     for tty, _ in clients:
         tmux(flagship(), "switch-client", "-c", tty, "-T", "fleet")
@@ -392,8 +419,11 @@ def cmd_switch(args):
 
 def cmd_next(args):
     fs = f"fleet@{check_screen(args.screen)}"
-    if run(["tmux", "next-window", "-a", "-t", f"={fs}"]).returncode != 0:
-        sys.exit("fleet: nothing is unacknowledged")
+    r = run(["tmux", "next-window", "-a", "-t", f"={fs}"])
+    if r.returncode:  # the no-alert wording is verified on 3.6b; anything
+        sys.exit("fleet: nothing is unacknowledged"  # else is a real boundary
+                 if "no next window" in r.stderr
+                 else f"fleet: tmux next-window on {fs}: {r.stderr.strip()}")
 
 
 def target_pane(args):
