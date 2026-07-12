@@ -15,7 +15,7 @@ change; a patch that violates one is wrong even if it works.
 - **The view is the thing itself.** The frame's view pane holds a real
   nested tmux client attached to the real session — never a preview,
   capture, or re-render.
-- Modality is tmux's: fleet mode is a key-table (`bind -T fleet`), the same
+- Modality is tmux's: the conn is a key-table (`bind -T fleet`), the same
   machinery as copy-mode. Multi-screen is multi-client + session groups.
   Persistence is a detached session on an always-on host.
 
@@ -66,8 +66,8 @@ hypothetical drift, you're using it wrong.
   code parses — not fingerprinting every artifact it can reach.
 - **Boundaries translate errors, don't hide them.** ssh, tmux, and LLM
   boundaries convert failures into loud user-visible exits, never silent
-  drops or substituted defaults. The one sanctioned suppression is the
-  documented empty-glob `2>/dev/null` in the poll.
+  drops or substituted defaults. No stderr suppression anywhere: the poll
+  iterates the state glob explicitly, so even the empty case needs none.
 - **Reviewers check principles, not just plans.** A reviewer given this file
   MUST flag plan rows or code shapes that violate these principles even if
   a plan approved them. The plan can be wrong; the principles ground it.
