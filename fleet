@@ -406,7 +406,8 @@ def cmd_up(args):
         tmux(flagship(), "set-hook", "-t", fs, "after-select-window",
              'send-keys -t "=fleet@muster:0" q ; '
              'run-shell -C \'send-keys -t "=fleet@muster:0" '
-             '-N #{e|+:#{window_index},1} Down\'')
+             '-N #{e|+:#{window_index},1} Down\' ; '
+             'send-keys -t "=fleet@muster:0" Left')
     if not any(line.startswith("0 ") for line in
                tmux(flagship(), "list-windows", "-t", f"={fs}",
                     "-F", "#{window_index} ").splitlines()):
