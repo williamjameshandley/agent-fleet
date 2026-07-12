@@ -420,7 +420,10 @@ def resolve(snap, target):
                else [r for r in rows if r["session"] == target])
     if not matches:
         sys.exit(f"fleet: no session matches {target!r}")
-    return matches[0]  # rows are priority-ordered
+    if len(matches) > 1:  # session names are not row keys: refuse ambiguity
+        nums = ", ".join(str(r["num"]) for r in matches)
+        sys.exit(f"fleet: {target!r} is ambiguous — say a pennant: {nums}")
+    return matches[0]
 
 def cmd_switch(args):
     row = resolve(need_snapshot(), args.target)
@@ -512,6 +515,8 @@ def llm_resolve(utterance, snap):
         model = json.load(urllib.request.urlopen(f"{base}/models"))["data"][0]["id"]
     except OSError as e:  # the LLM boundary translates failures, loudly
         sys.exit(f"fleet: LLM endpoint {base} unreachable: {e}")
+    except (KeyError, IndexError, json.JSONDecodeError) as e:
+        sys.exit(f"fleet: LLM /models response was not understood: {e}")
     rows = [dict(num=r["num"], session=r["session"], state=r["state"],
                  host=r["host"], dir=Path(r["cwd"]).name) for r in snap["rows"]]
     prompt = (
@@ -527,9 +532,11 @@ def llm_resolve(utterance, snap):
         {"Content-Type": "application/json"})
     try:
         text = json.load(urllib.request.urlopen(req))["choices"][0]["message"]["content"]
+        return json.loads(text[text.index("{"):text.rindex("}") + 1])
     except OSError as e:
         sys.exit(f"fleet: LLM call failed: {e}")
-    return json.loads(text[text.index("{"):text.rindex("}") + 1])
+    except (KeyError, IndexError, ValueError) as e:  # incl. JSONDecodeError
+        sys.exit(f"fleet: LLM reply was not understood: {e}")
 
 
 def cmd_say(args):
@@ -580,7 +587,9 @@ def cmd_say(args):
     if action == "next":
         return cmd_next(args)
     if action in ("scroll_up", "scroll_down"):
-        args.dir, args.target = action.split("_")[1], None
+        args.dir = action.split("_")[1]
+        args.target = (str(verdict["target"])
+                       if verdict.get("target") is not None else None)
         return cmd_scroll(args)
     sys.exit(f"fleet: could not resolve {args.utterance!r} (LLM said {verdict})")
 
