@@ -25,17 +25,15 @@ from pathlib import Path
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "agent-fleet"
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "agent-fleet"
-CADENCE = 2  # seconds; watch's default interval, the human-glance cadence
+CADENCE = 2  # the human-glance cadence
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 AGENT_CMDS = {"claude": "claude"}  # codex joins when its hooks demonstrably fire
 URGENCY = {"needs-action": 0, "waiting": 1, "working": 2}
 # every string field #{q:}-quoted: tmux >= 3.7 sanitises control characters
 # in format output, so lines must parse with shlex, never tab separators
 PANE_FMT = ("#{q:session_name} #{q:window_id} #{window_index} #{q:pane_id} "
-            "#{window_bell_flag} #{q:pane_current_command} "
+            "#{q:pane_current_command} "
             "#{q:pane_current_path} #{q:pane_title}")
-# jq slurps the state files into one array (jq owns JSON parsing); the
-# explicit else keeps a jq failure loud instead of masked by a fallback
 POLL_SH = (
     'set -- "${XDG_STATE_HOME:-$HOME/.local/state}/agent-fleet"/*.json; '
     'if [ -e "$1" ]; then jq -s . "$@"; else echo []; fi; '
@@ -107,11 +105,11 @@ def poll(host):
     for line in pane_blob.splitlines():
         if line == "@@PANES_OK":
             continue
-        sess, win, widx, pid, bell, cmd, cwd, title = shlex.split(line)
+        sess, win, widx, pid, cmd, cwd, title = shlex.split(line)
         if "@" in sess:  # fleet-created (fleet@*, shadows) are never rows
             continue
         panes[pid] = dict(session=sess, win=win, window=widx, pane_id=pid,
-                          bell=bell == "1", cmd=cmd, cwd=cwd, title=title)
+                          cmd=cmd, cwd=cwd, title=title)
     return dict(states=json.loads(state_blob), panes=panes)
 
 
@@ -154,19 +152,13 @@ def merge():
         for pid, st in best.items():
             pane_rows[(host, pid)] = dict(host=host, src="hook", state=st["state"],
                                           ts=st["ts"], agent=st["agent"], **panes[pid])
-        # rule 1: agent panes without hook state, visibly title-derived. The
-        # waiting-glyph ✳ is sanitised to _ on tmux >= 3.7 ships, where such
-        # panes therefore show working until they restart onto hooks.
+        # rule 1: no hook state -> visibly title-derived (✳ is sanitised on >=3.7 ships)
         agents = {cmd: agent for agent, cmd in AGENT_CMDS.items()}
         for pid, p in panes.items():
             if (host, pid) not in pane_rows and p["cmd"] in agents:
                 state = "waiting" if p["title"].startswith("✳") else "working"
                 pane_rows[(host, pid)] = dict(host=host, src="title", state=state,
                                               ts=0, agent=agents[p["cmd"]], **p)
-        # rule 2: bell overrides everything
-        for key, row in pane_rows.items():
-            if key[0] == host and row["bell"]:
-                row["state"] = "needs-action"
     rows = {}
     for p in pane_rows.values():
         key = (p["host"], p["win"])
@@ -204,11 +196,7 @@ def reconcile(rows, unreachable):
     sink below the live rows, visibly stale."""
     fs = "fleet@main"
     have = {}
-    # host aliases and window ids are grammar-safe words, so space-separated
-    # #{q:} fields shlex-split cleanly; short lines are unstamped windows.
-    # @fleet_src is the remote build record (which session the shadow was
-    # grouped onto), written once at creation and never restamped — local
-    # rows carry none, so their lines are one field shorter.
+    # @fleet_src: the remote build record, written once at creation; local rows carry none
     for line in tmux(flagship(), "list-windows", "-t", f"={fs}", "-F",
                      "#{window_index} #{q:@fleet_host} #{q:@fleet_win} "
                      "#{q:@fleet_src}").splitlines():
@@ -223,13 +211,10 @@ def reconcile(rows, unreachable):
                      f"both claim {parts[1]}:{parts[2]}")
         have[key] = dict(idx=parts[0], src=parts[3] if len(parts) > 3 else "")
     want = {(r["host"], r["win"]): r for r in rows}
-    # a remote shadow must still group the session it was built onto —
-    # dead rows and migrated shadows are drift: kill and recreate at
-    # cadence, visible as churn, never a wrong view
+    # dead rows and migrated shadows: kill and recreate
     doomed_shadows = {}
     for (host, win), w in list(have.items()):
         r = want.get((host, win))
-        # local rows carry no build record; remote rows must carry theirs
         src_ok = r is not None and (w["src"] == "" if r["host"] == flagship()
                                     else w["src"] == r["session"])
         if src_ok:
@@ -247,11 +232,6 @@ def reconcile(rows, unreachable):
         if sh(host, "; ".join(f"tmux kill-session -t {shlex.quote('=' + n)}"
                               for n in names)).returncode:
             sys.exit(f"fleet: shadow cleanup on {host} failed")
-    # pennant assignment: live rows take positions 1..N in the sort;
-    # windows surviving an unreachable poll sink below them, visibly
-    # stale. While the conn is armed the layout freezes — present rows
-    # hold their index, new rows append — so the ring never shifts under
-    # fingers.
     frozen = "fleet" in tmux(flagship(), "list-clients", "-F",
                              "#{client_key_table}").split()
     n = 0
@@ -268,8 +248,7 @@ def reconcile(rows, unreachable):
         for k in sorted(set(have) - set(want), key=lambda k: int(have[k]["idx"])):
             n += 1
             order[k] = n
-        # two-phase: mismatched windows step aside, then land — one batched
-        # invocation, so indices never collide mid-shuffle
+        # two-phase: step aside then land, so indices never collide
         moves, land = [], []
         for k, num in order.items():
             w = have.get(k)
@@ -283,16 +262,14 @@ def reconcile(rows, unreachable):
     for (host, win), r in want.items():
         if (host, win) in have:
             continue
-        # identity stamps ride the creation invocation: a window that dies
-        # instantly vanishes wholesale, never surviving half-stamped
+        # identity stamps ride the creation: no window survives half-stamped
         ident = ["set-option", "-w", "-t", f"{fs}:{r['num']}", "@fleet_host", host,
                  ";", "set-option", "-w", "-t", f"{fs}:{r['num']}", "@fleet_win", win]
         if host == flagship():
             tmux(flagship(), "link-window", "-s", win, "-t", f"={fs}:{r['num']}",
                  ";", *ident)
         else:
-            # the ship's login shell may be zsh (=word expansion eats exact
-            # targets): the attach runs under sh, like every remote script
+            # sh, not the login shell: zsh =word expansion eats exact targets
             attach = (f"exec tmux -u new -A -t {shlex.quote('=' + r['session'])} "
                       f"-s {shlex.quote(shadow(win))} \\; select-window -t {win}")
             tmux(flagship(), "new-window", "-d", "-t", f"={fs}:{r['num']}",
@@ -315,7 +292,7 @@ def reconcile(rows, unreachable):
 
 def snapshot_write():
     rows, unreachable = merge()
-    reconcile(rows, unreachable)  # assigns pennant numbers = window indices
+    reconcile(rows, unreachable)
     snap = dict(snapshot_ts=int(time.time()), rows=rows, unreachable=unreachable)
     write_atomic(CACHE / "state.json", json.dumps(snap))
     return snap
@@ -346,8 +323,7 @@ def cmd_muster(args):
     else:
         snap = need_snapshot()
     c = (lambda code, s: f"{code}{s}\033[0m") if args.color else (lambda code, s: s)
-    # the currently selected fleet window, for the reverse-video mark; an
-    # absent fleet session is a normal pre-up state, not an error
+    # an absent fleet session is a normal pre-up state, not an error
     cur = ()
     probe = run(["tmux", "display", "-p", "-t", "=fleet@main:",
                  "#{q:@fleet_host} #{q:@fleet_win}"])
@@ -381,12 +357,7 @@ def cmd_muster(args):
 
 # ---------- fleet up (build the fleet session; owns no rows) ----------
 
-# The muster column: a dedicated session whose client sits permanently in a
-# native choose-tree over fleet@main's windows. #{window_active} mirrors the
-# fleet's current window; Enter selects it there (the muster client never
-# moves); a guarded pane-mode-changed hook re-opens the chooser whenever it
-# closes, so the surface cannot be lost. No repaint loop exists — tmux owns
-# the screen.
+# the muster column: a client held permanently in choose-tree by hooks
 MUSTER_FMT = ("#{?#{@fleet_state},"
               "#{?window_active,#[reverse],}"
               "#{?#{==:#{@fleet_state},needs-action},#[fg=red],"
@@ -430,10 +401,12 @@ def cmd_up(args):
         escaped = MUSTER_CHOOSE.replace("\\", "\\\\").replace('"', '\\"')
         tmux(flagship(), "set-hook", "-t", "fleet@muster", "pane-mode-changed",
              f'if -F "#{{==:#{{pane_in_mode}},0}}" "{escaped}"')
-        # every selection in the fleet re-invokes the chooser: the marker
-        # tracks stepping at keypress speed, event-truth, no polling
+        # rebuild the chooser (q; a hook reopens) and park the cursor on the
+        # selected row: the list is [session header, window 0, ...], so +1
         tmux(flagship(), "set-hook", "-t", fs, "after-select-window",
-             MUSTER_CHOOSE)
+             'send-keys -t "=fleet@muster:0" q ; '
+             'run-shell -C \'send-keys -t "=fleet@muster:0" '
+             '-N #{e|+:#{window_index},1} Down\'')
     if not any(line.startswith("0 ") for line in
                tmux(flagship(), "list-windows", "-t", f"={fs}",
                     "-F", "#{window_index} ").splitlines()):
