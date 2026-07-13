@@ -9,10 +9,12 @@ change; a patch that violates one is wrong even if it works.
 - **Never build an interface.** No TUI loops, no curses, no screen drawing,
   no window choreography. fleet *prints text* and *invokes tmux*; everything
   the user sees is a tmux pane, client, popup, or mode. The screen is owned
-  by `watch` (the writer's heartbeat), `choose-tree` (the muster column and
-  the picker — hooks hold the column's client in the mode), and tmux itself
-  (layout, key-tables, copy-mode). If a change needs fleet to redraw
-  something, the design is wrong.
+  by `watch` (the writer's heartbeat), `fzf` (the muster column: one
+  persistent `--listen` process; the poller and selection hooks push
+  reload/pos to its socket — reloads keep the cursor's screen position),
+  `choose-tree` (the on-demand picker), and tmux itself (layout,
+  key-tables, copy-mode). If a change needs fleet to redraw something,
+  the design is wrong.
 - **tmux is the fleet.** The fleet@main session's windows ARE the agent
   sessions; window order is the ring; every motion is a native tmux
   command. External code never sits in a keypress path — the poller merely

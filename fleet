@@ -21,11 +21,13 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "agent-fleet"
 CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "agent-fleet"
 CADENCE = 2  # the human-glance cadence
+MUSTER_ADDR = "127.0.0.1:45871"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 AGENT_CMDS = {"claude": "claude"}  # codex joins when its hooks demonstrably fire
 URGENCY = {"needs-action": 0, "waiting": 1, "working": 2}
@@ -110,6 +112,26 @@ def absent(name):
     if r.returncode and "can't find" not in r.stderr:
         sys.exit(f"fleet: tmux has-session {name}: {r.stderr.strip()}")
     return bool(r.returncode)
+
+
+def muster_key():
+    return Path(os.environ["XDG_RUNTIME_DIR"]) / "agent-fleet-muster.key"
+
+
+def muster_push(action):
+    # the muster column is an fzf --listen process; absent key file or a
+    # refused connection mean no column is open — the only named skips
+    kf = muster_key()
+    if not kf.exists():
+        return
+    req = urllib.request.Request(
+        f"http://{MUSTER_ADDR}", action.encode(),
+        {"x-api-key": kf.read_text().split(": ", 1)[1].strip()})
+    try:
+        urllib.request.urlopen(req, timeout=1)
+    except urllib.error.URLError as e:
+        if not isinstance(e.reason, ConnectionRefusedError):
+            raise
 
 
 def check_screen(screen):
@@ -211,7 +233,7 @@ def shadow(win):
     return f"fleet@w{win.lstrip('@')}"
 
 
-def reconcile(rows, unreachable, prev, muster_idle):
+def reconcile(rows, unreachable):
     """Make fleet@main's windows mirror the manifest: one window per row —
     linked for flagship rows, an ssh client onto a ship-side shadow for
     remote rows — with @fleet_* options restamped. Window order IS the
@@ -223,11 +245,8 @@ def reconcile(rows, unreachable, prev, muster_idle):
     killed (a failed poll is host-unusable, never "all rows died"); they
     sink below the live rows, visibly stale."""
     fs = "fleet@main"
-    cur_parts = shlex.split(tmux(
-        flagship(), "display", "-p", "-t", f"={fs}:",
-        "#{q:window_id} #{q:@fleet_host} #{q:@fleet_win}"))
-    if len(cur_parts) not in (1, 3):  # 1 = the unstamped muster window
-        sys.exit(f"fleet: half-stamped current window: {cur_parts!r}")
+    cur = tmux(flagship(), "display", "-p", "-t", f"={fs}:",
+               "#{window_id}").strip()
     have = {}
     # @fleet_src: the remote build record, written once at creation; local rows carry none
     for line in tmux(flagship(), "list-windows", "-t", f"={fs}", "-F",
@@ -287,7 +306,6 @@ def reconcile(rows, unreachable, prev, muster_idle):
         # two-phase: step aside then land, so indices never collide.
         # -d keeps a move from becoming current (man: as link-window),
         # except the viewed window itself, whose landing must select it
-        cur = cur_parts[0]
         moves, land = [], []
         for k, num in order.items():
             w = have.get(k)
@@ -335,37 +353,14 @@ def reconcile(rows, unreachable, prev, muster_idle):
                        "@fleet_num", str(num)])
     if stamps:
         tmux_batched(flagship(), stamps)
-    # the viewed row leaving attention for working parks the cursor at the
-    # vacated attention slot (only while the muster client is idle)
-    ckey = (cur_parts[1], cur_parts[2]) if len(cur_parts) == 3 else None
-    p, w = prev.get(ckey), want.get(ckey)
-    if (not frozen and muster_idle and p and w
-            and p["state"] != "working" and w["state"] == "working"):
-        att = [r for r in rows
-               if r["state"] != "working" and (r["host"], r["win"]) != ckey]
-        target = next((r for r in att if r["num"] >= p["num"]),
-                      att[-1] if att else None)
-        if target:
-            tmux(flagship(), "set-option", "-t", "fleet@muster",
-                 "@fleet_park", str(target["num"] + 1))
-            r = run(["tmux", "send-keys", "-t", "=fleet@muster:0", "q"])
-            if r.returncode and "can't find" not in r.stderr:
-                sys.exit(f"fleet: muster park: {r.stderr.strip()}")
 
 
 def snapshot_write():
     rows, unreachable = merge()
-    f = CACHE / "state.json"
-    prev = ({(r["host"], r["win"]): r
-             for r in json.loads(f.read_text())["rows"]} if f.exists() else {})
-    r = run(["tmux", "list-clients", "-t", "=fleet@muster",
-             "-F", "#{client_activity}"])
-    if r.returncode and "can't find" not in r.stderr:
-        sys.exit(f"fleet: list-clients on fleet@muster: {r.stderr.strip()}")
-    muster_idle = all(time.time() - int(a) > 3 for a in r.stdout.split())
-    reconcile(rows, unreachable, prev, muster_idle)
+    reconcile(rows, unreachable)
     snap = dict(snapshot_ts=int(time.time()), rows=rows, unreachable=unreachable)
     write_atomic(CACHE / "state.json", json.dumps(snap))
+    muster_push("reload(fleet muster --rows)")
     return snap
 
 
@@ -393,6 +388,8 @@ def cmd_muster(args):
         snap = snapshot_write()
     else:
         snap = need_snapshot()
+    if args.rows:
+        return muster_rows(snap)
     c = (lambda code, s: f"{code}{s}\033[0m") if args.color else (lambda code, s: s)
     # an absent fleet session is a normal pre-up state, not an error
     cur = ()
@@ -426,24 +423,58 @@ def cmd_muster(args):
     print("\n".join(out))
 
 
-# ---------- fleet up (build the fleet session; owns no rows) ----------
+def muster_rows(snap):
+    """fzf input for the muster column: host, window id, pennant, display.
+    The first line is the last-update stamp (fzf --header-lines=1), so a
+    frozen clock means a dead writer."""
+    from collections import Counter
+    out = [f"-\t-\t-\t\033[2m{time.strftime('%H:%M:%S', time.localtime(snap['snapshot_ts']))}\033[0m"]
+    for host in snap["unreachable"]:
+        out.append(f"{host}\t-\t-\t\033[1;31m{host} unreachable\033[0m")
+    rows = snap["rows"]
+    per_sess = Counter((r["host"], r["session"]) for r in rows)
+    names = [r["session"] if per_sess[(r["host"], r["session"])] == 1
+             else f"{r['session']}:{r['window']}" for r in rows]
+    wn = max((len(n) for n in names), default=0)
+    wh = max((len(r["host"]) for r in rows), default=0)
+    wc = max((len(Path(r["cwd"]).name) for r in rows), default=0)
+    for r, name in zip(rows, names):
+        if r["count"] > 1:
+            name += f"×{r['count']}"
+        line = (f"{COLOR[r['state']]}{name:<{wn + 2}}\033[0m"
+                f"\033[2m{r['host']:<{wh + 1}}{Path(r['cwd']).name:<{wc + 1}}"
+                f"{'t ' if r['t'] else '  '}\033[0m{r['title']}")
+        out.append(f"{r['host']}\t{r['win']}\t{r['num']}\t{line}")
+    print("\n".join(out))
 
-MUSTER_FMT = ("#{?#{@fleet_stale},"
-              "#{?window_active,#[reverse],}#[dim]#{@fleet_name} "
-              "#{@fleet_host} unreachable#[default],"
-              "#{?#{@fleet_state},"
-              "#{?window_active,#[reverse],}"
-              "#{?#{==:#{@fleet_state},needs-action},#[fg=red],"
-              "#{?#{==:#{@fleet_state},waiting},#[fg=yellow],#[fg=green]}}"
-              "#{@fleet_name}"
-              "#{?#{==:#{@fleet_t},t} t,}#[default]"
-              "#[dim] #{@fleet_host} #{@fleet_cwd}#[default] "
-              "#{@fleet_title}"
-              ",#{?window_active,#[reverse],}muster}}")
-MUSTER_CHOOSE = ('choose-tree -Zw -t "=fleet@muster:0" '
-                 '-f "#{==:#{session_name},fleet@main}" '
-                 '-F "' + MUSTER_FMT + '" '
-                 '"select-window -t \\"%%\\""')
+
+def cmd_muster_ui(args):
+    """The muster column: one persistent fzf. Rows come from muster_rows;
+    the poller and the fleet's after-select-window hook push to the listen
+    socket (reload keeps the cursor's screen position — verified — so a
+    sunk row leaves the cursor on whatever slides into its place)."""
+    import secrets
+    kf = muster_key()
+    kf.write_text(f"x-api-key: {secrets.token_hex(16)}")
+    kf.chmod(0o600)
+    env = dict(os.environ, FZF_API_KEY=kf.read_text().split(": ", 1)[1])
+    os.execvpe("fzf", [
+        "fzf", "--listen", MUSTER_ADDR, "--ansi", "--no-input",
+        "--layout", "reverse", "--delimiter", "\t", "--with-nth", "4..",
+        "--header-lines", "1", "--info", "hidden", "--no-scrollbar",
+        "--preview", "fleet peek {1} {2}",
+        "--preview-window", "down,50%,border-top",
+        "--bind", "start:reload(fleet muster --rows)",
+        "--bind", "j:down,k:up,u:first,q:ignore",
+        "--bind", "enter:execute-silent(tmux select-window -t '=fleet@main:{3}')",
+    ], env)
+
+
+def cmd_peek(args):
+    print(tmux(args.host, "capture-pane", "-ep", "-t", args.win), end="")
+
+
+# ---------- fleet up (build the fleet session; owns no rows) ----------
 
 def cmd_up(args):
     """Exactly four things: create =fleet@<screen> if absent, set its
@@ -465,26 +496,14 @@ def cmd_up(args):
     tmux(flagship(), "set-option", "-t", fs, "status-right",
          "#{?#{==:#{client_key_table},fleet},#[fg=magenta bold]-- CONN -- #[default],}"
          "#[fg=color3]%d %b %R ")
-    if screen == "main":  # the muster column, one fleet-wide (see above)
-        if absent("fleet@muster"):
-            tmux(flagship(), "new-session", "-d", "-s", "fleet@muster",
-                 "-n", "muster", "exec sleep infinity")
-        tmux(flagship(), "set-option", "-t", "fleet@muster", "status", "off")
-        tmux(flagship(), "set-hook", "-t", "fleet@muster",
-             "client-attached", MUSTER_CHOOSE)
-        esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
-        park = ('run-shell -C \'send-keys -t "=fleet@muster:0" '
-                '-N #{@fleet_park} Down\'')
-        tmux(flagship(), "set-option", "-t", "fleet@muster", "@fleet_park", "1")
-        # mode close reopens the chooser; mode open parks the cursor
-        tmux(flagship(), "set-hook", "-t", "fleet@muster", "pane-mode-changed",
-             f'if -F "#{{==:#{{pane_in_mode}},0}}" "{esc(MUSTER_CHOOSE)}" '
-             f'"{esc(park)}"')
-        # the chooser list is [session header, window 0, ...]: park = index+1
+    if screen == "main":
+        # selection follows into the muster column's fzf socket (row N =
+        # window N; curl failure = no column open, the one named skip)
+        curl = ("curl -s -m 1 -H @" + str(muster_key())
+                + " -XPOST -d \\\"pos(#{window_index})\\\" "
+                + f"http://{MUSTER_ADDR} >/dev/null 2>&1 || true")
         tmux(flagship(), "set-hook", "-t", fs, "after-select-window",
-             'run-shell -C \'set-option -t fleet@muster @fleet_park '
-             '#{e|+:#{window_index},1}\' ; '
-             'send-keys -t "=fleet@muster:0" q')
+             f"if -F \"#{{window_index}}\" 'run-shell -b \"{curl}\"'")
     if not any(line.startswith("0 ") for line in
                tmux(flagship(), "list-windows", "-t", f"={fs}",
                     "-F", "#{window_index} ").splitlines()):
@@ -718,7 +737,10 @@ def main():
         return sp
 
     add("muster", cmd_muster, (["--write"], dict(action="store_true")),
-        (["--color"], dict(action="store_true")))
+        (["--color"], dict(action="store_true")),
+        (["--rows"], dict(action="store_true")))
+    add("muster-ui", cmd_muster_ui)
+    add("peek", cmd_peek, (["host"], dict()), (["win"], dict()))
     add("up", cmd_up)
     add("conn", cmd_conn)
     add("switch", cmd_switch, (["target"], dict()))

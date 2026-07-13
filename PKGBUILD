@@ -1,6 +1,6 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=agent-fleet
-pkgver=0.1.0.r40.g47df627.dirty
+pkgver=0.1.0.r41.gfc7fcb3.dirty
 pkgrel=1
 pkgdesc='Awareness and one-keypress switching for a fleet of terminal AI-agent sessions in tmux'
 arch=('any')
@@ -11,6 +11,8 @@ depends=(tmux jq)
 optdepends=(
     'python: fleet itself (the flagship)'
     'openssh: polling and remote shadow windows (the flagship)'
+    'fzf: the muster column (the flagship)'
+    'curl: selection pushes to the muster column (the flagship)'
     'procps-ng: watch drives the muster window (the flagship)'
     'python-openwakeword: wake-dryrun harness (the mic machine)'
     'python-sounddevice: wake-dryrun harness (the mic machine)'
