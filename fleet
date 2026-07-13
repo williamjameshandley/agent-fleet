@@ -215,7 +215,7 @@ def merge():
         if g is None:
             rows[key] = dict(host=p["host"], win=p["win"], session=p["session"],
                              window=p["window"], state=p["state"], ts=p["ts"],
-                             cwd=p["cwd"], title=p["title"],
+                             cwd=p["cwd"], title=p["title"], agent=p["agent"],
                              t=p["src"] == "title", count=1,
                              pane_id=p["pane_id"])
             continue
@@ -223,7 +223,8 @@ def merge():
         g["t"] = g["t"] or p["src"] == "title"
         g["pane_id"] = None  # ambiguous target: enter/scroll must refuse
         if (URGENCY[p["state"]], -p["ts"]) < (URGENCY[g["state"]], -g["ts"]):
-            g.update(state=p["state"], ts=p["ts"], cwd=p["cwd"], title=p["title"])
+            g.update(state=p["state"], ts=p["ts"], cwd=p["cwd"],
+                     title=p["title"], agent=p["agent"])
     ordered = sorted(rows.values(),
                      key=lambda r: (URGENCY[r["state"]], -r["ts"]))
     return ordered, unreachable
@@ -433,16 +434,17 @@ def muster_rows(snap):
         out.append(f"{host}\t-\t-\t\033[1;31m{host} unreachable\033[0m")
     rows = snap["rows"]
     per_sess = Counter((r["host"], r["session"]) for r in rows)
-    names = [r["session"] if per_sess[(r["host"], r["session"])] == 1
-             else f"{r['session']}:{r['window']}" for r in rows]
+    names = [(r["session"] if per_sess[(r["host"], r["session"])] == 1
+              else f"{r['session']}:{r['window']}")
+             + (f"×{r['count']}" if r["count"] > 1 else "") for r in rows]
     wn = max((len(n) for n in names), default=0)
     wh = max((len(r["host"]) for r in rows), default=0)
+    wa = max((len(r["agent"]) for r in rows), default=0)
     wc = max((len(Path(r["cwd"]).name) for r in rows), default=0)
     for r, name in zip(rows, names):
-        if r["count"] > 1:
-            name += f"×{r['count']}"
         line = (f"{COLOR[r['state']]}{name:<{wn + 2}}\033[0m"
-                f"\033[2m{r['host']:<{wh + 1}}{Path(r['cwd']).name:<{wc + 1}}"
+                f"\033[2m{r['agent']:<{wa + 1}}{r['host']:<{wh + 1}}"
+                f"{Path(r['cwd']).name:<{wc + 1}}"
                 f"{'t ' if r['t'] else '  '}\033[0m{r['title']}")
         out.append(f"{r['host']}\t{r['win']}\t{r['num']}\t{line}")
     print("\n".join(out))
