@@ -29,7 +29,7 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "age
 CADENCE = 2  # the human-glance cadence
 MUSTER_ADDR = "127.0.0.1:45871"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-AGENT_CMDS = {"claude": "claude"}  # codex joins when its hooks demonstrably fire
+AGENT_CMDS = {"claude": "claude", "codex": "codex"}
 URGENCY = {"needs-action": 0, "waiting": 1, "working": 2}
 # every string field #{q:}-quoted and shlex-parsed, never tab separators
 # (titles are terminal-set strings); the tmux client sanitises non-ASCII
@@ -466,9 +466,45 @@ def cmd_muster_ui(args):
         "--preview-window", "down,50%,border-top",
         "--bind", "start:reload(fleet muster --rows)",
         "--bind", "j:down,k:up,u:first,q:ignore",
+        "--bind", "c:execute(fleet create)",
         "--bind", "enter:execute-silent(tmux select-window -t '=fleet@main:{3}' "
                    "&& fleet conn --screen main --arm)",
     ], env)
+
+
+def cmd_create(args):
+    """Interactive from the muster (c): host, agent, directory, name — each
+    an fzf pick with the default on top, so four Enters accept lovelace +
+    claude + ~ + its basename. One session, one window, one agent."""
+    def pick(opts, prompt):
+        r = run(["fzf", "--prompt", prompt, "--layout", "reverse"],
+                input=opts, capture_output=False, stdout=subprocess.PIPE)
+        if r.returncode:
+            sys.exit("fleet: create cancelled")
+        return r.stdout.strip()
+    host = pick("\n".join(hosts()), "host> ")
+    agent = pick("\n".join(AGENT_CMDS), "agent> ")
+    dirs = sh(host, 'echo "$HOME"; find "$HOME" -maxdepth 3 -type d '
+                    '! -path "*/.*" 2>/dev/null | tail -n +2 | sort')
+    cwd = pick(dirs.stdout, "dir> ")
+    default = Path(cwd).name
+    r = run(["fzf", "--print-query", "--prompt", f"name> ", "--layout", "reverse"],
+            input=default, capture_output=False, stdout=subprocess.PIPE)
+    lines = r.stdout.splitlines()
+    name = (lines[-1] if lines else default).strip() or default
+    if not NAME_RE.match(name):
+        sys.exit(f"fleet: session names are [A-Za-z0-9_-]+, got {name!r}")
+    tmux(host, "new-session", "-d", "-s", name, "-c", cwd, agent)
+    # bounded startup handshake: the poller musters it within two cadences
+    for _ in range(4):
+        time.sleep(CADENCE)
+        for line in tmux(flagship(), "list-windows", "-t", "=fleet@main", "-F",
+                         "#{window_index} #{q:@fleet_host} #{q:@fleet_name}").splitlines():
+            parts = shlex.split(line)
+            if len(parts) == 3 and parts[1] == host and parts[2].split(":")[0] == name:
+                tmux(flagship(), "select-window", "-t", f"=fleet@main:{parts[0]}")
+                return
+    sys.exit(f"fleet: {name} on {host} was created but never mustered")
 
 
 def cmd_peek(args):
@@ -752,6 +788,7 @@ def main():
     add("scroll", cmd_scroll, (["dir"], dict(choices=["up", "down"])),
         (["target"], dict(nargs="?")))
     add("rename", cmd_rename, (["target"], dict()), (["name"], dict()))
+    add("create", cmd_create)
     add("say", cmd_say, (["utterance"], dict(nargs="*")))
     args = p.parse_args()
     args.fn(args)
