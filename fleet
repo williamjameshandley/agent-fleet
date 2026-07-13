@@ -466,6 +466,7 @@ def cmd_muster_ui(args):
         "--preview-window", "down,50%,border-top",
         "--bind", "start:reload(fleet muster --rows)",
         "--bind", "j:down,k:up,u:first,q:ignore",
+        "--bind", "right:preview-half-page-down,left:preview-half-page-up",
         "--bind", "enter:execute-silent(tmux select-window -t '=fleet@main:{3}')",
     ], env)
 
