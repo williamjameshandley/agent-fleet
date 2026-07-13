@@ -74,6 +74,16 @@ class FleetTests(unittest.TestCase):
         self.assertEqual(fleet.spoken_number(["twenty", "one"]), 21)
         self.assertIsNone(fleet.spoken_number(["the", "one"] ))
 
+    def test_type_is_literal_and_defaults_to_focused_station(self):
+        args = type("Args", (), {"screen": None, "text": ["hello", "world"]})()
+        with patch.object(fleet, "selected_screen", return_value="noether-1a"), \
+             patch.object(fleet, "station_session", return_value="fleet@noether-1a"), \
+             patch.object(fleet, "flagship", return_value="lovelace"), \
+             patch.object(fleet, "tmux") as tmux:
+            fleet.cmd_type(args)
+        tmux.assert_called_once_with("lovelace", "send-keys", "-l", "-t",
+                                     "=fleet@noether-1a:", "hello world")
+
 
 class TmuxIntegrationTests(unittest.TestCase):
     def test_grouped_stations_select_windows_independently(self):

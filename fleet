@@ -814,6 +814,14 @@ def cmd_station_swap(args):
          "select-window", "-t", f"={b}:{awin}")
 
 
+def cmd_type(args):
+    text = " ".join(args.text)
+    if not text:
+        sys.exit("fleet: nothing to type")
+    fs = station_session(selected_screen(args))
+    tmux(flagship(), "send-keys", "-l", "-t", f"={fs}:", text)
+
+
 def cmd_context(args):
     snap = manifest()
     snap["focused_station"] = tmux(
@@ -1067,6 +1075,7 @@ def main():
         (["target"], dict(nargs="?")))
     add("rename", cmd_rename, (["target"], dict()), (["name"], dict(nargs="?", default="")))
     add("create", cmd_create)
+    add("type", cmd_type, (["text"], dict(nargs="*")))
     add("context", cmd_context)
     station = sub.add_parser("station")
     station_sub = station.add_subparsers(dest="station_cmd", required=True)

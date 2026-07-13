@@ -62,12 +62,15 @@ writes — there is no default agent.
   - `fleet context` — print the current manifest, station placement, focused
     station, and state-transition times for a commander. It creates no state
     file; the JSON exists only on stdout.
+  - `fleet type [--screen STATION] TEXT...` — insert literal dictation into
+    the focused or named station without submitting it. Mouse-first speech
+    therefore needs no station name; fully hands-free speech may name one.
   - `fleet create` — the muster's `c`: fzf pickers for host, agent,
     directory, and name make one session, one window, one agent.
   - `fleet list / info / latest` — the log book: one interface over both
     agents' transcript stores (import `fleet` to compose `sessions`,
     `events`, `texts`, `info`).
-  - `fleet switch / next / enter / scroll / rename / say` — switching,
+  - `fleet switch / next / enter / scroll / rename / say / type` — switching,
     off-screen approvals, scrollback, and the spoken-command resolver.
 - **the muster column** — a persistent `fzf --listen` process on
   `$XDG_RUNTIME_DIR/agent-fleet-muster.sock`

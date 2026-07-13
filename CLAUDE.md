@@ -110,6 +110,7 @@ thresholds swept offline). Spoken *submit* is the one consequential command:
 it ships only in the form the false-accept data justifies. Every utterance
 is ledgered. A mouse click is enough to choose the default station; naming a
 station aloud is the hands-free override, not a tax on normal dictation.
+Dictation uses literal `send-keys` and never implies Enter.
 
 ## Verify on the machine, not from memory
 
