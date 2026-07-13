@@ -234,14 +234,6 @@ def event_text(s, d, role):
     return ""
 
 
-def last_text(s, role="assistant"):
-    for d in reverse_events(s.path):
-        text = event_text(s, d, role)
-        if text:
-            return " ".join(text.split())
-    return ""
-
-
 def history(n):
     out, seen = [], set()
     for s in sessions():
@@ -252,8 +244,7 @@ def history(n):
         cwd = s.cwd() or str(Path.home())
         stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(cwd).name).strip("-")
         out.append(dict(agent=s.agent, session_id=s.session_id, mtime=int(s.mtime),
-                        cwd=cwd, name=stem or f"{s.agent}-{s.session_id[:8]}",
-                        title=last_text(s)))
+                        cwd=cwd, name=stem or f"{s.agent}-{s.session_id[:8]}"))
         if len(out) == n:
             break
     return out
@@ -342,9 +333,8 @@ def cmd_history(args):
                 continue
             dormant.append((item["mtime"], host, item))
     for _, host, item in sorted(dormant, reverse=True)[:args.n]:
-        title = " ".join(item["title"].split())
         print("\t".join((host, item["session_id"], item["agent"], item["name"],
-                         age(item["mtime"]), item["cwd"], title)))
+                         age(item["mtime"]), item["cwd"])))
 
 
 def cmd_resurrect_local(args):
