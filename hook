@@ -19,12 +19,10 @@ case "$ev" in
     SessionEnd)                     rm -f "$dir/$sid.json"; exit 0 ;;
     *) echo "hook: unknown hook_event_name: $ev" >&2; exit 1 ;;
 esac
-pane=""
-pane_id=""
-if [ -n "${TMUX_PANE:-}" ]; then
-    pane=$(tmux display -p -t "$TMUX_PANE" '#S:#I.#P')
-    pane_id="$TMUX_PANE"
-fi
+# sessions outside tmux are out of fleet scope: no state file at all
+[ -n "${TMUX_PANE:-}" ] || exit 0
+pane=$(tmux display -p -t "$TMUX_PANE" '#S:#I.#P')
+pane_id="$TMUX_PANE"
 # host is informational; the muster stamps rows with the hosts-file alias
 printf '%s' "$in" | jq \
     --arg agent "$1" --arg host "$(hostname)" \

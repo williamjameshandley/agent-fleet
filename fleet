@@ -347,9 +347,11 @@ def snapshot_write():
     f = CACHE / "state.json"
     prev = ({(r["host"], r["win"]): r
              for r in json.loads(f.read_text())["rows"]} if f.exists() else {})
-    acts = run(["tmux", "list-clients", "-t", "=fleet@muster",
-                "-F", "#{client_activity}"]).stdout.split()
-    muster_idle = all(time.time() - int(a) > 3 for a in acts)
+    r = run(["tmux", "list-clients", "-t", "=fleet@muster",
+             "-F", "#{client_activity}"])
+    if r.returncode and "can't find" not in r.stderr:
+        sys.exit(f"fleet: list-clients on fleet@muster: {r.stderr.strip()}")
+    muster_idle = all(time.time() - int(a) > 3 for a in r.stdout.split())
     reconcile(rows, unreachable, prev, muster_idle)
     snap = dict(snapshot_ts=int(time.time()), rows=rows, unreachable=unreachable)
     write_atomic(CACHE / "state.json", json.dumps(snap))
