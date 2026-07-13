@@ -130,6 +130,13 @@ class FleetTests(unittest.TestCase):
             "tmux", "new-session", "-d", "-s", "restored", "-c", "/work",
             "claude", "--resume", "abc-def"])
 
+    def test_history_tab_reloads_with_the_history_cli(self):
+        with patch.object(fleet.os, "execvp") as execvp:
+            fleet.cmd_history_ui(None)
+        argv = execvp.call_args.args[1]
+        self.assertIn(f"start:reload({Path(fleet.__file__).resolve()} history -n 100)",
+                      argv)
+
 
 class TmuxIntegrationTests(unittest.TestCase):
     def test_reorder_restores_grouped_session_window_identity(self):

@@ -831,7 +831,7 @@ def cmd_manage_ui(args):
 def cmd_history_ui(args):
     os.environ["SSH_AUTH_SOCK"] = str(SSH_AGENT_SOCKET)
     exe = shlex.quote(str(Path(__file__).resolve()))
-    reload = f"reload({exe} history --n 100)"
+    reload = f"reload({exe} history -n 100)"
     os.execvp("fzf", [
         "fzf", "--ansi", "--no-input", "--layout", "reverse",
         "--delimiter", "\t", "--with-nth", "1,3..", "--info", "hidden",
