@@ -283,6 +283,13 @@ def reconcile(rows, unreachable):
                              "-t", f"{fs}:{num}"])
         if moves:
             tmux_batched(flagship(), moves + land)
+            # a reorder rebuilds the chooser with the cursor on the top
+            # agent row (the most urgent), not chasing a sunk window
+            tmux(flagship(), "set-option", "-t", "fleet@muster",
+                 "@fleet_park", "2")
+            r = run(["tmux", "send-keys", "-t", "=fleet@muster:0", "q"])
+            if r.returncode and "can't find" not in r.stderr:
+                sys.exit(f"fleet: muster rebuild: {r.stderr.strip()}")
     for (host, win), r in want.items():
         if (host, win) in have:
             continue
