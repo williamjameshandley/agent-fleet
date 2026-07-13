@@ -70,7 +70,10 @@ def sh(host, script):
 def tmux(host, *args):
     argv = ["tmux", *args]
     if host != flagship():
-        argv = ["ssh", host, "tmux " + " ".join(shlex.quote(a) for a in args)]
+        # via sh -c, not the ship's login shell: zsh equals-expands a leading
+        # `=` (which shlex.quote leaves bare, being POSIX-safe) in =targets
+        cmd = "tmux " + " ".join(shlex.quote(a) for a in args)
+        argv = ["ssh", host, "sh -c " + shlex.quote(cmd)]
     r = run(argv)
     if r.returncode != 0:
         sys.exit(f"fleet: tmux {' '.join(args)} on {host}: {r.stderr.strip()}")
@@ -391,8 +394,10 @@ def cmd_poll(args):
                 state, ts = "working", 0
         else:
             sys.exit(f"fleet: no poll reader for agent {agent!r}")
-        rows.append(dict(session=sess, win=win, window=int(widx), pane_id=pid,
-                         agent=agent, state=state, title=title, cwd=cwd, ts=ts))
+        title = " ".join(title.split())  # single line: a summary with a
+        rows.append(dict(session=sess, win=win, window=int(widx),  # newline
+                         pane_id=pid, agent=agent, state=state,     # breaks the
+                         title=title, cwd=cwd, ts=ts))              # tab-delimited row
     print(json.dumps(rows))
 
 
@@ -676,6 +681,8 @@ def cmd_muster_ui(args):
         "--bind", "start:reload(fleet muster --rows)",
         "--bind", "j:down,k:up,u:first,q:ignore",
         "--bind", "c:execute(fleet create)",
+        "--bind", "r:execute(fleet rename {3} \"$(printf 'rename to: ' >&2; "
+                   "read -r n </dev/tty && echo \"$n\")\")+reload(fleet muster --rows)",
         "--bind", "enter:execute-silent(tmux select-window -t '=fleet@main:{3}' "
                    "&& fleet conn --screen main --arm)",
     ], env)
@@ -845,10 +852,45 @@ def cmd_scroll(args):
 
 
 def cmd_rename(args):
+    if not args.name:  # empty = cancelled from the muster prompt
+        return
     if not NAME_RE.match(args.name):
         sys.exit("fleet: session names are [A-Za-z0-9_-]+ (`@` marks fleet sessions)")
     row = resolve(need_snapshot(), args.target)
     tmux(row["host"], "rename-session", "-t", f"={row['session']}", args.name)
+
+
+def cmd_split(args):
+    """One session per window: every window of a multi-window agent session
+    moves to its own session named <session>-<index>. move-window keeps the
+    running pane (it relinks, never respawns); the window's fleet@main link
+    is a separate winlink and is untouched, so the row survives by id."""
+    for host in hosts():
+        by_sess = {}
+        for line in tmux(host, "list-windows", "-a", "-F",
+                         "#{q:session_name} #{window_index} #{q:window_id}").splitlines():
+            sess, idx, wid = shlex.split(line)
+            if "@" in sess:  # fleet-created sessions are never split
+                continue
+            by_sess.setdefault(sess, []).append((idx, wid))
+        for sess, wins in by_sess.items():
+            if len(wins) < 2:  # already one window = already atomic
+                continue
+            for idx, wid in wins:
+                new = f"{sess}-{idx}"
+                if not absent_on(host, new):
+                    sys.exit(f"fleet: {new} already exists on {host}")
+                tmux(host, "new-session", "-d", "-s", new)
+                tmux(host, "move-window", "-s", wid, "-t", f"={new}:")
+                tmux(host, "kill-window", "-t", f"={new}:0")  # the placeholder shell
+                print(f"{host}: {sess}:{idx} → {new}")
+
+
+def absent_on(host, name):
+    argv = ["tmux", "has-session", "-t", f"={name}"]
+    if host != flagship():
+        argv = ["ssh", host, "tmux has-session -t " + shlex.quote(f"={name}")]
+    return run(argv).returncode != 0
 
 
 # ---------- say (Tier 2 resolver; callers: wake listener, shell) ----------
@@ -997,8 +1039,9 @@ def main():
     add("enter", cmd_enter, (["target"], dict(nargs="?")))
     add("scroll", cmd_scroll, (["dir"], dict(choices=["up", "down"])),
         (["target"], dict(nargs="?")))
-    add("rename", cmd_rename, (["target"], dict()), (["name"], dict()))
+    add("rename", cmd_rename, (["target"], dict()), (["name"], dict(nargs="?", default="")))
     add("create", cmd_create)
+    add("split", cmd_split)
     add("_poll", cmd_poll)
     add("list", cmd_list, (["--agent"], dict(choices=["claude", "codex"])),
         (["-n"], dict(type=int, default=20)))
