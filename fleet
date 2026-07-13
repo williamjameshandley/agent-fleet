@@ -215,20 +215,48 @@ def events(s):
 def texts(s, role="assistant", n=1):
     keep = deque(maxlen=n)
     for d in events(s):
-        if s.agent == "claude" and d.get("type") == role:
-            blocks = d["message"]["content"]
-            if isinstance(blocks, str):
-                keep.append(blocks)
-            else:
-                text = "\n".join(b["text"] for b in blocks
-                                 if b.get("type") == "text")
-                if text:
-                    keep.append(text)
-        elif s.agent == "codex" and d.get("type") == "event_msg":
-            want = {"assistant": "agent_message", "user": "user_message"}[role]
-            if d["payload"]["type"] == want:
-                keep.append(d["payload"]["message"])
+        text = event_text(s, d, role)
+        if text:
+            keep.append(text)
     return list(keep)
+
+
+def event_text(s, d, role):
+    if s.agent == "claude" and d.get("type") == role:
+        blocks = d["message"]["content"]
+        if isinstance(blocks, str):
+            return blocks
+        return "\n".join(b["text"] for b in blocks if b.get("type") == "text")
+    if s.agent == "codex" and d.get("type") == "event_msg":
+        want = {"assistant": "agent_message", "user": "user_message"}[role]
+        if d["payload"]["type"] == want:
+            return d["payload"]["message"]
+    return ""
+
+
+def last_text(s, role="assistant"):
+    for d in reverse_events(s.path):
+        text = event_text(s, d, role)
+        if text:
+            return " ".join(text.split())
+    return ""
+
+
+def history(n):
+    out, seen = [], set()
+    for s in sessions():
+        key = (s.agent, s.session_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        cwd = s.cwd() or str(Path.home())
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(cwd).name).strip("-")
+        out.append(dict(agent=s.agent, session_id=s.session_id, mtime=int(s.mtime),
+                        cwd=cwd, name=stem or f"{s.agent}-{s.session_id[:8]}",
+                        title=last_text(s)))
+        if len(out) == n:
+            break
+    return out
 
 
 def resolve_log(prefix, agent=None):
@@ -297,6 +325,54 @@ def cmd_latest(args):
         print(t)
 
 
+def cmd_history_local(args):
+    print(json.dumps(history(args.n)))
+
+
+def cmd_history(args):
+    live = {(r["host"], r["session_id"]) for r in manifest()["rows"]
+            if r["session_id"]}
+    dormant = []
+    for host in hosts():
+        r = sh(host, f"fleet _history -n {args.n}")
+        if r.returncode:
+            sys.exit(f"fleet: history on {host}: {r.stderr.strip()}")
+        for item in json.loads(r.stdout):
+            if (host, item["session_id"]) in live:
+                continue
+            dormant.append((item["mtime"], host, item))
+    for _, host, item in sorted(dormant, reverse=True)[:args.n]:
+        title = " ".join(item["title"].split())
+        print("\t".join((host, item["session_id"], item["agent"], item["name"],
+                         age(item["mtime"]), item["cwd"], title)))
+
+
+def cmd_resurrect_local(args):
+    name = check_screen(args.name)
+    s = resolve_log(args.session_id, args.agent)
+    command = (["claude", "--resume", s.session_id] if s.agent == "claude"
+               else ["codex", "resume", s.session_id])
+    r = run(["tmux", "new-session", "-d", "-s", name, "-c",
+             s.cwd() or str(Path.home()), *command])
+    if r.returncode:
+        sys.exit(f"fleet: resurrect {name}: {r.stderr.strip()}")
+    r = run(["tmux", "set-option", "-t", f"={name}", "status", "off"])
+    if r.returncode:
+        sys.exit(f"fleet: configure {name}: {r.stderr.strip()}")
+
+
+def cmd_resurrect(args):
+    if args.host not in hosts():
+        sys.exit(f"fleet: unknown host {args.host!r}")
+    name = check_screen(args.name)
+    command = "fleet _resurrect " + " ".join(shlex.quote(x) for x in (
+        args.agent, args.session_id, name))
+    r = sh(args.host, command)
+    if r.returncode:
+        sys.exit(f"fleet: resurrect on {args.host}: {r.stderr.strip()}")
+    print(f"resurrected {name} on {args.host}")
+
+
 def child_map():
     kids = {}
     for line in run(["ps", "-eo", "pid=,ppid="]).stdout.splitlines():
@@ -360,19 +436,22 @@ def cmd_poll(args):
         tree = [int(ppid), *descendants(int(ppid), kids)]
         if agent == "claude":
             entry = next(agents[p] for p in tree if p in agents)
+            session_id = entry["sessionId"]
             state = claude_status(entry, title)
             f = CLAUDE / entry["cwd"].replace("/", "-").replace(".", "-") \
-                / f"{entry['sessionId']}.jsonl"
+                / f"{session_id}.jsonl"
             ts = last_event_time(f) if f.exists() else 0
         elif agent == "codex":
             roll = open_transcript(tree, "rollout-")
             s = session_at("codex", roll)
+            session_id = s.session_id
             state, title, ts = live_state(s)
         else:
             sys.exit(f"fleet: no poll reader for agent {agent!r}")
         title = " ".join(title.split())
         rows.append(dict(session=sess, win=win, window=int(widx), pane_id=pid,
-                         agent=agent, state=state, title=title, cwd=cwd, ts=ts))
+                         session_id=session_id, agent=agent, state=state,
+                         title=title, cwd=cwd, ts=ts))
     print(json.dumps(rows))
 
 
@@ -405,6 +484,7 @@ def merge():
             rows[key] = dict(p, count=1)
             continue
         g["count"] += 1
+        g["session_id"] = ""
         g["ts"] = max(g["ts"], p["ts"])
         g["pane_id"] = None
         if URGENCY[p["state"]] < URGENCY[g["state"]]:
@@ -550,7 +630,8 @@ def stamp_rows(rows, have, stale_num, now):
         r["state_changed"] = int(changed)
         for opt, val in dict(host=r["host"], win=r["win"], session=r["session"],
                              window=str(r["window"]), pane=r["pane_id"] or "",
-                             agent=r["agent"], state=r["state"], state_changed=changed,
+                             agent=r["agent"], id=r.get("session_id", ""),
+                             state=r["state"], state_changed=changed,
                              count=str(r["count"]), ts=str(r["ts"]),
                              num=str(r["num"]), cwd=r["cwd"],
                              name=r["session"],
@@ -607,7 +688,7 @@ def manifest_write():
 def manifest():
     fmt = ("index=#{window_index} host=#{q:@fleet_host} win=#{q:@fleet_win} "
            "session=#{q:@fleet_session} window=#{q:@fleet_window} "
-           "pane=#{q:@fleet_pane} agent=#{q:@fleet_agent} "
+           "pane=#{q:@fleet_pane} agent=#{q:@fleet_agent} id=#{q:@fleet_id} "
            "state=#{q:@fleet_state} changed=#{q:@fleet_state_changed} "
            "count=#{q:@fleet_count} ts=#{q:@fleet_ts} "
            "cwd=#{q:@fleet_cwd} title=#{q:@fleet_title} "
@@ -622,7 +703,8 @@ def manifest():
             continue
         rows.append(dict(host=d["host"], win=d["win"], session=d["session"],
                          window=int(d["window"]), pane_id=d["pane"] or None,
-                         agent=d["agent"], state=d["state"], count=int(d["count"]),
+                         agent=d["agent"], session_id=d["id"],
+                         state=d["state"], count=int(d["count"]),
                          state_changed=int(d["changed"]), ts=int(d["ts"]),
                          cwd=d["cwd"], title=d["title"],
                          num=int(d["index"])))
@@ -688,20 +770,80 @@ def muster_rows(snap):
     print("\n".join(out))
 
 
+def ensure_muster_tabs():
+    fs = "fleet@muster"
+    exe = shlex.quote(str(Path(__file__).resolve()))
+    windows = {line.split(" ", 1)[1] for line in
+               tmux(flagship(), "list-windows", "-t", f"={fs}",
+                    "-F", "#{window_index} #{window_name}").splitlines()}
+    tmux(flagship(), "rename-window", "-t", f"={fs}:0", "live")
+    for index, name in ((1, "manage"), (2, "history")):
+        if name not in windows:
+            tmux(flagship(), "new-window", "-d", "-t", f"={fs}:{index}",
+                 "-n", name, f"exec {exe} {name}-ui")
+
+
 def cmd_muster_ui(args):
     os.environ["SSH_AUTH_SOCK"] = str(SSH_AGENT_SOCKET)
+    ensure_muster_tabs()
+    exe = shlex.quote(str(Path(__file__).resolve()))
     os.execvp("fzf", [
         "fzf", "--listen", str(MUSTER_SOCKET), "--ansi", "--no-input",
         "--layout", "reverse", "--delimiter", "\t", "--with-nth", "4..",
         "--header-lines", "3", "--info", "hidden", "--no-scrollbar",
-        "--preview", "fleet peek {1} {2} | tail -n $FZF_PREVIEW_LINES",
+        "--preview", f"{exe} peek {{1}} {{2}} | tail -n $FZF_PREVIEW_LINES",
         "--preview-window", "down,50%,border-top",
-        "--bind", "start:reload(fleet muster --rows)",
+        "--bind", f"start:reload({exe} muster --rows)",
         "--bind", "j:down,k:up,u:first,q:ignore",
-        "--bind", "c:execute(fleet create)",
-        "--bind", "r:execute(fleet rename {3} \"$(printf 'rename to: ' >&2; "
-                   "read -r n </dev/tty && echo \"$n\")\")+reload(fleet muster --rows)",
+        "--bind", f"c:execute({exe} create)",
+        "--bind", "tab:execute-silent(tmux next-window)",
+        "--bind", "btab:execute-silent(tmux previous-window)",
+        "--bind", f"r:execute({exe} rename {{3}} \"$(printf 'rename to: ' >&2; "
+                   f"read -r n </dev/tty && echo \"$n\")\")+reload({exe} muster --rows)",
         "--bind", "enter:execute-silent(tmux select-window -t '=fleet@main:{3}')",
+    ])
+
+
+def cmd_manage_ui(args):
+    os.environ["SSH_AUTH_SOCK"] = str(SSH_AGENT_SOCKET)
+    exe = shlex.quote(str(Path(__file__).resolve()))
+    reload = f"reload({exe} manage)"
+    os.execvp("fzf", [
+        "fzf", "--ansi", "--no-input", "--layout", "reverse",
+        "--delimiter", "\t", "--with-nth", "2,4..", "--info", "hidden",
+        "--no-scrollbar", "--header",
+        "Tab next · c create · r rename · d delete · Enter show",
+        "--preview", f"{exe} peek {{2}} {{3}} | tail -n $FZF_PREVIEW_LINES",
+        "--preview-window", "down,50%,border-top",
+        "--bind", f"start:{reload}",
+        "--bind", "tab:execute-silent(tmux next-window)",
+        "--bind", "btab:execute-silent(tmux previous-window)",
+        "--bind", f"c:execute({exe} create)+{reload}",
+        "--bind", f"r:execute({exe} rename {{1}} \"$(printf 'rename to: ' >&2; "
+                   "read -r n </dev/tty && echo \"$n\")\")+" + reload,
+        "--bind", f"d:execute(if printf 'delete {{4}} on {{2}}? [y/N] ' >&2; "
+                   "read -r a </dev/tty && [ \"$a\" = y ]; then "
+                   f"{exe} delete {{1}}; fi)+{reload}",
+        "--bind", "enter:execute-silent(tmux select-window -t '=fleet@main:{1}')",
+    ])
+
+
+def cmd_history_ui(args):
+    os.environ["SSH_AUTH_SOCK"] = str(SSH_AGENT_SOCKET)
+    exe = shlex.quote(str(Path(__file__).resolve()))
+    reload = f"reload({exe} history --n 100)"
+    os.execvp("fzf", [
+        "fzf", "--ansi", "--no-input", "--layout", "reverse",
+        "--delimiter", "\t", "--with-nth", "1,3..", "--info", "hidden",
+        "--no-scrollbar", "--header", "Shift-Tab previous · Enter resurrect",
+        "--preview", "ssh {1} fleet latest {2} --agent {3} -n 3",
+        "--preview-window", "down,50%,border-top",
+        "--bind", f"start:{reload}",
+        "--bind", "tab:execute-silent(tmux next-window)",
+        "--bind", "btab:execute-silent(tmux previous-window)",
+        "--bind", f"enter:execute(n=$(printf 'session name [{{4}}]: ' >&2; "
+                   "read -r n </dev/tty; echo \"${n:-{4}}\"); "
+                   f"{exe} resurrect {{1}} {{3}} {{2}} \"$n\")+{reload}",
     ])
 
 
@@ -725,6 +867,7 @@ def cmd_create(args):
     if not NAME_RE.match(name):
         sys.exit(f"fleet: session names are [A-Za-z0-9_-]+, got {name!r}")
     tmux(host, "new-session", "-d", "-s", name, "-c", cwd, agent)
+    tmux(host, "set-option", "-t", f"={name}", "status", "off")
     for _ in range(4):
         time.sleep(CADENCE)
         for line in tmux(flagship(), "list-windows", "-t", "=fleet@main", "-F",
@@ -935,6 +1078,19 @@ def cmd_rename(args):
     tmux(row["host"], "rename-session", "-t", f"={row['session']}", args.name)
 
 
+def cmd_delete(args):
+    row = resolve(manifest(), args.target)
+    tmux(row["host"], "kill-session", "-t", f"={row['session']}")
+    print(f"deleted {row['session']} on {row['host']}; transcript retained")
+
+
+def cmd_manage(args):
+    for r in manifest()["rows"]:
+        title = " ".join(r["title"].split())
+        print("\t".join((str(r["num"]), r["host"], r["win"], r["session"],
+                         r["agent"], r["state"], r["cwd"], title)))
+
+
 WORDS = {w: i for i, w in enumerate(
     "zero one two three four five six seven eight nine ten eleven twelve "
     "thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split())}
@@ -1081,6 +1237,10 @@ def main():
         (["--color"], dict(action="store_true")),
         (["--rows"], dict(action="store_true")))
     add("muster-ui", cmd_muster_ui)
+    add("manage", cmd_manage)
+    add("manage-ui", cmd_manage_ui)
+    add("history", cmd_history, (["-n"], dict(type=int, default=100)))
+    add("history-ui", cmd_history_ui)
     add("peek", cmd_peek, (["host"], dict()), (["win"], dict()))
     add("up", cmd_up)
     add("conn", cmd_conn, (["--arm"], dict(action="store_true")))
@@ -1090,6 +1250,10 @@ def main():
     add("scroll", cmd_scroll, (["dir"], dict(choices=["up", "down"])),
         (["target"], dict(nargs="?")))
     add("rename", cmd_rename, (["target"], dict()), (["name"], dict(nargs="?", default="")))
+    add("delete", cmd_delete, (["target"], dict()))
+    add("resurrect", cmd_resurrect, (["host"], dict()),
+        (["agent"], dict(choices=["claude", "codex"])),
+        (["session_id"], dict()), (["name"], dict()))
     add("create", cmd_create)
     add("type", cmd_type, (["text"], dict(nargs="*")))
     add("context", cmd_context)
@@ -1111,6 +1275,10 @@ def main():
     swap.add_argument("other")
     swap.set_defaults(fn=cmd_station_swap)
     add("_poll", cmd_poll)
+    add("_history", cmd_history_local, (["-n"], dict(type=int, default=100)))
+    add("_resurrect", cmd_resurrect_local,
+        (["agent"], dict(choices=["claude", "codex"])),
+        (["session_id"], dict()), (["name"], dict()))
     add("list", cmd_list, (["--agent"], dict(choices=["claude", "codex"])),
         (["-n"], dict(type=int, default=20)))
     add("info", cmd_info, (["session"], dict(nargs="?")),

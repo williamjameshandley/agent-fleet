@@ -61,6 +61,9 @@ function does more than glue, find the tool that already does it.
   the canonical key everywhere; `hostname` output is informational.
 - `@` in a tmux session name marks a grouped Fleet view (`fleet@<screen>`);
   user sessions never contain it and such sessions are never listed.
+- A managed agent session has one window and one agent. Session lifecycle is
+  tmux-native; dormant history is derived from agent transcripts, not stored
+  in a Fleet catalogue.
 
 ## Coding principles
 

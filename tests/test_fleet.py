@@ -1,8 +1,10 @@
 import importlib.machinery
+import io
 import subprocess
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -104,6 +106,29 @@ class FleetTests(unittest.TestCase):
             fleet.cmd_type(args)
         tmux.assert_called_once_with("lovelace", "send-keys", "-l", "-t",
                                      "=fleet@noether-1a:", "hello world")
+
+    def test_delete_kills_tmux_session_but_not_transcript(self):
+        args = type("Args", (), {"target": "7"})()
+        row = dict(num=7, host="newton", session="email-3")
+        with patch.object(fleet, "manifest", return_value={"rows": [row]}), \
+             patch.object(fleet, "tmux") as tmux, redirect_stdout(io.StringIO()) as out:
+            fleet.cmd_delete(args)
+        tmux.assert_called_once_with("newton", "kill-session", "-t", "=email-3")
+        self.assertIn("transcript retained", out.getvalue())
+
+    def test_resurrect_uses_native_agent_resume(self):
+        args = type("Args", (), {"name": "restored", "session_id": "abc",
+                                  "agent": "claude"})()
+        session = type("Session", (), {
+            "agent": "claude", "session_id": "abc-def",
+            "cwd": lambda self: "/work"})()
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(fleet, "resolve_log", return_value=session), \
+             patch.object(fleet, "run", return_value=ok) as run:
+            fleet.cmd_resurrect_local(args)
+        self.assertEqual(run.call_args_list[0].args[0], [
+            "tmux", "new-session", "-d", "-s", "restored", "-c", "/work",
+            "claude", "--resume", "abc-def"])
 
 
 class TmuxIntegrationTests(unittest.TestCase):

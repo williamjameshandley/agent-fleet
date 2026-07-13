@@ -66,17 +66,25 @@ writes — there is no default agent.
     therefore needs no station name; fully hands-free speech may name one.
   - `fleet create` — the muster's `c`: fzf pickers for host, agent,
     directory, and name make one session, one window, one agent.
+  - `fleet manage / delete / resurrect` — list live sessions, remove a live
+    tmux session while retaining its transcript, or resume a dormant Claude
+    or Codex transcript in a new single-window tmux session.
   - `fleet list / info / latest` — the log book: one interface over both
     agents' transcript stores (import `fleet` to compose `sessions`,
     `events`, `texts`, `info`).
   - `fleet switch / next / enter / scroll / rename / say / type` — switching,
     off-screen approvals, scrollback, and the spoken-command resolver.
-- **the muster column** — a persistent `fzf --listen` process on
+- **the muster column** — three native tmux windows: Live, Manage, and
+  History. Tab and Shift-Tab move between them. Live is a persistent
+  `fzf --listen` process on
   `$XDG_RUNTIME_DIR/agent-fleet-muster.sock`
   (`fleet muster-ui`) fed by `fleet muster --rows`; the poller and
   selection hooks push `reload`/`pos` to its Unix socket, so the
-    cursor tracks stepping at keypress speed. Enter jumps the fleet view;
+    cursor tracks stepping at keypress speed. Enter updates `fleet@main`;
     a live `capture-pane` preview shows the row's tail.
+  Manage creates, renames, and confirms deletion of live sessions. History
+  reads dormant transcripts directly from each host and resurrects them with
+  `claude --resume` or `codex resume`; it creates no catalogue or state file.
   Its header shows Claude Code and Codex account-window consumption and
   time to reset. The writer refreshes those every five minutes through
   `fleet-usage`: Claude's account endpoint and codex-proxy's cached quota
