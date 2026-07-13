@@ -37,3 +37,13 @@ mv "$dir/.$sid.$$" "$dir/$sid.json"
 case "$state" in
     waiting|needs-action) printf '\a' > "$(tmux display -p -t "$pane_id" '#{pane_tty}')" ;;
 esac
+# codex sets no pane title, so its own event payloads provide one
+# (claude titles itself; the hook must not fight it)
+if [ "$1" = codex ]; then
+    case "$ev" in
+        UserPromptSubmit) t=$(printf '%s' "$in" | jq -r '(.prompt // "") | gsub("\n"; " ") | .[0:60]') ;;
+        Stop) t="✳ $(printf '%s' "$in" | jq -r '(.last_assistant_message // "") | gsub("\n"; " ") | .[0:58]')" ;;
+        *) t="" ;;
+    esac
+    [ -n "${t# }" ] && [ "$t" != "✳ " ] && tmux select-pane -t "$pane_id" -T "$t"
+fi

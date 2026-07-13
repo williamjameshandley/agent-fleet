@@ -1,6 +1,6 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=agent-fleet
-pkgver=0.1.0.r46.g7ae7161.dirty
+pkgver=0.1.0.r47.g3908c25.dirty
 pkgrel=1
 pkgdesc='Awareness and one-keypress switching for a fleet of terminal AI-agent sessions in tmux'
 arch=('any')
@@ -29,6 +29,8 @@ pkgver() {
 
 package() {
   install -Dm755 "$startdir/fleet" "$pkgdir/usr/bin/fleet"
+  install -Dm644 "$startdir/fleet" \
+    "$pkgdir$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/fleet.py"
   install -Dm755 "$startdir/hook" "$pkgdir/usr/lib/agent-fleet/hook"
   install -Dm755 "$startdir/wake-dryrun" "$pkgdir/usr/lib/agent-fleet/wake-dryrun"
   install -Dm644 "$startdir/wake-dryrun.service" "$pkgdir/usr/lib/systemd/user/wake-dryrun.service"

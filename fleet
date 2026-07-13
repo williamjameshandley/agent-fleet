@@ -140,6 +140,140 @@ def check_screen(screen):
     return screen
 
 
+# ---------- the log book (transcript stores; import fleet to compose) ----------
+
+from collections import deque
+from dataclasses import dataclass
+
+CLAUDE = Path.home() / ".claude/projects"
+CODEX = Path.home() / ".codex/sessions"
+
+
+@dataclass
+class Session:
+    agent: str
+    session_id: str
+    path: Path
+    mtime: float
+
+    def cwd(self):
+        # the exact cwd lives in the transcript head, not the filename
+        for d in events(self):
+            if self.agent == "claude" and "cwd" in d:
+                return d["cwd"]
+            if self.agent == "codex" and d.get("type") == "session_meta":
+                return d["payload"]["cwd"]
+        return ""
+
+
+def sessions(agent=None):
+    """All local sessions, newest first. Cheap: filesystem metadata only."""
+    out = []
+    if agent in (None, "claude"):
+        for f in CLAUDE.glob("*/*.jsonl"):
+            out.append(Session("claude", f.stem, f, f.stat().st_mtime))
+    if agent in (None, "codex"):
+        for f in CODEX.glob("*/*/*/rollout-*.jsonl"):
+            out.append(Session("codex", f.stem[-36:], f, f.stat().st_mtime))
+    return sorted(out, key=lambda s: -s.mtime)
+
+
+def events(s):
+    with open(s.path) as fh:
+        for line in fh:
+            if line.strip():
+                yield json.loads(line)
+
+
+def texts(s, role="assistant", n=1):
+    """The last n message texts of a role, oldest first."""
+    keep = deque(maxlen=n)
+    for d in events(s):
+        if s.agent == "claude" and d.get("type") == role:
+            blocks = d["message"]["content"]
+            if isinstance(blocks, str):
+                keep.append(blocks)
+            else:
+                text = "\n".join(b["text"] for b in blocks
+                                 if b.get("type") == "text")
+                if text:
+                    keep.append(text)
+        elif s.agent == "codex" and d.get("type") == "event_msg":
+            want = {"assistant": "agent_message", "user": "user_message"}[role]
+            if d["payload"]["type"] == want:
+                keep.append(d["payload"]["message"])
+    return list(keep)
+
+
+def resolve_log(prefix, agent=None):
+    """A session by id prefix; no prefix means the most recent session."""
+    all_ = sessions(agent)
+    if not all_:
+        sys.exit("fleet: no sessions")
+    if not prefix:
+        return all_[0]
+    matches = [s for s in all_ if s.session_id.startswith(prefix)]
+    if not matches:
+        sys.exit(f"fleet: no session matches {prefix!r}")
+    if len(matches) > 1 and len({s.session_id for s in matches}) > 1:
+        sys.exit(f"fleet: {prefix!r} is ambiguous "
+                 f"({len(matches)} sessions)")
+    return matches[0]
+
+
+def age(t):
+    d = int(time.time() - t)
+    for unit, span in (("d", 86400), ("h", 3600), ("m", 60)):
+        if d >= span:
+            return f"{d // span}{unit}"
+    return f"{d}s"
+
+
+def info(s):
+    """Everything a transcript tells us, one pass: the complete view an
+    agent shouldn't have to relearn."""
+    models, first_ts, counts = [], None, {}
+    branch = version = None
+    for d in events(s):
+        ts = d.get("timestamp")
+        first_ts = first_ts or ts
+        if s.agent == "claude":
+            counts[d.get("type")] = counts.get(d.get("type"), 0) + 1
+            m = d.get("message", {}).get("model") if d.get("type") == "assistant" else None
+            branch = d.get("gitBranch") or branch
+            version = d.get("version") or version
+        else:
+            t = d.get("payload", {}).get("type") or d.get("type")
+            counts[t] = counts.get(t, 0) + 1
+            m = d["payload"].get("model") if d.get("type") == "turn_context" else None
+            if d.get("type") == "session_meta":
+                version = d["payload"].get("cli_version")
+        if m and (not models or models[-1] != m):
+            models.append(m)
+    return dict(agent=s.agent, session_id=s.session_id, path=str(s.path),
+                cwd=s.cwd(), started=first_ts,
+                last=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.mtime)),
+                model=models[-1] if models else None, models=models,
+                branch=branch, cli_version=version,
+                turns=counts.get("user", 0) + counts.get("user_message", 0),
+                counts=counts)
+
+
+def cmd_info(args):
+    print(json.dumps(info(resolve_log(args.session, args.agent)), indent=2))
+
+
+def cmd_list(args):
+    for s in sessions(args.agent)[: args.n]:
+        print(f"{s.agent:<7}{s.session_id[:8]}  {age(s.mtime):>4}  {s.cwd()}")
+
+
+def cmd_latest(args):
+    s = resolve_log(args.session, args.agent)
+    for t in texts(s, role=args.role, n=args.n):
+        print(t)
+
+
 # ---------- the manifest (single writer) ----------
 
 def poll(host):
@@ -438,12 +572,11 @@ def muster_rows(snap):
               else f"{r['session']}:{r['window']}")
              + (f"×{r['count']}" if r["count"] > 1 else "") for r in rows]
     wn = max((len(n) for n in names), default=0)
-    wh = max((len(r["host"]) for r in rows), default=0)
-    wa = max((len(r["agent"]) for r in rows), default=0)
+    short = {"claude": "cc", "codex": "cx"}
     wc = max((len(Path(r["cwd"]).name) for r in rows), default=0)
     for r, name in zip(rows, names):
         line = (f"{COLOR[r['state']]}{name:<{wn + 2}}\033[0m"
-                f"\033[2m{r['agent']:<{wa + 1}}{r['host']:<{wh + 1}}"
+                f"\033[2m{short[r['agent']]} {r['host'][0].upper()} "
                 f"{Path(r['cwd']).name:<{wc + 1}}"
                 f"{'t ' if r['t'] else '  '}\033[0m{r['title']}")
         out.append(f"{r['host']}\t{r['win']}\t{r['num']}\t{line}")
@@ -791,6 +924,14 @@ def main():
         (["target"], dict(nargs="?")))
     add("rename", cmd_rename, (["target"], dict()), (["name"], dict()))
     add("create", cmd_create)
+    add("list", cmd_list, (["--agent"], dict(choices=["claude", "codex"])),
+        (["-n"], dict(type=int, default=20)))
+    add("info", cmd_info, (["session"], dict(nargs="?")),
+        (["--agent"], dict(choices=["claude", "codex"])))
+    add("latest", cmd_latest, (["session"], dict(nargs="?")),
+        (["--agent"], dict(choices=["claude", "codex"])),
+        (["--role"], dict(default="assistant", choices=["assistant", "user"])),
+        (["-n"], dict(type=int, default=1)))
     add("say", cmd_say, (["utterance"], dict(nargs="*")))
     args = p.parse_args()
     args.fn(args)
