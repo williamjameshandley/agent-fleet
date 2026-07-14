@@ -145,6 +145,7 @@ class FleetTests(unittest.TestCase):
         argv = execvp.call_args.args[1]
         self.assertIn("Tab history · c create · r rename · d delete · Enter show", argv)
         self.assertTrue(any(arg.startswith("d:execute(") for arg in argv))
+        self.assertTrue(any("wait-for -S agent-fleet-focus-main" in arg for arg in argv))
 
     def test_history_sort_handles_equal_timestamps(self):
         args = type("Args", (), {"n": 2})()

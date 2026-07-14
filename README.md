@@ -80,8 +80,9 @@ writes — there is no default agent.
   `$XDG_RUNTIME_DIR/agent-fleet-muster.sock`
   (`fleet muster-ui`) fed by `fleet muster --rows`; the poller and
   selection hooks push `reload`/`pos` to its Unix socket, so the
-    cursor tracks stepping at keypress speed. Enter updates `fleet@main`;
-    a live `capture-pane` preview shows the row's tail.
+    cursor tracks stepping at keypress speed. Enter updates `fleet@main` and
+    signals local launchers to focus their Main window; a live `capture-pane`
+    preview shows the row's tail.
   Live also creates, renames, and confirms deletion of its sessions. History
   reads dormant transcripts directly from each host and resurrects them with
   `claude --resume` or `codex resume`; it creates no catalogue or state file.

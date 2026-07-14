@@ -804,7 +804,8 @@ def cmd_muster_ui(args):
         "--bind", f"d:execute(if printf 'delete session? [y/N] ' >&2; "
                    "read -r a </dev/tty && [ \"$a\" = y ]; then "
                    f"{exe} delete {{3}}; fi)+reload({exe} muster --rows)",
-        "--bind", "enter:execute-silent(tmux select-window -t '=fleet@main:{3}')",
+        "--bind", "enter:execute-silent(tmux select-window -t '=fleet@main:{3}' "
+                  "\\; wait-for -S agent-fleet-focus-main)",
     ])
 
 
