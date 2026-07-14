@@ -101,6 +101,8 @@ class FleetTests(unittest.TestCase):
         self.assertNotIn("ControlPath=none", command)
         self.assertIn("IdentityAgent=", command)
         self.assertNotIn("fleet@w", command)
+        self.assertIn("newton exec sh -c", command)
+        self.assertNotIn("newton 'exec sh -c", command)
 
     def test_reconcile_restores_each_grouped_sessions_window_identity(self):
         selected = {"fleet@left": "@1", "fleet@right": "@2"}
