@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh cached Agent Fleet quota
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/fleet-next quota

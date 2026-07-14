@@ -1,0 +1,21 @@
+#!/bin/sh
+tree=$(i3-msg -t get_tree) || exit
+have_muster=$(printf '%s' "$tree" | jq -e '.. | objects | select(.window_properties.class? == "org.agentfleet.Muster")' >/dev/null && echo yes)
+have_main=$(printf '%s' "$tree" | jq -e '.. | objects | select(.window_properties.class? == "org.agentfleet.Main")' >/dev/null && echo yes)
+
+if [ -z "$have_muster" ] && [ -z "$have_main" ]; then
+    i3-msg "append_layout $HOME/.config/i3/fleet-layout.json" >/dev/null
+fi
+[ "$have_muster" ] || ghostty --class=org.agentfleet.Muster --x11-instance-name=fleet-muster -e fleet-muster &
+[ "$have_main" ] || ghostty --class=org.agentfleet.Main --x11-instance-name=fleet-main -e fleet-viewer main &
+(
+    runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet
+    while [ ! -S "$runtime/viewer-main.sock" ]; do sleep .05; done
+    fleet-next arrive laptop
+) &
+(
+    while ! i3-msg -t get_tree | jq -e '[.. | objects | .window_properties.class?] | index("org.agentfleet.Muster") and index("org.agentfleet.Main")' >/dev/null; do
+        sleep .05
+    done
+    i3-msg '[class="^org\.agentfleet\.Main$"] focus; [class="^org\.agentfleet\.Muster$"] move container to workspace current; [class="^org\.agentfleet\.Main$"] focus; focus parent; layout splith; [class="^org\.agentfleet\.Main$"] resize set width 50 ppt; [class="^org\.agentfleet\.Muster$"] resize set width 50 ppt; [class="^org\.agentfleet\.Muster$"] focus' >/dev/null
+) &

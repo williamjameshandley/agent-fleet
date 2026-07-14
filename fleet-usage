@@ -6,27 +6,27 @@ import os
 import sys
 import time
 import urllib.request
+import urllib.error
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 PROXY = os.environ.get("CODEX_PROXY_URL", "http://127.0.0.1:8080")
 
 
 def progress(percent, width=8):
-    eighths = round(percent * width * 8 / 100)
-    full, partial = divmod(eighths, 8)
-    edge = "▏▎▍▌▋▊▉"[partial - 1] if partial else ""
-    return "█" * full + edge + "░" * (width - full - bool(partial))
+    full = round(percent * width / 100)
+    return "#" * full + "-" * (width - full)
 
 
 def field(name, used=0, reset=None):
     if reset:
-        fmt = "%a %H:%M" if name == "7d" else "%H:%M"
+        fmt = "%a %d %H:%M" if name == "7d" else "%H:%M"
         reset_at = f"@{time.strftime(fmt, time.localtime(reset))}"
     else:
         reset_at = "/0h"
     width = 10 if name == "5h" else 0
-    return f"{name:<2} {progress(used)} {used:>3g}%{reset_at:<{width}}"
+    return f"{name:<2} [{progress(used)}] {used:>3g}%{reset_at:<{width}}"
 
 
 def claude():
@@ -78,6 +78,16 @@ def main():
         sys.exit("usage: fleet-usage claude|codex")
     try:
         print(readers[sys.argv[1]]())
+    except urllib.error.HTTPError as e:
+        retry = e.headers.get("Retry-After")
+        if retry and retry.isdigit():
+            retry_at = int(time.time()) + int(retry)
+        elif retry:
+            retry_at = int(parsedate_to_datetime(retry).timestamp())
+        else:
+            retry_at = None
+        suffix = f" retry-at={retry_at}" if retry_at else ""
+        sys.exit(f"fleet-usage: {sys.argv[1]}: HTTP {e.code}{suffix}")
     except (OSError, KeyError, TypeError, ValueError) as e:
         sys.exit(f"fleet-usage: {sys.argv[1]}: {e}")
 

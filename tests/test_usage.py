@@ -15,8 +15,8 @@ class UsageTests(unittest.TestCase):
         five = usage.field("5h", 0)
         week = usage.field("7d", 4, 1784493419)
         line = f"{five}  {week}"
-        self.assertEqual(line.index("7d"), 28)
-        self.assertRegex(week, r"@[A-Z][a-z]{2} \d\d:\d\d$")
+        self.assertEqual(line.index("7d"), 30)
+        self.assertRegex(week, r"@[A-Z][a-z]{2} \d\d \d\d:\d\d$")
 
     def test_codex_uses_cached_proxy_quota(self):
         body = {"accounts": [{"status": "active", "quota": {
@@ -27,8 +27,8 @@ class UsageTests(unittest.TestCase):
         with patch.object(usage.urllib.request, "urlopen",
                           return_value=io.StringIO(json.dumps(body))):
             text = usage.codex()
-        self.assertIn("5h ░░░░░░░░   0%/0h", text)
-        self.assertIn("7d ▍░░░░░░░   4%", text)
+        self.assertIn("5h [--------]   0%/0h", text)
+        self.assertIn("7d [--------]   4%", text)
 
     def test_unknown_codex_window_is_drift(self):
         body = {"accounts": [{"status": "active", "quota": {

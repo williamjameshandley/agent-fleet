@@ -1,0 +1,25 @@
+#!/bin/sh
+tree=$(i3-msg -t get_tree) || exit
+
+launch() {
+    instance=$1 class=$2
+    shift 2
+    if ! printf '%s' "$tree" | jq -e --arg instance "$instance" \
+        '.. | objects | select(.window_properties.instance? == $instance)' >/dev/null; then
+        ghostty --class="$class" --x11-instance-name="$instance" -e "$@" &
+    fi
+}
+
+for station in noether-1a noether-1b noether-2a noether-2b noether-3a noether-3b; do
+    launch "fleet-$station" org.agentfleet.Station fleet-viewer "$station"
+done
+launch fleet-muster org.agentfleet.Muster fleet-muster
+launch fleet-commander org.agentfleet.Commander fleet-commander
+i3-msg 'workspace number 11; workspace number 12; workspace number 13; workspace number 14' >/dev/null
+(
+    runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet
+    while [ "$(find "$runtime" -maxdepth 1 -name 'viewer-noether-*.sock' 2>/dev/null | wc -l)" -lt 6 ]; do
+        sleep .05
+    done
+    fleet-next arrive home
+) &

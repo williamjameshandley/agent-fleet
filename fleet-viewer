@@ -1,0 +1,4 @@
+#!/bin/sh
+slot=${1:-main}
+case "$slot" in *[!A-Za-z0-9_-]*|'') exit 2;; esac
+exec fleet-next viewer --slot "$slot"

@@ -1,0 +1,14 @@
+#!/bin/sh
+systemctl --user start fleet-next.service || exit
+runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet/fleet.sock
+i=0
+while [ ! -S "$runtime" ]; do
+    i=$((i + 1))
+    [ "$i" -lt 100 ] || { echo "fleet-next service did not become ready" >&2; exit 1; }
+    sleep .05
+done
+if ! tmux has-session -t =fleet@muster 2>/dev/null; then
+    tmux new-session -d -s fleet@muster -n live 'exec fleet-next items | exec fleet-next muster'
+    tmux new-window -d -t =fleet@muster -n history 'exec fleet-next history-rows | exec fleet-next history-ui'
+fi
+exec tmux -u attach-session -t =fleet@muster

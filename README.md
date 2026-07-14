@@ -1,135 +1,77 @@
 # agent-fleet
 
-Awareness and switching for a fleet of terminal AI-agent sessions in tmux
-across hosts, operable with one hand or none. Agents are peers — claude
-and codex today, more by registering their command and poll reader —
-and tmux is the *first* interface: anything that can read the manifest
-could be another.
+Agent Fleet is a fast, tmux-backed switchboard for Claude Code, Codex and shell
+sessions spread across several machines. `fleet-next` is the greenfield
+implementation; the original `fleet` remains installed during the cutover only
+for its vendor transcript readers and rollback.
 
-**The vocabulary is nautical.** The **flagship** (an always-on host)
-commands **ships of the fleet** (agent hosts); independently focused viewers
-are **stations** (`--screen` remains the CLI spelling).
-Rows carry **pennant numbers**; the published snapshot is the
-**manifest**; the roll-call column is the **muster**; taking keyboard
-command of the fleet is **the conn**. Reserved for the future: *task
-force* (ad-hoc cross-host session group), *squadron* (per-host group),
-*flotilla* (a session's subagents).
+## Experience
 
-## How state is read — no hook
+Muster is a persistent local fzf list. Working and needs-action sessions rise to
+the top, waiting work follows by meaningful transcript recency, and shelved work
+stays visible at the bottom. Its cursor is keyed by the canonical source ID, so
+sorting cannot turn one row into another.
 
-Each agent's state comes from what that agent already exposes;
-nothing is instrumented, and there is no lifecycle hook to install,
-trust, or restart:
+Enter opens the selected real tmux session in a persistent Ghostty viewer. On a
+laptop the single `main` viewer is the explicit destination. A multi-screen deck
+focuses an already open source or uses a free slot; a full deck never evicts
+anything implicitly. `mod+v` returns to the always-visible Muster through i3.
 
-- **claude** exposes session identity and blocked state through
-  `claude agents --json`; its pane title supplies live working/waiting state
-  and the summary, and its last timestamped transcript event supplies recency.
-- **codex** writes no title but keeps its rollout JSONL open; the poll
-  finds it through the pane's process tree (`/proc/<pid>/fd`) and reads
-  the tail (`task_started`/`task_complete` for state, the last
-  `agent_message` for a summary).
+Fleet never links source windows into a mirror and has no delete, purge,
+`kill-session`, `kill-window` or `unlink-window` action. `d` marks an attention
+loop done in a tmux option; it does not end the session. Viewer dismissal only
+detaches that viewer.
 
-A new agent adds a branch to `cmd_poll` describing what *it*
-writes — there is no default agent.
+## Architecture
 
-## The pieces
+Each workstation runs `fleet-next.service`. It maintains one long-lived,
+non-interactive SSH event stream per configured host. The host helper combines
+tmux control-mode lifecycle notifications with transcript filesystem events and
+publishes disposable snapshots. Navigation, sorting and preview never run SSH.
+Opening a remote source creates the one unavoidable long-lived interactive SSH
+attachment with `BatchMode=yes`.
 
-- **`/usr/bin/fleet`** — **tmux is the fleet**: `fleet@main` is a tmux
-  session on the flagship whose windows ARE the agent sessions (linked
-  windows for flagship rows; persistent ControlMaster channels attached
-  directly to ship-side sessions for remote rows), so stepping, jumping,
-  previewing, and picking are native tmux commands — nothing external sits in
-  a keypress path. Verbs:
-  - `fleet up --screen S` — create the grouped fleet session; `main` also
-    owns the single writer window. It owns no agent rows.
-  - `fleet muster --write` — the single writer (in `fleet@main:0` under
-    `watch`): it runs `fleet _poll` on every host in
-    `~/.config/agent-fleet/hosts` (ssh aliases; **first line is the
-    flagship itself**; the library reads each host's transcripts
-    locally), orders working rows first and each state by transcript-event
-    recency — the
-    fleet window index IS the pennant number, recomputed at cadence and
-    meaningful only as displayed; reordering pauses while the conn is
-    armed — publishes the manifest entirely as tmux options, and reconciles
-    the fleet windows. There is no JSON state file in the command path.
-  - `fleet conn` — explicit one-hand stepping mode (a tmux key-table): bare `j/k` step
-    windows, `n/p` hop unacknowledged alerts, `l` last, digits jump,
-    `Esc` back to origin, any other key exits. Every motion is native.
-  - `fleet station list/show/clear/swap/focus` — arrange real Fleet windows
-    among grouped tmux sessions. Each station has an independent selected
-    window; clearing selects window 0 and never terminates an agent. tmux's
-    `client-focus-in` hook makes the station clicked in Ghostty the default
-    target for `switch`, `scroll`, `say`, and commander actions.
-  - `fleet context` — print the current manifest, station placement, focused
-    station, and state-transition times for a commander. It creates no state
-    file; the JSON exists only on stdout.
-  - `fleet type [--screen STATION] TEXT...` — insert literal dictation into
-    the focused or named station without submitting it. Mouse-first speech
-    therefore needs no station name; fully hands-free speech may name one.
-  - `fleet create` — the muster's `c`: fzf pickers for host, agent,
-    directory, and name make one session, one window, one agent.
-  - `fleet delete / resurrect` — remove a live tmux session while retaining
-    its transcript, or resume a dormant Claude or Codex transcript in a new
-    single-window tmux session.
-  - `fleet list / info / latest` — the log book: one interface over both
-    agents' transcript stores (import `fleet` to compose `sessions`,
-    `events`, `texts`, `info`).
-  - `fleet switch / next / enter / scroll / rename / say / type` — switching,
-    off-screen approvals, scrollback, and the spoken-command resolver.
-- **the muster column** — two native tmux windows: Live and History. Tab and
-  Shift-Tab move between them. Live is a persistent
-  `fzf --listen` process on
-  `$XDG_RUNTIME_DIR/agent-fleet-muster.sock`
-  (`fleet muster-ui`) fed by `fleet muster --rows`; the poller and
-  selection hooks push `reload`/`pos` to its Unix socket, so the
-    cursor initially lands at the first waiting row and tracks stepping at
-    keypress speed. Enter updates `fleet@main` and
-    signals local launchers to focus their Main window; a live `capture-pane`
-    preview shows the row's tail.
-  Live also creates, renames, and confirms deletion of its sessions. History
-  reads dormant transcripts directly from each host and resurrects them with
-  `claude --resume` or `codex resume`; it creates no catalogue or state file.
-  Its header shows Claude Code and Codex account-window consumption and
-  time to reset. The writer refreshes those every five minutes through
-  `fleet-usage`: Claude's account endpoint and codex-proxy's cached quota
-  (which creates no new OpenAI request). Results live in tmux options.
-- **`/usr/lib/agent-fleet/wake-dryrun`** (+ user unit) — log-only
-  openWakeWord scorer on the mic machine: the empirical gate for
-  hands-free operation.
-
-The compact glyphs use the Font Awesome 7 Brands Claude/OpenAI marks and Solid
-host/status symbols: code for Lovelace, an apple for Newton, a microchip for
-Turing, an atom for Boltzmann, and infinity for Noether.
-
-Source the packaged native bindings from the ordinary tmux configuration:
+Live identity is:
 
 ```
-source-file /usr/share/agent-fleet/tmux.conf
+host + tmux socket + server PID + server start time + $session_id
 ```
 
-## Development cycle
+Names, row positions and window indices are presentation. The daemon keeps its
+projection only in memory and exposes it through a mode-0600 runtime socket.
+Live topology remains entirely in tmux; there is no JSON state file or database.
 
-The repo is deployed as an Arch package to every host; the loop is:
+The host adapter currently reuses `fleet _poll` for the already verified Claude
+and Codex transcript semantics. It does not reuse the old manifest, writer,
+reconciliation, numbered windows, SSH viewers or `fleet@main`.
 
-```
-env -u VIRTUAL_ENV PATH=/usr/bin:/bin makepkg -sif --noconfirm   # build + install on the flagship
-scp *.pkg.tar.zst <ship>:/tmp/ && ssh <ship> 'sudo pacman -U …'   # ships run fleet _poll, so they need it too
-```
-
-After a change that alters the fzf muster's bindings/layout, the running
-column must be re-spawned to pick them up — bounce it through its own
-socket (the launcher loop respawns it):
+## Commands
 
 ```
-curl -s --unix-socket "$XDG_RUNTIME_DIR/agent-fleet-muster.sock" \
-  -XPOST -d abort http://localhost
+fleet-muster                    persistent local Muster
+fleet-viewer main               persistent direct-attachment slot
+fleet-next show SOURCE          focus/open a source
+fleet-next show SOURCE --slot S explicit replacement
+fleet-next dismiss --slot S     detach a viewer only
+fleet-next create               create a real tmux session
+fleet-next rename SOURCE        rename a real tmux session
+fleet-next done SOURCE          shelve its attention loop
+fleet-view                      laptop 50:50 launcher
+fleet-deck                      home multi-screen launcher
+fleet-commander                 persistent Claude Commander session
 ```
 
-Run `python -m unittest discover -s tests -v` before packaging.
+Host aliases come from `~/.config/agent-fleet/hosts`. Routing and credentials
+belong to OpenSSH configuration. Machine labels are ASCII (`N L B T OE`), so
+Fleet has no icon-font dependency.
 
-Verify against the live fleet, not from memory: the single writer runs in
-`fleet@main:0`, so a crash shows there and the tmux manifest's
-`@fleet_snapshot_ts` stops advancing (`age` in the muster). Read what each agent writes before
-claiming how it behaves — the constitution's binding rules, including
-*verify on the machine* and *state from what each agent writes, not
-hooks*, are in `CLAUDE.md`.
+## Development
+
+```
+python -m unittest discover -s tests -v
+env -u VIRTUAL_ENV PATH=/usr/bin:/bin makepkg -sif --noconfirm
+```
+
+The old implementation and tests remain until the parallel soak proves direct
+viewing on Boltzmann, Noether and Newton. Cutover must not restart a tmux server
+or mutate a source session.

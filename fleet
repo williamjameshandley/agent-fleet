@@ -38,7 +38,7 @@ HOST_ICONS = {
     "noether": "Œ",
 }
 # Terminal-set titles require #{q:} and shlex; delimiters are not safe.
-PANE_FMT = ("#{q:session_name} #{q:window_id} #{window_index} #{q:pane_id} "
+PANE_FMT = ("#{q:session_name} #{q:session_id} #{q:window_id} #{window_index} #{q:pane_id} "
             "#{pane_pid} #{q:pane_current_command} "
             "#{q:pane_current_path} #{q:pane_title}")
 SSH = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=3",
@@ -425,7 +425,7 @@ def cmd_poll(args):
         sys.exit(f"fleet: list-panes: {r.stderr.strip()}")
     rows = []
     for line in r.stdout.splitlines():
-        sess, win, widx, pid, ppid, cmd, cwd, title = shlex.split(line)
+        sess, tmux_sid, win, widx, pid, ppid, cmd, cwd, title = shlex.split(line)
         agent = cmd_agent.get(cmd)
         if agent is None or "@" in sess:
             continue
@@ -445,7 +445,7 @@ def cmd_poll(args):
         else:
             sys.exit(f"fleet: no poll reader for agent {agent!r}")
         title = " ".join(title.split())
-        rows.append(dict(session=sess, win=win, window=int(widx), pane_id=pid,
+        rows.append(dict(session=sess, tmux_sid=tmux_sid, win=win, window=int(widx), pane_id=pid,
                          session_id=session_id, agent=agent, state=state,
                          title=title, cwd=cwd, ts=ts))
     print(json.dumps(rows))

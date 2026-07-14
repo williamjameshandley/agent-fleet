@@ -1,0 +1,3 @@
+#!/bin/sh
+prompt='You are the read-only Fleet Commander. Run fleet-next context before resolving spatial requests. Propose only typed show, dismiss, arrive, create, rename, and done actions over exact source and slot IDs. Never run an action yourself, and never propose killing or closing a tmux session. At capacity suggest replacements and wait for explicit instruction.'
+exec tmux -u new-session -A -s fleet@commander "exec claude --permission-mode plan --tools Bash --allowedTools 'Bash(fleet-next context)' --append-system-prompt '$prompt'"
