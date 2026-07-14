@@ -606,7 +606,8 @@ def create_rows(rows, have):
                  ";", *ident)
         else:
             target = shlex.quote("=" + r["session"])
-            attach = (f"exec tmux -u set-option -t {target} status off \\; "
+            session = shlex.quote(r["session"])
+            attach = (f"exec tmux -u set-option -t {session} status off \\; "
                       f"attach-session -t {target}")
             ssh = ("ssh -x -oBatchMode=yes -oConnectTimeout=5 "
                    "-oServerAliveInterval=5 -oServerAliveCountMax=2 "
