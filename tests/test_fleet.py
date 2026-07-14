@@ -167,6 +167,7 @@ class FleetTests(unittest.TestCase):
         self.assertIn("Tab history · c create · r rename · d delete · Enter show", argv)
         self.assertTrue(any(arg.startswith("d:execute(") for arg in argv))
         self.assertTrue(any("wait-for -S agent-fleet-focus-main" in arg for arg in argv))
+        self.assertTrue(any("wait-for -L agent-fleet-reconcile" in arg for arg in argv))
         self.assertIn("tmux capture-pane -ep -t '=fleet@main:{3}' "
                       "| tail -n $FZF_PREVIEW_LINES", argv)
         self.assertTrue(any("muster --cursor" in arg for arg in argv))

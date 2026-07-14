@@ -22,6 +22,7 @@ SSH_AGENT_SOCKET = RUNTIME / "gnupg/S.gpg-agent.ssh"
 CADENCE = 2
 USAGE_CADENCE = 900
 MUSTER_SOCKET = RUNTIME / "agent-fleet-muster.sock"
+RECONCILE_LOCK = "agent-fleet-reconcile"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 AGENT_CMDS = {"claude": "claude", "codex": "codex"}
 PRIORITY = {"needs-action": 0, "waiting": 1, "working": 2}
@@ -652,16 +653,20 @@ def stamp_rows(rows, have, stale_num, now):
 
 
 def reconcile(rows, unreachable, now):
-    selected = group_selections()
-    have = fleet_inventory()
-    want = {(r["host"], r["win"]): r for r in rows}
-    remove_missing(have, want, unreachable)
-    frozen = ordering_frozen()
-    stale_num = number_rows(rows, have, want, frozen)
-    create_rows(rows, have)
-    stamp_rows(rows, have, stale_num, now)
-    restore_group_selections(selected)
-    return frozen
+    tmux(flagship(), "wait-for", "-L", RECONCILE_LOCK)
+    try:
+        selected = group_selections()
+        have = fleet_inventory()
+        want = {(r["host"], r["win"]): r for r in rows}
+        remove_missing(have, want, unreachable)
+        frozen = ordering_frozen()
+        stale_num = number_rows(rows, have, want, frozen)
+        create_rows(rows, have)
+        stamp_rows(rows, have, stale_num, now)
+        restore_group_selections(selected)
+        return frozen
+    finally:
+        tmux(flagship(), "wait-for", "-U", RECONCILE_LOCK)
 
 
 def manifest_write():
@@ -826,7 +831,9 @@ def cmd_muster_ui(args):
         "--bind", f"d:execute(if printf 'delete {{4}}? [y/N] ' >&2; "
                    "read -r a </dev/tty && [ \"$a\" = y ]; then "
                    f"{exe} delete {{4}}; fi)+reload({exe} muster --rows)",
-        "--bind", "enter:execute-silent(tmux select-window -t '=fleet@main:{3}' "
+        "--bind", "enter:execute-silent(tmux wait-for -L agent-fleet-reconcile "
+                  "\\; select-window -t '=fleet@main:{3}' "
+                  "\\; wait-for -U agent-fleet-reconcile "
                   "\\; wait-for -S agent-fleet-focus-main)",
     ])
 
