@@ -1,12 +1,12 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=agent-fleet
-pkgver=0.2.0.r81
+pkgver=0.2.0.r83.dbdaa9c00
 pkgrel=1
 pkgdesc='Awareness and one-keypress switching for a fleet of terminal AI-agent sessions in tmux'
 arch=('any')
 url='https://github.com/williamjameshandley/agent-fleet'
 license=('MIT')
-depends=(python python-watchfiles tmux fzf openssh curl procps-ng)
+depends=(python python-libtmux python-watchfiles tmux fzf openssh curl procps-ng)
 optdepends=(
     'ghostty: workstation viewer terminals'
     'i3-wm: workstation layout and focus control'

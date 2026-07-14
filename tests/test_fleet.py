@@ -14,6 +14,17 @@ fleet = importlib.machinery.SourceFileLoader("fleet_test", str(ROOT / "fleet")).
 
 
 class FleetTests(unittest.TestCase):
+    def test_codex_rollout_selects_root_not_open_subagent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "rollout-root.jsonl"
+            child = Path(directory) / "rollout-child.jsonl"
+            root.write_text(json.dumps({"type": "session_meta", "payload": {
+                "source": "cli"}}) + "\n")
+            child.write_text(json.dumps({"type": "session_meta", "payload": {
+                "source": {"thread_spawn": {"parent_thread_id": "root"}}}}) + "\n")
+            self.assertEqual(fleet.select_codex_transcript(
+                [str(child), str(root)], set()), str(root))
+
     def test_run_allows_interactive_subprocesses(self):
         with patch.object(fleet.subprocess, "run") as subprocess_run:
             fleet.run(["fzf"], capture_output=False, stdout=subprocess.PIPE)

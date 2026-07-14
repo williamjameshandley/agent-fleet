@@ -386,20 +386,46 @@ def descendants(pid, kids):
     return seen
 
 
-def open_transcript(tree, needle):
-    for p in tree:
+def select_codex_transcript(targets, resumed):
+    explicit = [target for target in targets if any(token in target for token in resumed)]
+    if len(explicit) == 1:
+        return explicit[0]
+    roots = []
+    for target in targets:
         try:
-            entries = os.listdir(f"/proc/{p}/fd")
+            with open(target) as stream:
+                meta = json.loads(stream.readline())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if meta.get("type") == "session_meta" and meta["payload"].get("source") == "cli":
+            roots.append(target)
+    if len(roots) != 1:
+        raise RuntimeError(f"expected one root Codex rollout, found {len(roots)}")
+    return roots[0]
+
+
+def codex_transcript(tree):
+    targets = []
+    resumed = set()
+    for pid in tree:
+        try:
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode().split("\0")
         except OSError:
             continue
-        for fd in entries:
+        resumed.update(argv[index + 1] for index, arg in enumerate(argv[:-1])
+                       if arg == "resume")
+        try:
+            fds = os.listdir(f"/proc/{pid}/fd")
+        except OSError:
+            continue
+        for fd in fds:
             try:
-                target = os.readlink(f"/proc/{p}/fd/{fd}")
+                target = os.readlink(f"/proc/{pid}/fd/{fd}")
             except OSError:
                 continue
-            if needle in target:
-                return target
-    return None
+            if "rollout-" in target:
+                targets.append(target)
+    return select_codex_transcript(targets, resumed)
 
 
 def claude_agents():
@@ -438,7 +464,7 @@ def cmd_poll(args):
                 / f"{session_id}.jsonl"
             ts = last_event_time(f) if f.exists() else 0
         elif agent == "codex":
-            roll = open_transcript(tree, "rollout-")
+            roll = codex_transcript(tree)
             s = session_at("codex", roll)
             session_id = s.session_id
             state, title, ts = live_state(s)

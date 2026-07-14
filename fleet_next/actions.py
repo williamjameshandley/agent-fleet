@@ -6,7 +6,7 @@ import time
 
 from .config import hosts
 from .remote import find
-from .daemon import snapshot
+from .daemon import preview as pane_preview, snapshot
 from .protocol import decode
 from .protocol import decode_message
 from . import viewer
@@ -73,12 +73,7 @@ def dismiss_source(key):
 
 
 def preview(key):
-    session = find(key, live=False)
-    print(f"{session.ref.server.host}:{session.name}\n")
-    print(f"{session.agent}  {session.state}  {session.windows} window(s)")
-    print(session.cwd)
-    if session.title:
-        print(f"\n{session.title}")
+    print(pane_preview(key), end="")
 
 
 def history():

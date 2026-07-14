@@ -1,18 +1,38 @@
 import argparse
 import asyncio
+import json
+import sys
+import threading
 
 from . import actions, ui, viewer
 from .daemon import Fleet
 from .protocol import encode
 from .quota import read as quota_read, update as quota_update
-from .tmux import event_stream, inventory, mutate
+from .tmux import capture, event_stream, inventory, mutate
 from .config import RUNTIME, hosts
 
 
 def events(args):
+    lock = threading.Lock()
+
+    def emit(message):
+        with lock:
+            print(message, flush=True)
+
+    def requests():
+        for line in sys.stdin:
+            request = json.loads(line)
+            try:
+                text = capture(request["key"])
+                response = {"preview": request["preview"], "text": text}
+            except RuntimeError as error:
+                response = {"preview": request["preview"], "error": str(error)}
+            emit(json.dumps(response, separators=(",", ":")))
+
+    threading.Thread(target=requests, daemon=True).start()
     for sessions in event_stream(args.host):
         usage = quota_read() if args.host == hosts()[0] else {}
-        print(encode(sessions, usage), flush=True)
+        emit(encode(sessions, usage))
 
 
 def snapshot(args):

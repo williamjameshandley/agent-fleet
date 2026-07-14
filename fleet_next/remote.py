@@ -1,25 +1,5 @@
-import os
-import subprocess
-import shlex
-
-from .config import hosts
 from .daemon import snapshot
-from .protocol import decode, decode_message
-from .tmux import inventory
-
-
-def inventory_host():
-    groups = []
-    local = os.uname().nodename
-    for host in hosts():
-        if host == local:
-            groups.append(inventory(host))
-            continue
-        result = subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", host,
-                                 shlex.join(("fleet-next", "snapshot", "--host", host))],
-                                text=True, capture_output=True, check=True)
-        groups.append(decode(result.stdout))
-    return groups
+from .protocol import decode_message
 
 
 def find(key, live=True):

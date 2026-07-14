@@ -7,6 +7,8 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
+from libtmux import Server
+from libtmux.session import Session as TmuxSession
 from watchfiles import watch
 
 from .model import ServerRef, Session, SessionRef
@@ -14,19 +16,8 @@ from .agent import observe
 from .config import RUNTIME
 
 
-FORMAT = " ".join((
-    "pid=#{pid}", "started=#{start_time}", "socket=#{q:socket_path}", "id=#{session_id}",
-    "name=#{q:session_name}", "created=#{session_created}",
-    "activity=#{session_activity}", "attached=#{session_attached}",
-    "windows=#{session_windows}", "command=#{q:pane_current_command}",
-    "title=#{q:pane_title}", "cwd=#{q:pane_current_path}",
-    "attention=#{q:@fleet_attention}",
-))
-
-
-def run(*args, check=True, capture_output=True):
-    return subprocess.run(["tmux", *args], text=True, check=check,
-                          capture_output=capture_output)
+def server():
+    return Server()
 
 
 def split_key(key):
@@ -49,33 +40,40 @@ def mutate(key, operation, arguments):
                  f"#{{&&:#{{==:#{{pid}},{pid}}},"
                  f"#{{&&:#{{==:#{{start_time}},{started}}},"
                  f"#{{==:#{{session_id}},{session_id}}}}}}}}}")
-    result = run("if-shell", "-t", session_id, "-F", condition,
-                 shlex.join(commands[operation]), "display-message -p FLEET_STALE")
-    if result.stdout.strip() == "FLEET_STALE":
+    result = server().cmd("if-shell", "-t", session_id, "-F", condition,
+                          shlex.join(commands[operation]),
+                          "display-message -p FLEET_STALE")
+    if result.stdout and result.stdout[0] == "FLEET_STALE":
         raise SystemExit(f"stale source identity: {key}")
 
 
+def capture(key, lines=80):
+    host, socket, pid, started, session_id = split_key(key)
+    if host != os.uname().nodename:
+        raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
+    tmux = server()
+    session = TmuxSession.from_session_id(tmux, session_id)
+    if (session.socket_path, int(session.pid), int(session.start_time)) != (socket, pid, started):
+        raise RuntimeError(f"stale source identity: {key}")
+    content = session.active_pane.capture_pane(escape_sequences=True, start=-lines) or []
+    return "\n".join(content[-lines:])
+
+
 def inventory(host):
-    result = run("list-sessions", "-F", FORMAT, check=False)
-    if result.returncode == 1 and "no server running" in result.stderr:
-        return []
-    if result.returncode:
-        raise RuntimeError(result.stderr.strip())
+    tmux = server()
+    attention = dict(line.split("\t", 1) for line in tmux.cmd(
+        "list-sessions", "-F", "#{session_id}\t#{@fleet_attention}").stdout)
     sessions = []
-    for line in result.stdout.splitlines():
-        values = dict(field.split("=", 1) for field in shlex.split(line))
-        pid, started, socket, sid, name = (values[x] for x in
-                                           ("pid", "started", "socket", "id", "name"))
-        created, activity, attached, windows = (values[x] for x in
-                                                 ("created", "activity", "attached", "windows"))
-        command, title, cwd, attention = (values[x] for x in
-                                          ("command", "title", "cwd", "attention"))
-        if name.startswith("fleet@"):
+    for item in tmux.sessions:
+        if item.session_name.startswith("fleet@"):
             continue
-        server = ServerRef(host, socket, int(pid), int(started))
-        sessions.append(Session(SessionRef(server, sid), name, int(created),
-                                int(activity), int(attached), int(windows),
-                                command, title, cwd, attention or "tracked"))
+        source = ServerRef(host, item.socket_path, int(item.pid), int(item.start_time))
+        sessions.append(Session(
+            SessionRef(source, item.session_id), item.session_name,
+            int(item.session_created), int(item.session_activity),
+            int(item.session_attached), int(item.session_windows),
+            item.pane_current_command, item.pane_title, item.pane_current_path,
+            attention[item.session_id] or "tracked"))
     return sessions
 
 
@@ -89,8 +87,10 @@ def event_stream(host):
             for _ in watch(*paths):
                 changed.put("transcript")
         threading.Thread(target=transcripts, daemon=True).start()
-    if run("has-session", "-t", "=fleet@events", check=False).returncode:
-        run("new-session", "-d", "-s", "fleet@events", "sleep", "infinity")
+    tmux = server()
+    if not tmux.has_session("fleet@events"):
+        tmux.new_session("fleet@events", attach=False,
+                         window_command="sleep infinity")
     process = subprocess.Popen(["tmux", "-C", "attach-session", "-f", "ignore-size",
                                 "-t", "=fleet@events"], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -132,7 +132,7 @@ def event_stream(host):
             event = changed.get()
             while not changed.empty():
                 event = changed.get_nowait()
-            if event == "closed":
+            if event == "closed" or process.poll() is not None:
                 error = process.stderr.read().strip() if process.stderr else ""
                 raise RuntimeError(error or "tmux control client closed")
     finally:

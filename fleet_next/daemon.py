@@ -3,6 +3,7 @@ import os
 import socket
 import sys
 import shlex
+import json
 
 from .config import RUNTIME, hosts
 from .protocol import decode_message, encode
@@ -14,6 +15,9 @@ class Fleet:
         self.usage = {}
         self.unavailable = set(hosts())
         self.refresh_pending = False
+        self.processes = {}
+        self.previews = {}
+        self.next_preview = 0
 
     async def collect(self, host):
         command = ([sys.executable, "-m", "fleet_next.cli", "events", "--host", host]
@@ -22,7 +26,9 @@ class Fleet:
                          shlex.join(("fleet-next", "events", "--host", host))])
         while True:
             process = await asyncio.create_subprocess_exec(*command,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+            self.processes[host] = process
             errors = []
 
             async def stderr():
@@ -35,6 +41,14 @@ class Fleet:
             try:
                 assert process.stdout
                 async for raw in process.stdout:
+                    message = json.loads(raw)
+                    if "preview" in message:
+                        _, future = self.previews.pop(message["preview"])
+                        if "error" in message:
+                            future.set_exception(RuntimeError(message["error"]))
+                        else:
+                            future.set_result(message["text"])
+                        continue
                     sessions, usage, _ = decode_message(raw)
                     self.sessions[host] = sessions
                     self.unavailable.discard(host)
@@ -48,6 +62,11 @@ class Fleet:
                     await process.wait()
                 if not drain.done():
                     drain.cancel()
+                self.processes.pop(host, None)
+                for number, (owner, future) in list(self.previews.items()):
+                    if owner == host:
+                        future.set_exception(RuntimeError(f"{host} disconnected"))
+                        del self.previews[number]
             self.unavailable.add(host)
             self.schedule_refresh()
             await asyncio.sleep(1)
@@ -71,9 +90,15 @@ class Fleet:
         await process.wait()
 
     async def reply(self, reader, writer):
-        await reader.readline()
-        payload = encode([s for group in self.sessions.values() for s in group], self.usage,
-                         sorted(self.unavailable)) + "\n"
+        request = (await reader.readline()).decode().rstrip()
+        if request == "snapshot":
+            payload = encode([s for group in self.sessions.values() for s in group], self.usage,
+                             sorted(self.unavailable))
+        elif request.startswith("preview "):
+            payload = await self.preview(request.removeprefix("preview "))
+        else:
+            raise ValueError(f"unknown daemon request {request!r}")
+        payload += "\n"
         writer.write(payload.encode())
         await writer.drain()
         writer.close()
@@ -90,12 +115,37 @@ class Fleet:
                 for host in hosts():
                     group.create_task(self.collect(host))
 
+    async def preview(self, key):
+        host = key.split(":", 1)[0]
+        if host in self.unavailable:
+            raise RuntimeError(f"{host} is disconnected")
+        process = self.processes[host]
+        assert process.stdin
+        self.next_preview += 1
+        number = self.next_preview
+        future = asyncio.get_running_loop().create_future()
+        self.previews[number] = (host, future)
+        process.stdin.write((json.dumps({"preview": number, "key": key}) + "\n").encode())
+        await process.stdin.drain()
+        return await future
+
 
 def snapshot():
     path = RUNTIME / "fleet.sock"
     with socket.socket(socket.AF_UNIX) as client:
         client.connect(str(path))
         client.sendall(b"snapshot\n")
+        chunks = []
+        while chunk := client.recv(65536):
+            chunks.append(chunk)
+    return b"".join(chunks).decode()
+
+
+def preview(key):
+    path = RUNTIME / "fleet.sock"
+    with socket.socket(socket.AF_UNIX) as client:
+        client.connect(str(path))
+        client.sendall((f"preview {key}\n").encode())
         chunks = []
         while chunk := client.recv(65536):
             chunks.append(chunk)
