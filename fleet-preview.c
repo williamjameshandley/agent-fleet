@@ -99,7 +99,7 @@ static void draw(int top, int left, int rows, int cols, int cursor_y,
             x += cell.width ? cell.width : 1;
             old = cell;
         }
-        printf("\033[0m\n");
+        fputs(y + 1 == top + rows ? "\033[0m" : "\033[0m\n", stdout);
         memset(&old, 0, sizeof old);
         vterm_state_get_default_colors(vterm_obtain_state(term), &old.fg, &old.bg);
     }
