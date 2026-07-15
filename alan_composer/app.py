@@ -32,6 +32,7 @@ class Composer:
         self.pool = ThreadPoolExecutor(max_workers=3)
         self.pending = {}
         self.opening_from_wake = False
+        self.paused_wake = False
         self.segmenter = Segmenter(self._segment)
         self.window, self.entry, self.status, self.target, self.activity = self._window()
         self.entry.connect("changed", self._entry_changed)
@@ -59,16 +60,28 @@ class Composer:
 
     def _audio(self, block):
         self.segmenter.feed(block)
-        if self.wake and not self.composition:
+        if self.wake and (not self.composition or self.composition.mode is Mode.PAUSED):
             self.wake.feed(block)
 
     def _wake(self):
-        GLib.idle_add(self.open, self.capture.preroll(), True)
+        GLib.idle_add(self._activate_wake, self.capture.preroll())
+
+    def _activate_wake(self, preroll):
+        if self.composition and self.composition.mode is Mode.PAUSED:
+            self.paused_wake = True
+            self.segmenter.start(preroll)
+        else:
+            self.open(preroll, True)
+        return False
 
     def _segment(self, audio):
-        if not self.composition or self.composition.mode is not Mode.RECORDING:
+        if not self.composition or (
+                self.composition.mode is not Mode.RECORDING and not self.paused_wake):
             return
         current = self.composition
+        if self.paused_wake:
+            self.paused_wake = False
+            self.segmenter.stop()
         self.composition = replace(current, queued=current.queued + 1)
         token = object()
         path = self.archive.audio(current, audio, RATE)
@@ -109,6 +122,8 @@ class Composer:
             self._highlight(before, self.composition.draft)
             self._run_edit(None, raw)
         self._render_status("LISTENING" if self.composition.mode is Mode.RECORDING else "PAUSED")
+        if self.wake and self.composition.mode is Mode.PAUSED:
+            self.wake.reset()
         return False
 
     def _run_edit(self, instruction, raw):
@@ -144,6 +159,8 @@ class Composer:
         if command == "pause":
             self.composition = self.composition.pause()
             self.segmenter.stop()
+            if self.wake:
+                self.wake.reset()
             self._render_status("PAUSED")
         elif command == "resume":
             self.composition = self.composition.resume()
