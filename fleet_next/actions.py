@@ -72,8 +72,8 @@ def dismiss_source(key):
                     "Viewer dismissed; source session is still running"])
 
 
-def preview(key):
-    print(pane_preview(key), end="")
+def preview(key, columns=0, lines=0):
+    print(pane_preview(key, columns, lines), end="")
 
 
 def history():

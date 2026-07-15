@@ -1,12 +1,13 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=agent-fleet
-pkgver=0.2.0.r88
+pkgver=0.2.0.r89.df1746647
 pkgrel=1
 pkgdesc='Awareness and one-keypress switching for a fleet of terminal AI-agent sessions in tmux'
-arch=('any')
+arch=('x86_64')
 url='https://github.com/williamjameshandley/agent-fleet'
 license=('MIT')
-depends=(python python-libtmux python-watchfiles tmux fzf openssh curl procps-ng)
+options=('!debug')
+depends=(python python-libtmux python-watchfiles tmux fzf openssh curl procps-ng libvterm)
 optdepends=(
     'ghostty: workstation viewer terminals'
     'i3-wm: workstation layout and focus control'
@@ -25,7 +26,7 @@ pkgver() {
   if git diff --quiet && git diff --cached --quiet; then
     printf '%s\n' "$version"
   else
-    hash=$(sha256sum fleet fleet-next fleet-muster fleet-viewer fleet-view \
+    hash=$(sha256sum fleet fleet-next fleet-preview.c fleet-muster fleet-viewer fleet-view \
       fleet-deck fleet-office fleet-commander fleet_next/*.py fleet-usage tmux.conf \
       fleet-next.service fleet-quota.service fleet-quota.timer \
       wake-dryrun wake-dryrun.service LICENSE \
@@ -41,6 +42,8 @@ package() {
     install -Dm755 "$startdir/$script" "$pkgdir/usr/bin/$script"
   done
   install -Dm755 "$startdir/fleet-usage" "$pkgdir/usr/bin/fleet-usage"
+  cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
+    "$startdir/fleet-preview.c" -o "$pkgdir/usr/lib/agent-fleet/fleet-preview" -lvterm
   local purelib="$pkgdir$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
   install -d "$purelib/fleet_next"
   install -m644 "$startdir"/fleet_next/*.py "$purelib/fleet_next/"

@@ -95,7 +95,8 @@ def muster():
         "--bind=x:execute-silent(fleet-next dismiss-source {1})+reload-sync(fleet-next items)",
         "--bind=tab:execute-silent(tmux select-window -t =fleet@muster:history)",
         "--bind=shift-tab:execute-silent(tmux select-window -t =fleet@muster:history)",
-        "--preview=fleet-next preview {1}", "--preview-window=down,45%,wrap,follow",
+        "--preview=fleet-next preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
+        "--preview-window=down,45%,nowrap,follow,border-none",
     ]
     os.execvp(command[0], command)
 

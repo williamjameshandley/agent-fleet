@@ -15,6 +15,8 @@ from .model import ServerRef, Session, SessionRef
 from .agent import observe
 from .config import RUNTIME
 
+PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
+
 
 def server():
     return Server()
@@ -47,7 +49,7 @@ def mutate(key, operation, arguments):
         raise SystemExit(f"stale source identity: {key}")
 
 
-def capture(key, lines=80):
+def capture(key, columns=0, lines=0):
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:
         raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
@@ -55,8 +57,16 @@ def capture(key, lines=80):
     session = TmuxSession.from_session_id(tmux, session_id)
     if (session.socket_path, int(session.pid), int(session.start_time)) != (socket, pid, started):
         raise RuntimeError(f"stale source identity: {key}")
-    content = session.active_pane.capture_pane(escape_sequences=True, start=-lines) or []
-    return "\n".join(content[-lines:])
+    pane = session.active_pane
+    content = pane.capture_pane(start=0, end="-", escape_sequences=True,
+                                preserve_trailing=True) or []
+    if not columns or not lines:
+        return "\n".join(content)
+    result = subprocess.run(
+        [PREVIEW, pane.pane_width, pane.pane_height, pane.cursor_x, pane.cursor_y,
+         str(columns), str(lines)], input="\n".join(content) + "\n", text=True,
+        capture_output=True, check=True)
+    return result.stdout
 
 
 def inventory(host):

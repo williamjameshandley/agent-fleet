@@ -23,7 +23,7 @@ def events(args):
         for line in sys.stdin:
             request = json.loads(line)
             try:
-                text = capture(request["key"])
+                text = capture(request["key"], request["columns"], request["lines"])
                 response = {"preview": request["preview"], "text": text}
             except RuntimeError as error:
                 response = {"preview": request["preview"], "error": str(error)}
@@ -83,10 +83,13 @@ def main():
     item.add_argument("key")
     command("create", lambda _: actions.create())
     for name, fn in (("rename", actions.rename), ("done", actions.done),
-                     ("preview", actions.preview),
                      ("dismiss-source", actions.dismiss_source)):
         item = command(name, lambda a, fn=fn: fn(a.key))
         item.add_argument("key")
+    item = command("preview", lambda a: actions.preview(a.key, a.columns, a.lines))
+    item.add_argument("key")
+    item.add_argument("columns", type=int, nargs="?", default=0)
+    item.add_argument("lines", type=int, nargs="?", default=0)
     args = parser.parse_args()
     args.fn(args)
 

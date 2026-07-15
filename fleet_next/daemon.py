@@ -95,7 +95,8 @@ class Fleet:
             payload = encode([s for group in self.sessions.values() for s in group], self.usage,
                              sorted(self.unavailable))
         elif request.startswith("preview "):
-            payload = await self.preview(request.removeprefix("preview "))
+            key, columns, lines = request.removeprefix("preview ").rsplit(" ", 2)
+            payload = await self.preview(key, int(columns), int(lines))
         else:
             raise ValueError(f"unknown daemon request {request!r}")
         payload += "\n"
@@ -115,7 +116,7 @@ class Fleet:
                 for host in hosts():
                     group.create_task(self.collect(host))
 
-    async def preview(self, key):
+    async def preview(self, key, columns=0, lines=0):
         host = key.split(":", 1)[0]
         if host in self.unavailable:
             raise RuntimeError(f"{host} is disconnected")
@@ -125,7 +126,8 @@ class Fleet:
         number = self.next_preview
         future = asyncio.get_running_loop().create_future()
         self.previews[number] = (host, future)
-        process.stdin.write((json.dumps({"preview": number, "key": key}) + "\n").encode())
+        process.stdin.write((json.dumps({"preview": number, "key": key,
+                                         "columns": columns, "lines": lines}) + "\n").encode())
         await process.stdin.drain()
         return await future
 
@@ -141,11 +143,11 @@ def snapshot():
     return b"".join(chunks).decode()
 
 
-def preview(key):
+def preview(key, columns=0, lines=0):
     path = RUNTIME / "fleet.sock"
     with socket.socket(socket.AF_UNIX) as client:
         client.connect(str(path))
-        client.sendall((f"preview {key}\n").encode())
+        client.sendall((f"preview {key} {columns} {lines}\n").encode())
         chunks = []
         while chunk := client.recv(65536):
             chunks.append(chunk)
