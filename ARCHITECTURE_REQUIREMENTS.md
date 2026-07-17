@@ -60,6 +60,13 @@ a row drops into the real session for keyboard, mouse or voice input.
   switching an established conversation between agent vendors is difficult.
   Commander recommends from task fit and current quota utilisation; scarce
   Claude capacity, for example, biases a proposal toward Codex/OpenAI.
+- Management text entry is a workstation-local visual overlay compatible with
+  Linux Voice. It never reads raw terminal stdin inside Muster: the Ctrl-Space
+  recording chord must not become input data or replace the persistent list.
+- Creation starts the selected agent without workspace or tool permission
+  interstitials, resolves the new canonical tmux identity, and immediately
+  displays it in privileged Main. A blank directory means the source host's
+  home directory, not Fleet's own working directory.
 - Exact machine labels are `N`, `L`, `B`, `T`, `OE`; no icon font is required.
 
 ## State and identity

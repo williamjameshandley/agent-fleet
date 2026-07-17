@@ -10,6 +10,7 @@ from fleet_next.model import ServerRef, Session, SessionRef
 from fleet_next.protocol import decode, encode
 from fleet_next.ui import STATE_ORDER
 from fleet_next.tmux import split_key
+from fleet_next.actions import agent_command
 
 
 class IdentityTests(unittest.TestCase):
@@ -65,6 +66,18 @@ class IdentityTests(unittest.TestCase):
     def test_named_viewers_remain_local(self):
         launcher = (Path(__file__).parents[1] / "fleet-viewer").read_text()
         self.assertTrue(launcher.rstrip().endswith('exec fleet-next viewer --slot "$slot"'))
+
+    def test_management_prompts_never_read_raw_terminal_input(self):
+        source = (Path(__file__).parents[1] / "fleet_next/actions.py").read_text()
+        self.assertNotRegex(source, r"(?<![A-Za-z_])input\(")
+        self.assertIn('"rofi", "-dmenu"', source)
+
+    def test_created_agents_skip_startup_permission_interstitials(self):
+        self.assertEqual(agent_command("claude", "work"),
+                         ["claude", "--dangerously-skip-permissions", "--name", "work"])
+        self.assertEqual(agent_command("codex", "work"),
+                         ["codex", "--sandbox", "danger-full-access",
+                          "--ask-for-approval", "never"])
 
     def test_viewer_dismiss_is_an_explicit_clear(self):
         root = Path(__file__).parents[1]

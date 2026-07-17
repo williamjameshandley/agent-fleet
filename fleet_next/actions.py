@@ -3,6 +3,7 @@ import subprocess
 import shlex
 import json
 import time
+from pathlib import Path
 
 from .config import hosts
 from .remote import find
@@ -18,31 +19,59 @@ def host_command(host, *command, capture_output=False):
     return subprocess.run(argv, text=True, check=True, capture_output=capture_output)
 
 
-def choose(values, prompt):
-    result = subprocess.run(["fzf", "--prompt", prompt], input="\n".join(values) + "\n",
-                            text=True, capture_output=True)
+def desktop_input(prompt, values=(), fixed=False):
+    result = subprocess.run(
+        ["tmux", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
+        text=True, capture_output=True, check=True)
+    workstation = result.stdout.strip()
+    if not workstation:
+        raise SystemExit("Muster has no attached workstation")
+    command = ["env", "DISPLAY=:0", "rofi", "-dmenu", "-p", prompt,
+               "-location", "2", "-theme", "rofi"]
+    if fixed:
+        command.extend(("-i", "-no-custom"))
+    result = subprocess.run(
+        ["ssh", "-T", "-o", "BatchMode=yes", workstation, shlex.join(command)],
+        input="\n".join(values) + "\n", text=True, capture_output=True)
     if result.returncode:
         raise SystemExit(result.returncode)
     return result.stdout.strip()
 
 
+def agent_command(agent, name):
+    if agent == "claude":
+        return ["claude", "--dangerously-skip-permissions", "--name", name]
+    if agent == "codex":
+        return ["codex", "--sandbox", "danger-full-access",
+                "--ask-for-approval", "never"]
+    return [os.environ.get("SHELL", "/bin/sh")]
+
+
+def created_key(host, name):
+    result = host_command(host, "fleet-next", "snapshot", "--host", host,
+                          capture_output=True)
+    matches = [session.ref.key for session in decode(result.stdout)
+               if session.name == name]
+    if len(matches) != 1:
+        raise RuntimeError(f"created session {host}:{name} did not resolve uniquely")
+    return matches[0]
+
+
 def create():
-    host = choose(hosts(), "host> ")
-    agent = choose(["claude", "codex", "shell"], "agent> ")
-    name = input("session name: ").strip()
-    cwd = input("directory [home]: ").strip()
+    host = desktop_input("host", hosts(), fixed=True)
+    agent = desktop_input("agent", ("claude", "codex", "shell"), fixed=True)
+    name = desktop_input("session name")
+    cwd = desktop_input("directory", (str(Path.home()),)) or str(Path.home())
     if not name:
         raise SystemExit("session name is required")
-    command = os.environ.get("SHELL", "/bin/sh") if agent == "shell" else agent
-    arguments = ["tmux", "new-session", "-d", "-s", name]
-    if cwd:
-        arguments.extend(("-c", cwd))
-    host_command(host, *arguments, command)
+    host_command(host, "tmux", "new-session", "-d", "-s", name, "-c", cwd,
+                 *agent_command(agent, name))
+    viewer.request("main", created_key(host, name))
 
 
 def rename(key):
     session = find(key)
-    name = input(f"rename {session.name} to: ").strip()
+    name = desktop_input(f"rename {session.name}")
     if name:
         host_command(session.ref.server.host, "fleet-next", "mutate", key, "rename", name)
 
@@ -91,10 +120,11 @@ def resurrect(key):
     if any((session.ref.server.host, session.agent, session.transcript_id) ==
            (host, agent, transcript) for session in decode(snapshot())):
         raise SystemExit("that transcript already has a live session")
-    name = input("new session name: ").strip()
+    name = desktop_input("new session name")
     if not name:
         raise SystemExit("session name is required")
     host_command(host, "fleet-next", "resume", agent, transcript, name)
+    viewer.request("main", created_key(host, name))
 
 
 def arrive(profile, available=False):
