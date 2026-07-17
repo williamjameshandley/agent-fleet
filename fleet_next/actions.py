@@ -110,7 +110,7 @@ def history():
         for item in json.loads(result.stdout):
             if (host, item["agent"], item["session_id"]) not in live:
                 rows.append((item["mtime"], host, item))
-    for _, host, item in sorted(rows, reverse=True):
+    for _, host, item in sorted(rows, key=lambda row: row[0], reverse=True):
         key = f'{host}:{item["agent"]}:{item["session_id"]}'
         print("\t".join((key, host, item["agent"], item["name"], item["cwd"])))
 
