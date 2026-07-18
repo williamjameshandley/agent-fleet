@@ -61,7 +61,13 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('exec ssh -tt -o BatchMode=yes "$hub" fleet-muster', muster)
         self.assertIn("new-session -d -s fleet@main", main)
         self.assertIn("set-option -t fleet@main prefix None", main)
+        self.assertIn("fleet-next viewer-status main", main)
         self.assertIn("ConditionHost=lovelace", service)
+
+    def test_muster_always_opens_the_global_main_viewer(self):
+        source = (Path(__file__).parents[1] / "fleet_next/ui.py").read_text()
+        self.assertIn("fleet-next show --slot main {1}", source)
+        self.assertIn('"--no-sort"', source)
 
     def test_named_viewers_remain_local(self):
         launcher = (Path(__file__).parents[1] / "fleet-viewer").read_text()

@@ -87,6 +87,8 @@ def main():
                                   (RUNTIME / "fleet.changed").touch()))
     item = command("viewer", lambda a: viewer.serve(a.slot))
     item.add_argument("--slot", default="main")
+    item = command("viewer-status", lambda a: print(viewer.exchange(a.slot, "STATUS")))
+    item.add_argument("slot", nargs="?", default="main")
     item = command("show", lambda a: viewer.show(a.key, a.slot))
     item.add_argument("key")
     item.add_argument("--slot")

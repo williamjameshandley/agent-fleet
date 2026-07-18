@@ -26,7 +26,7 @@ def exchange(slot, message):
     with socket.socket(socket.AF_UNIX) as client:
         try:
             client.connect(str(path))
-        except FileNotFoundError:
+        except (FileNotFoundError, ConnectionRefusedError):
             raise SystemExit(f"viewer slot {slot!r} is not running")
         client.sendall((message + "\n").encode())
         reply = client.makefile().readline().strip()
@@ -60,7 +60,7 @@ def slots():
         slot = path.name.removeprefix("viewer-").removesuffix(".sock")
         try:
             found.append((slot, exchange(slot, "STATUS")))
-        except ConnectionRefusedError:
+        except SystemExit:
             continue
     return found
 
