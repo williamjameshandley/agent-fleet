@@ -305,7 +305,6 @@ class Composer:
         self.target.set_text(self.composition.destination.label if self.composition.destination else "NO DESTINATION")
         self._log(activity)
         self.window.show_all()
-        self.panes.set_position(round(geometry.width * 2 / 3))
         self.window.move(geometry.x, geometry.y)
         self._queue_resize()
         self.window.present()
@@ -353,6 +352,7 @@ class Composer:
         self.resize_pending = False
         if not self.geometry:
             return False
+        self.panes.set_position(round(self.panes.get_allocated_width() * 2 / 3))
         content = self.entry.content_height()
         height = min(max(58, content + 30), max(58, self.geometry.height // 3))
         self.window.resize(self.geometry.width, height)
