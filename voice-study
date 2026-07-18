@@ -2,7 +2,6 @@
 import json
 import time
 import wave
-from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,9 +11,6 @@ import sounddevice as sd
 
 RATE = 16000
 FRAME = 1280
-START_LEVEL = 75
-STOP_LEVEL = 60
-SILENCE_FRAMES = 15
 ROOT = Path.home() / ".local/state/agent-fleet/voice-study"
 
 TRIALS = [
@@ -66,24 +62,16 @@ def screen(*lines):
     print("\n\n" + "\n\n".join(f"{line:^88}" for line in lines), flush=True)
 
 
-def record(path, seconds, fixed=False):
+def record(path, seconds):
     blocks = round(seconds * RATE / FRAME)
     frames = []
-    recent = deque(maxlen=SILENCE_FRAMES)
-    heard = False
     with sd.InputStream(samplerate=RATE, channels=1, dtype="int16",
                         blocksize=FRAME) as stream:
         for block in range(blocks):
             frame, _ = stream.read(FRAME)
             frames.append(frame.copy())
-            level = np.sqrt(np.mean(frame.astype(float) ** 2))
-            heard |= level >= START_LEVEL
-            recent.append(level < STOP_LEVEL)
-            if fixed:
-                remaining = seconds - (block + 1) * FRAME / RATE
-                print(f"\r{max(0, remaining):4.1f} seconds remaining", end="", flush=True)
-            elif heard and len(recent) == SILENCE_FRAMES and all(recent):
-                break
+            remaining = seconds - (block + 1) * FRAME / RATE
+            print(f"\r{max(0, remaining):4.1f} seconds remaining", end="", flush=True)
     print()
     audio = np.concatenate(frames)
     with wave.open(str(path), "wb") as output:
@@ -107,18 +95,16 @@ def main():
     captures = root / "captures.jsonl"
     created = datetime.now(timezone.utc).isoformat()
     for number, (name, phrase, seconds, instruction) in enumerate(TRIALS, 1):
-        fixed = name in {"pause-one", "pause-three", "keyboard", "silence"}
         append(prompts, {
             "trial": number, "file": f"{number:02}-{name}.wav",
             "text": phrase, "seconds": seconds, "instruction": instruction,
-            "boundary": "fixed" if fixed else "silence", "created": created,
+            "boundary": "fixed", "created": created,
         })
 
     screen("ALAN TRANSCRIPTION STUDY", f"{len(TRIALS)} recordings · about 8 minutes",
            "Each prompt appears before a 3–2–1 countdown",
            "Begin speaking when the screen says NOW",
-           "Ordinary recordings stop automatically after you finish speaking",
-           "Pause and no-speech tests show a fixed countdown",
+           "Each recording uses the displayed fixed countdown",
            "You do not need to press anything between recordings",
            "Exact prompts have already been saved",
            "Press Enter once to begin · Ctrl-C cancels safely")
@@ -134,8 +120,7 @@ def main():
         screen(f"RECORDING {number} OF {len(TRIALS)}", instruction,
                phrase or "[NO SPEECH]", "NOW")
         filename = f"{number:02}-{name}.wav"
-        fixed = name in {"pause-one", "pause-three", "keyboard", "silence"}
-        peak, duration = record(root / filename, seconds, fixed)
+        peak, duration = record(root / filename, seconds)
         append(captures, {
             "trial": number, "file": filename, "captured": datetime.now(timezone.utc).isoformat(),
             "duration": duration, "peak": peak,

@@ -36,17 +36,47 @@ class VoiceModelTests(unittest.TestCase):
             self.assertEqual(archive.latest()["draft"], "recover me")
 
     def test_segmenter_preroll_and_stop(self):
+        class Detector:
+            def __init__(self):
+                self.scores = iter([.3, .4, .8, *([.05] * 15)])
+                self.frames = []
+
+            def predict(self, _block, frame_size):
+                self.frames.append(frame_size)
+                return next(self.scores)
+
+            def reset_states(self):
+                pass
+
         complete = []
-        segmenter = Segmenter(complete.append)
-        speech = np.full(1280, 1000, dtype="int16")
-        silence = np.zeros(1280, dtype="int16")
-        segmenter.start([speech])
-        for _ in range(15):
-            segmenter.feed(silence)
-        self.assertTrue(complete[0].startswith(speech.tobytes()))
-        segmenter.start([speech])
+        detector = Detector()
+        segmenter = Segmenter(complete.append, detector)
+        block = np.zeros(1280, dtype="int16")
+        segmenter.start()
+        for _ in range(18):
+            segmenter.feed(block)
+        self.assertEqual(len(complete[0]), 1280 * 3 * 2)
+        self.assertEqual(set(detector.frames), {640})
         segmenter.stop()
         self.assertEqual(segmenter.blocks, [])
+
+    def test_segmenter_rejects_an_isolated_vad_spike(self):
+        class Detector:
+            def __init__(self):
+                self.scores = iter([.3, *([.01] * 20)])
+
+            def predict(self, _block, frame_size):
+                return next(self.scores)
+
+            def reset_states(self):
+                pass
+
+        complete = []
+        segmenter = Segmenter(complete.append, Detector())
+        segmenter.start()
+        for _ in range(21):
+            segmenter.feed(np.zeros(1280, dtype="int16"))
+        self.assertEqual(complete, [])
 
 
 if __name__ == "__main__":

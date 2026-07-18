@@ -1,6 +1,6 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=agent-fleet
-pkgver=0.3.0.r97
+pkgver=0.3.0.r98
 pkgrel=1
 pkgdesc='Awareness and one-keypress switching for a fleet of terminal AI-agent sessions in tmux'
 arch=('x86_64')
@@ -12,7 +12,7 @@ optdepends=(
     'ghostty: workstation viewer terminals'
     'i3-wm: workstation layout and focus control'
     'jq: workstation launcher window discovery'
-    'python-openwakeword: wake-dryrun harness (the mic machine)'
+    'python-openwakeword: Alan speech segmentation and wake detection (the mic machine)'
     'python-sounddevice: wake-dryrun harness (the mic machine)'
     'python-numpy: wake-dryrun harness (the mic machine)'
     'python-gobject: Alan composer interface (the mic machine)'
