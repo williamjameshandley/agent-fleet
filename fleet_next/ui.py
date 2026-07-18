@@ -75,15 +75,16 @@ def muster():
     sock = RUNTIME / "muster.sock"
     sock.unlink(missing_ok=True)
     command = [
-        "fzf", "--listen", str(sock), "--track", "--exact", "--disabled", "--no-input", "--ansi",
+        "fzf", "--listen", str(sock), "--track", "--disabled", "--no-input", "--ansi",
         f"--color={FZF_COLOUR}",
         "--no-unicode", "--pointer=>", "--gutter= ",
         "--no-scrollbar", "--no-hscroll",
         "--delimiter=\t", "--with-nth=2..", "--id-nth=1",
         "--layout=reverse", "--no-sort", "--no-multi", "--info=inline", "--border=none",
         f"--header={header()}",
-        "--bind=/:enable-search+show-input+change-prompt(Search: )+unbind(c,r,d,x,j,k)",
-        "--bind=esc:disable-search+clear-query+hide-input+change-prompt(> )+rebind(c,r,d,x,j,k)",
+        "--bind=start:unbind(esc)",
+        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,d,x,j,k)+rebind(esc)",
+        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,d,x,j,k)",
         "--bind=j:down,k:up",
         f"--bind=load:pos({cursor()})",
         "--bind=enter:execute-silent(fleet-next show --slot main {1})",
@@ -118,7 +119,7 @@ def cursor():
 
 def history():
     command = [
-        "fzf", "--track", "--exact", "--delimiter=\t", "--with-nth=2..",
+        "fzf", "--track", "--delimiter=\t", "--with-nth=2..",
         f"--color={FZF_COLOUR}",
         "--id-nth=1", "--layout=reverse", "--no-sort", "--no-multi",
         "--header=History  Enter resurrect  Tab live",

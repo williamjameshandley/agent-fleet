@@ -68,7 +68,7 @@ class IdentityTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "fleet_next/ui.py").read_text()
         self.assertIn("fleet-next show --slot main {1}", source)
         self.assertIn('"--no-sort"', source)
-        self.assertIn('"--exact"', source)
+        self.assertIn("enable-search+toggle-sort", source)
         self.assertNotIn('"--nth=2.."', source)
         self.assertIn("change-prompt(Search: )", source)
 
