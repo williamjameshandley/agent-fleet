@@ -1,0 +1,12 @@
+[Unit]
+Description=Alan voice prompt composer
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/alan-composer
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

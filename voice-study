@@ -1,0 +1,151 @@
+#!/usr/bin/python3
+import json
+import time
+import wave
+from collections import deque
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import sounddevice as sd
+
+
+RATE = 16000
+FRAME = 1280
+START_LEVEL = 75
+STOP_LEVEL = 60
+SILENCE_FRAMES = 15
+ROOT = Path.home() / ".local/state/agent-fleet/voice-study"
+
+TRIALS = [
+    ("alan", "Alan.", 5, "Say the displayed words naturally."),
+    ("hey-alan", "Hey Alan.", 5, "Say the displayed words naturally."),
+    ("pause", "Alan, pause.", 6, "Say the displayed sentence naturally."),
+    ("resume", "Alan, resume.", 6, "Say the displayed sentence naturally."),
+    ("send", "Alan, send.", 6, "Say the displayed sentence naturally."),
+    ("cancel", "Alan, cancel.", 6, "Say the displayed sentence naturally."),
+    ("remove", "Alan, remove the previous sentence.", 8,
+     "Say the displayed sentence naturally."),
+    ("rename", "Alan, change Newton to Lovelace.", 8,
+     "Say the displayed sentence naturally."),
+    ("fleet", "Open the agent-fleet repository on Boltzmann and attach to Einstein zero on Newton.", 12,
+     "Say the displayed sentence naturally."),
+    ("path", "Please inspect slash home slash will slash github slash williamjameshandley slash agent-fleet.", 12,
+     "Say the displayed sentence naturally."),
+    ("jax", "Use JAX vmap, jit and grad to differentiate the log-likelihood.", 10,
+     "Say the displayed sentence naturally."),
+    ("arch", "Run pytest, rebuild the Arch package with makepkg, and restart the systemd user service.", 12,
+     "Say the displayed sentence naturally."),
+    ("samplers", "Compare PolyChord, UltraNest, blackjax and cobaya.", 10,
+     "Say the displayed sentence naturally."),
+    ("machines", "The session is running in tmux on Noether, not Lovelace.", 10,
+     "Say the displayed sentence naturally."),
+    ("pause-one", "I would like to review the repository before changing the implementation.", 12,
+     "Say 'I would like to review the repository', pause for ONE second, then finish the sentence."),
+    ("pause-three", "I would like to review the repository before changing the implementation.", 15,
+     "Say 'I would like to review the repository', pause for THREE seconds, then finish the sentence."),
+    ("correction", "I want to open the session on Newton, um, no, I mean the session on Lovelace, and then inspect the current repository before making any changes.", 20,
+     "Say the displayed sentence naturally, including 'um' and the self-correction."),
+    ("quiet", "Alan, open the session about Einstein and let me review the current repository.", 12,
+     "Say the displayed sentence QUIETLY."),
+    ("normal", "Alan, open the session about Einstein and let me review the current repository.", 12,
+     "Say the displayed sentence at normal conversational volume."),
+    ("long", "I would like you to review the current implementation carefully, work out why the session ordering is inconsistent, preserve anything that is still in flight, and then propose the smallest coherent change that uses tmux functionality rather than adding another layer of state. Do not close or replace any session merely because it appears inactive, because I may have deliberately left that loop open so that I can return to it tomorrow.", 45,
+     "Read the displayed paragraph naturally. Pauses and restarts are welcome."),
+    ("unaddressed", "I am reviewing the repository and deciding what to work on next.", 10,
+     "Say the displayed sentence without addressing Alan."),
+    ("distant", "I am reviewing the repository and deciding what to work on next.", 10,
+     "Move away from the microphone, then say the displayed sentence."),
+    ("keyboard", "", 10, "Do not speak. Type on the keyboard and use the mouse."),
+    ("silence", "", 10, "Remain quiet and let the room sound continue normally."),
+]
+
+
+def screen(*lines):
+    print("\033[2J\033[H", end="")
+    print("\n\n" + "\n\n".join(f"{line:^88}" for line in lines), flush=True)
+
+
+def record(path, seconds, fixed=False):
+    blocks = round(seconds * RATE / FRAME)
+    frames = []
+    recent = deque(maxlen=SILENCE_FRAMES)
+    heard = False
+    with sd.InputStream(samplerate=RATE, channels=1, dtype="int16",
+                        blocksize=FRAME) as stream:
+        for block in range(blocks):
+            frame, _ = stream.read(FRAME)
+            frames.append(frame.copy())
+            level = np.sqrt(np.mean(frame.astype(float) ** 2))
+            heard |= level >= START_LEVEL
+            recent.append(level < STOP_LEVEL)
+            if fixed:
+                remaining = seconds - (block + 1) * FRAME / RATE
+                print(f"\r{max(0, remaining):4.1f} seconds remaining", end="", flush=True)
+            elif heard and len(recent) == SILENCE_FRAMES and all(recent):
+                break
+    print()
+    audio = np.concatenate(frames)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(RATE)
+        output.writeframes(audio.tobytes())
+    return int(np.abs(audio.astype(np.int32)).max()), len(audio) / RATE
+
+
+def append(path, value):
+    with path.open("a") as output:
+        output.write(json.dumps(value, ensure_ascii=False) + "\n")
+        output.flush()
+
+
+def main():
+    root = ROOT / datetime.now().strftime("%Y%m%d-%H%M%S")
+    root.mkdir(parents=True)
+    prompts = root / "prompts.jsonl"
+    captures = root / "captures.jsonl"
+    created = datetime.now(timezone.utc).isoformat()
+    for number, (name, phrase, seconds, instruction) in enumerate(TRIALS, 1):
+        fixed = name in {"pause-one", "pause-three", "keyboard", "silence"}
+        append(prompts, {
+            "trial": number, "file": f"{number:02}-{name}.wav",
+            "text": phrase, "seconds": seconds, "instruction": instruction,
+            "boundary": "fixed" if fixed else "silence", "created": created,
+        })
+
+    screen("ALAN TRANSCRIPTION STUDY", f"{len(TRIALS)} recordings · about 8 minutes",
+           "Each prompt appears before a 3–2–1 countdown",
+           "Begin speaking when the screen says NOW",
+           "Ordinary recordings stop automatically after you finish speaking",
+           "Pause and no-speech tests show a fixed countdown",
+           "You do not need to press anything between recordings",
+           "Exact prompts have already been saved",
+           "Press Enter once to begin · Ctrl-C cancels safely")
+    input()
+    for number, (name, phrase, seconds, instruction) in enumerate(TRIALS, 1):
+        screen(f"RECORDING {number} OF {len(TRIALS)}", "GET READY", instruction,
+               phrase or "[NO SPEECH]")
+        time.sleep(3)
+        for count in (3, 2, 1):
+            screen(f"RECORDING {number} OF {len(TRIALS)}", instruction,
+                   phrase or "[NO SPEECH]", str(count))
+            time.sleep(0.7)
+        screen(f"RECORDING {number} OF {len(TRIALS)}", instruction,
+               phrase or "[NO SPEECH]", "NOW")
+        filename = f"{number:02}-{name}.wav"
+        fixed = name in {"pause-one", "pause-three", "keyboard", "silence"}
+        peak, duration = record(root / filename, seconds, fixed)
+        append(captures, {
+            "trial": number, "file": filename, "captured": datetime.now(timezone.utc).isoformat(),
+            "duration": duration, "peak": peak,
+        })
+        screen(f"CAPTURED {number} OF {len(TRIALS)}", phrase or "[NO SPEECH]",
+               f"{duration:.1f} seconds · peak {peak}", "Next recording shortly")
+        time.sleep(2)
+    screen("COMPLETE", str(root), "The window will close in 15 seconds")
+    time.sleep(15)
+
+
+if __name__ == "__main__":
+    main()

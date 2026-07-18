@@ -3,6 +3,7 @@ import subprocess
 import shlex
 import json
 import time
+from pathlib import Path
 
 from .config import hosts
 from .remote import find
@@ -10,7 +11,6 @@ from .daemon import preview as pane_preview, snapshot
 from .protocol import decode
 from .protocol import decode_message
 from . import viewer
-from .agent import LEGACY
 
 
 def host_command(host, *command, capture_output=False):
@@ -19,35 +19,59 @@ def host_command(host, *command, capture_output=False):
     return subprocess.run(argv, text=True, check=True, capture_output=capture_output)
 
 
-def legacy(host):
-    return str(LEGACY) if host == os.uname().nodename else "/usr/lib/agent-fleet/fleet-legacy"
-
-
-def choose(values, prompt):
-    result = subprocess.run(["fzf", "--prompt", prompt], input="\n".join(values) + "\n",
-                            text=True, capture_output=True)
+def desktop_input(prompt, values=(), fixed=False):
+    result = subprocess.run(
+        ["tmux", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
+        text=True, capture_output=True, check=True)
+    workstation = result.stdout.strip()
+    if not workstation:
+        raise SystemExit("Muster has no attached workstation")
+    command = ["env", "DISPLAY=:0", "rofi", "-dmenu", "-p", prompt,
+               "-location", "2", "-theme", "rofi"]
+    if fixed:
+        command.extend(("-i", "-no-custom"))
+    result = subprocess.run(
+        ["ssh", "-T", "-o", "BatchMode=yes", workstation, shlex.join(command)],
+        input="\n".join(values) + "\n", text=True, capture_output=True)
     if result.returncode:
         raise SystemExit(result.returncode)
     return result.stdout.strip()
 
 
+def agent_command(agent, name):
+    if agent == "claude":
+        return ["claude", "--dangerously-skip-permissions", "--name", name]
+    if agent == "codex":
+        return ["codex", "--sandbox", "danger-full-access",
+                "--ask-for-approval", "never"]
+    return [os.environ.get("SHELL", "/bin/sh")]
+
+
+def created_key(host, name):
+    result = host_command(host, "fleet-next", "snapshot", "--host", host,
+                          capture_output=True)
+    matches = [session.ref.key for session in decode(result.stdout)
+               if session.name == name]
+    if len(matches) != 1:
+        raise RuntimeError(f"created session {host}:{name} did not resolve uniquely")
+    return matches[0]
+
+
 def create():
-    host = choose(hosts(), "host> ")
-    agent = choose(["claude", "codex", "shell"], "agent> ")
-    name = input("session name: ").strip()
-    cwd = input("directory [home]: ").strip()
+    host = desktop_input("host", hosts(), fixed=True)
+    agent = desktop_input("agent", ("claude", "codex", "shell"), fixed=True)
+    name = desktop_input("session name")
+    cwd = desktop_input("directory", (str(Path.home()),)) or str(Path.home())
     if not name:
         raise SystemExit("session name is required")
-    command = os.environ.get("SHELL", "/bin/sh") if agent == "shell" else agent
-    arguments = ["tmux", "new-session", "-d", "-s", name]
-    if cwd:
-        arguments.extend(("-c", cwd))
-    host_command(host, *arguments, command)
+    host_command(host, "tmux", "new-session", "-d", "-s", name, "-c", cwd,
+                 *agent_command(agent, name))
+    viewer.request("main", created_key(host, name))
 
 
 def rename(key):
     session = find(key)
-    name = input(f"rename {session.name} to: ").strip()
+    name = desktop_input(f"rename {session.name}")
     if name:
         host_command(session.ref.server.host, "fleet-next", "mutate", key, "rename", name)
 
@@ -68,7 +92,7 @@ def dismiss_source(key):
         raise SystemExit("that source is not shown locally")
     for slot in shown:
         viewer.request(slot, "")
-    subprocess.run(["tmux", "display-message", "-t", "=fleet@muster",
+    subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
                     "Viewer dismissed; source session is still running"])
 
 
@@ -81,11 +105,12 @@ def history():
             for session in decode(snapshot()) if session.transcript_id}
     rows = []
     for host in hosts():
-        result = host_command(host, legacy(host), "_history", "-n", "100", capture_output=True)
+        result = host_command(host, "fleet-next", "transcripts", "--limit", "100",
+                              capture_output=True)
         for item in json.loads(result.stdout):
             if (host, item["agent"], item["session_id"]) not in live:
                 rows.append((item["mtime"], host, item))
-    for _, host, item in sorted(rows, reverse=True):
+    for _, host, item in sorted(rows, key=lambda row: row[0], reverse=True):
         key = f'{host}:{item["agent"]}:{item["session_id"]}'
         print("\t".join((key, host, item["agent"], item["name"], item["cwd"])))
 
@@ -95,25 +120,26 @@ def resurrect(key):
     if any((session.ref.server.host, session.agent, session.transcript_id) ==
            (host, agent, transcript) for session in decode(snapshot())):
         raise SystemExit("that transcript already has a live session")
-    name = input("new session name: ").strip()
+    name = desktop_input("new session name")
     if not name:
         raise SystemExit("session name is required")
-    host_command(host, legacy(host), "_resurrect", agent, transcript, name)
+    host_command(host, "fleet-next", "resume", agent, transcript, name)
+    viewer.request("main", created_key(host, name))
 
 
 def arrive(profile, available=False):
     sessions, _, unavailable = decode_message(snapshot())
     if unavailable and not available:
         raise SystemExit("inventory incomplete; unavailable: " + " ".join(unavailable))
-    result = subprocess.run(["tmux", "show-options", "-v", "-t", "=fleet@muster",
+    result = subprocess.run(["tmux", "show-options", "-gv",
                              "@fleet_profile"], text=True, capture_output=True)
     current = result.stdout.strip() if result.returncode == 0 else ""
     if current == profile:
         return
     epoch = str(time.time_ns())
-    subprocess.run(["tmux", "set-option", "-t", "=fleet@muster", "@fleet_profile", profile],
+    subprocess.run(["tmux", "set-option", "-g", "@fleet_profile", profile],
                    check=True)
-    subprocess.run(["tmux", "set-option", "-t", "=fleet@muster", "@fleet_epoch", epoch],
+    subprocess.run(["tmux", "set-option", "-g", "@fleet_epoch", epoch],
                    check=True)
     placements = viewer.slots()
     free = [slot for slot, source in placements if not source]
@@ -144,7 +170,7 @@ def focused_slot():
 
 def context():
     sessions, _, unavailable = decode_message(snapshot())
-    profile = subprocess.run(["tmux", "show-options", "-v", "-t", "=fleet@muster",
+    profile = subprocess.run(["tmux", "show-options", "-gv",
                               "@fleet_profile"], text=True, capture_output=True).stdout.strip()
     data = {
         "profile": profile,
@@ -156,3 +182,20 @@ def context():
                      for s in sessions],
     }
     print(json.dumps(data, indent=2))
+
+
+def commander_context():
+    local = json.loads(subprocess.run(["fleet-next", "context"], text=True,
+                                      capture_output=True, check=True).stdout)
+    environment = {**os.environ,
+                   "SSH_AUTH_SOCK": f"/run/user/{os.getuid()}/gnupg/S.gpg-agent.ssh"}
+    workstations = {}
+    for host in ("boltzmann", "noether", "newton"):
+        remote = json.loads(subprocess.run(
+            ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet-next context"],
+            text=True, capture_output=True, check=True, env=environment).stdout)
+        workstations[host] = {key: remote[key]
+                              for key in ("profile", "unavailable", "slots")}
+    print(json.dumps({"sessions": local["sessions"],
+                      "unavailable": local["unavailable"],
+                      "workstations": workstations}, indent=2))

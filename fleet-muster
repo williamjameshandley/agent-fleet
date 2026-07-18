@@ -1,4 +1,14 @@
 #!/bin/sh
+hub=lovelace
+if [ "$(hostname -s)" != "$hub" ]; then
+    exec ssh -tt -o BatchMode=yes "$hub" fleet-muster --workstation "$(hostname -s)"
+fi
+if [ "$1" = --workstation ]; then
+    case "$2" in *[!A-Za-z0-9_-]*|'') exit 2;; esac
+    workstation=$2
+elif [ "$#" -ne 0 ]; then
+    exit 2
+fi
 systemctl --user start fleet-next.service || exit
 runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet/fleet.sock
 i=0
@@ -7,8 +17,10 @@ while [ ! -S "$runtime" ]; do
     [ "$i" -lt 100 ] || { echo "fleet-next service did not become ready" >&2; exit 1; }
     sleep .05
 done
-if ! tmux has-session -t =fleet@muster 2>/dev/null; then
+if ! tmux has-session -t fleet@muster 2>/dev/null; then
     tmux new-session -d -s fleet@muster -n live 'exec fleet-next items | exec fleet-next muster'
-    tmux new-window -d -t =fleet@muster -n history 'exec fleet-next history-rows | exec fleet-next history-ui'
 fi
-exec tmux -u attach-session -t =fleet@muster
+tmux list-windows -t fleet@muster -F '#{window_name}' | grep -qx history ||
+    tmux new-window -d -t fleet@muster -n history 'exec fleet-next history-rows | exec fleet-next history-ui'
+[ -z "$workstation" ] || tmux set-option -t fleet@muster @fleet_workstation "$workstation"
+exec tmux -u attach-session -t fleet@muster

@@ -30,6 +30,20 @@ class UsageTests(unittest.TestCase):
         self.assertIn("5h [--------]   0%/0h", text)
         self.assertIn("7d [--------]   4%", text)
 
+    def test_claude_keeps_usage_when_reset_is_unavailable(self):
+        body = {"limits": [
+            {"kind": "session", "percent": 99, "resets_at": None},
+            {"kind": "weekly_all", "percent": 95,
+             "resets_at": "2026-07-17T01:00:00Z"},
+        ]}
+        credentials = {"claudeAiOauth": {"accessToken": "test"}}
+        with patch.object(usage.Path, "read_text", return_value=json.dumps(credentials)), \
+             patch.object(usage.urllib.request, "urlopen",
+                          return_value=io.StringIO(json.dumps(body))):
+            text = usage.claude()
+        self.assertIn("5h [########]  99%/0h", text)
+        self.assertIn("7d [########]  95%", text)
+
     def test_unknown_codex_window_is_drift(self):
         body = {"accounts": [{"status": "active", "quota": {
             "rate_limit": {"used_percent": 1, "reset_at": 1,

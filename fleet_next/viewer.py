@@ -6,7 +6,7 @@ import socket
 import subprocess
 import re
 
-from .config import RUNTIME
+from .config import HUB, RUNTIME
 from .tmux import inventory
 from .remote import find
 
@@ -26,7 +26,7 @@ def exchange(slot, message):
     with socket.socket(socket.AF_UNIX) as client:
         try:
             client.connect(str(path))
-        except FileNotFoundError:
+        except (FileNotFoundError, ConnectionRefusedError):
             raise SystemExit(f"viewer slot {slot!r} is not running")
         client.sendall((message + "\n").encode())
         reply = client.makefile().readline().strip()
@@ -37,6 +37,18 @@ def exchange(slot, message):
 
 def request(slot, key):
     exchange(slot, f"OPEN {key}" if key else "CLEAR")
+    if key and slot == "main" and os.uname().nodename.split(".", 1)[0] == HUB:
+        result = subprocess.run(["tmux", "show-options", "-qv", "-t", "fleet@muster",
+                                 "@fleet_workstation"], text=True,
+                                capture_output=True, check=True)
+        workstation = result.stdout.strip()
+        if workstation:
+            focus = shlex.join(("env", "DISPLAY=:0", "i3-msg",
+                                '[instance="fleet-main"] focus'))
+            subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", workstation,
+                            focus], check=True,
+                           stdout=subprocess.DEVNULL)
+        return
     if key:
         subprocess.run(["i3-msg", f'[instance="fleet-{slot}"] focus'],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -48,7 +60,7 @@ def slots():
         slot = path.name.removeprefix("viewer-").removesuffix(".sock")
         try:
             found.append((slot, exchange(slot, "STATUS")))
-        except ConnectionRefusedError:
+        except SystemExit:
             continue
     return found
 
@@ -80,7 +92,7 @@ def show(key, slot=None):
         if not source:
             request(name, key)
             return
-    subprocess.run(["tmux", "display-message", "-t", "=fleet@muster",
+    subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
                     "All viewer slots are occupied; choose a slot explicitly"])
 
 
@@ -125,7 +137,9 @@ def serve(slot):
                     child.wait()
                 source = key
                 try:
-                    child = subprocess.Popen(command(key)) if key else None
+                    environment = {name: value for name, value in os.environ.items()
+                                   if name not in {"TMUX", "TMUX_PANE"}}
+                    child = subprocess.Popen(command(key), env=environment) if key else None
                 except OSError as error:
                     connection.sendall((f"ERROR {error}\n").encode())
                     connection.close()

@@ -46,7 +46,9 @@ def claude():
             continue
         else:
             raise ValueError(f"unknown limit kind {limit['kind']!r}")
-        reset = datetime.fromisoformat(limit["resets_at"].replace("Z", "+00:00")).timestamp()
+        value = limit["resets_at"]
+        reset = (datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+                 if value else None)
         fields[name] = field(name, limit["percent"], reset)
     return "  ".join(fields[name] for name in ("5h", "7d"))
 

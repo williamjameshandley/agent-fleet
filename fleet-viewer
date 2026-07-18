@@ -1,4 +1,21 @@
 #!/bin/sh
 slot=${1:-main}
 case "$slot" in *[!A-Za-z0-9_-]*|'') exit 2;; esac
+if [ "$slot" = main ]; then
+    if [ "$(hostname -s)" != lovelace ]; then
+        exec ssh -tt -o BatchMode=yes lovelace fleet-viewer main
+    fi
+    if tmux has-session -t fleet@main 2>/dev/null && ! fleet-next viewer-status main >/dev/null 2>&1; then
+        tmux kill-session -t fleet@main
+    fi
+    if ! tmux has-session -t fleet@main 2>/dev/null; then
+        tmux new-session -d -s fleet@main 'exec fleet-next viewer --slot main'
+        tmux set-option -t fleet@main status off
+        tmux set-option -t fleet@main prefix None
+        tmux set-option -t fleet@main prefix2 None
+        tmux set-option -t fleet@main mouse off
+        tmux set-option -t fleet@main window-size latest
+    fi
+    exec tmux -u attach-session -t fleet@main
+fi
 exec fleet-next viewer --slot "$slot"

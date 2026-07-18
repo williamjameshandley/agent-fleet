@@ -1,3 +1,11 @@
 #!/bin/sh
-prompt='You are the read-only Fleet Commander. Run fleet-next context before resolving spatial requests. Propose only typed show, dismiss, arrive, create, rename, and done actions over exact source and slot IDs. Never run an action yourself, and never propose killing or closing a tmux session. At capacity suggest replacements and wait for explicit instruction.'
-exec tmux -u new-session -A -s fleet@commander "exec claude --permission-mode plan --tools Bash --allowedTools 'Bash(fleet-next context)' --append-system-prompt '$prompt'"
+if [ "$(hostname -s)" != lovelace ]; then
+    exec ssh -tt -o BatchMode=yes lovelace fleet-commander "$@"
+fi
+id=$(jq -r 'select(.thread_name == "commander") | .id' \
+    /home/will/.codex/session_index.jsonl | tail -n 1)
+command="cd /home/will && exec codex --sandbox danger-full-access resume $id"
+if [ "$1" = restart ] && tmux has-session -t fleet@commander 2>/dev/null; then
+    tmux respawn-pane -k -t fleet@commander:0.0 "$command"
+fi
+exec tmux -u new-session -A -s fleet@commander "$command"

@@ -1,5 +1,6 @@
 [Unit]
-Description=Agent Fleet event collector
+Description=Agent Fleet central event collector
+ConditionHost=lovelace
 After=network-online.target
 
 [Service]

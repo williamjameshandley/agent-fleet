@@ -16,8 +16,12 @@ machines, operable with one hand and eventually none.
 
 ## Safety and spatial behavior
 
-- Fleet exposes no delete or purge and never invokes `kill-session`,
-  `kill-window` or `unlink-window`.
+- Fleet never invokes `kill-window` or `unlink-window`, and never destroys a
+  session implicitly. Explicit user-approved archive records the vendor
+  conversation identity in recoverable History before closing the live tmux
+  session, and refuses to close if resurrection cannot be established. Restore
+  resumes the full vendor conversation rather than requesting compression.
+  There is no permanent purge.
 - Dismiss affects only a viewer. Rename and create target revalidated source
   identities. Transcript resurrection creates a new source session.
 - Existing occupied deck slots do not move or get reclaimed automatically.
@@ -33,9 +37,9 @@ machines, operable with one hand and eventually none.
   custom UI machinery. Keep code lean and comments factual.
 - Do not add defensive fallbacks that guess identities or hide drift. Translate
   boundary failures into visible errors. Never retry by session name or recency.
-- No persistent JSON state. Runtime sockets and in-memory projections are
-  disposable. Workstation epoch/profile state, when implemented, lives in the
-  local `fleet@muster` tmux session; actual placement comes from i3.
+- No persistent JSON state. Lovelace owns the sole disposable in-memory
+  projection and the global `fleet@muster` and `fleet@main` sessions. Actual
+  named-viewer placement remains workstation-local and comes from i3.
 - Verify installed tmux, SSH, fzf and agent behavior experimentally. In
   particular, control observers attach with `ignore-size`, shell-bound remote
   arguments use `shlex.join`, and tmux `#{q:}` fields are parsed with `shlex`.
@@ -43,8 +47,13 @@ machines, operable with one hand and eventually none.
 ## Voice and Commander
 
 Commander proposes typed, non-destructive actions over canonical sources and
-slots; deterministic Fleet code validates and executes them. Dictation inserts
-literal text into the genuinely focused viewer and never implies Enter. Spoken
-submit remains disabled until wake-word evidence justifies it. mdgtd, agentic
-composition and shared keyboard/mouse control are later integrations, not Fleet
-core state.
+slots; deterministic Fleet code validates and executes them. Alan composition
+is specified in `VOICE_COMPOSER.md`: speech edits a visible draft and only the
+local `Alan, send` control sends its visible snapshot and presses Enter. The
+composer archives recoverable state but never becomes tmux topology authority.
+mdgtd and shared keyboard/mouse control remain later integrations.
+
+Commander transcript search is a composable Python API over Claude and Codex
+JSONL, optionally exposed by thin CLI commands. Do not introduce MCP servers or
+a bespoke tool protocol; this repository follows the post-MCP approach used by
+Alan Home and Alan Work.

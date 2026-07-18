@@ -1,6 +1,6 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=agent-fleet
-pkgver=0.2.0.r91
+pkgver=0.2.0.r121
 pkgrel=1
 pkgdesc='Awareness and one-keypress switching for a fleet of terminal AI-agent sessions in tmux'
 arch=('x86_64')
@@ -15,6 +15,10 @@ optdepends=(
     'python-openwakeword: wake-dryrun harness (the mic machine)'
     'python-sounddevice: wake-dryrun harness (the mic machine)'
     'python-numpy: wake-dryrun harness (the mic machine)'
+    'python-gobject: Alan composer interface (the mic machine)'
+    'python-groq: Alan transcription (the mic machine)'
+    'xdotool: Alan destination focus restoration (the mic machine)'
+    'ffmpeg: Alan ambient FLAC archive (the mic machine)'
 )
 source=()
 sha256sums=()
@@ -26,30 +30,34 @@ pkgver() {
   if git diff --quiet && git diff --cached --quiet; then
     printf '%s\n' "$version"
   else
-    hash=$(sha256sum fleet fleet-next fleet-preview.c fleet-muster fleet-viewer fleet-view \
-      fleet-deck fleet-office fleet-commander fleet_next/*.py fleet-usage tmux.conf \
+    hash=$(sha256sum fleet-next fleet-preview.c fleet-muster fleet-viewer fleet-view \
+      fleet-deck fleet-office fleet-commander fleet_next/*.py fleet-usage \
       fleet-next.service fleet-quota.service fleet-quota.timer \
-      wake-dryrun wake-dryrun.service LICENSE \
+      wake-dryrun wake-dryrun.service alan-composer alan-composer.service \
+      alan_composer/*.py LICENSE \
       | sha256sum | cut -c1-8)
     printf '%s.d%s\n' "$version" "$hash"
   fi
 }
 
 package() {
-  install -Dm755 "$startdir/fleet" "$pkgdir/usr/lib/agent-fleet/fleet-legacy"
   install -Dm755 "$startdir/fleet-next" "$pkgdir/usr/bin/fleet-next"
   for script in fleet-muster fleet-viewer fleet-view fleet-deck fleet-office fleet-commander; do
     install -Dm755 "$startdir/$script" "$pkgdir/usr/bin/$script"
   done
   install -Dm755 "$startdir/fleet-usage" "$pkgdir/usr/bin/fleet-usage"
+  install -d "$pkgdir/usr/lib/agent-fleet"
   cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
     "$startdir/fleet-preview.c" -o "$pkgdir/usr/lib/agent-fleet/fleet-preview" -lvterm
   local purelib="$pkgdir$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
   install -d "$purelib/fleet_next"
   install -m644 "$startdir"/fleet_next/*.py "$purelib/fleet_next/"
-  install -Dm644 "$startdir/tmux.conf" "$pkgdir/usr/share/agent-fleet/tmux.conf"
+  install -d "$purelib/alan_composer"
+  install -m644 "$startdir"/alan_composer/*.py "$purelib/alan_composer/"
   install -Dm755 "$startdir/wake-dryrun" "$pkgdir/usr/lib/agent-fleet/wake-dryrun"
   install -Dm644 "$startdir/wake-dryrun.service" "$pkgdir/usr/lib/systemd/user/wake-dryrun.service"
+  install -Dm755 "$startdir/alan-composer" "$pkgdir/usr/bin/alan-composer"
+  install -Dm644 "$startdir/alan-composer.service" "$pkgdir/usr/lib/systemd/user/alan-composer.service"
   install -Dm644 "$startdir/fleet-next.service" "$pkgdir/usr/lib/systemd/user/fleet-next.service"
   install -Dm644 "$startdir/fleet-quota.service" "$pkgdir/usr/lib/systemd/user/fleet-quota.service"
   install -Dm644 "$startdir/fleet-quota.timer" "$pkgdir/usr/lib/systemd/user/fleet-quota.timer"

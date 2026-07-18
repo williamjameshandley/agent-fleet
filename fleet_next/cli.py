@@ -5,32 +5,37 @@ import sys
 import threading
 
 from . import actions, ui, viewer
-from .daemon import Fleet
+from .daemon import Fleet, projection
 from .protocol import encode
 from .quota import read as quota_read, update as quota_update
 from .tmux import capture, event_stream, inventory, mutate
 from .config import RUNTIME, hosts
+from .transcripts import history as transcript_history, resume
 
 
 def events(args):
     lock = threading.Lock()
+    consumer = threading.Event()
 
     def emit(message):
         with lock:
             print(message, flush=True)
 
     def requests():
-        for line in sys.stdin:
-            request = json.loads(line)
-            try:
-                text = capture(request["key"], request["columns"], request["lines"])
-                response = {"preview": request["preview"], "text": text}
-            except RuntimeError as error:
-                response = {"preview": request["preview"], "error": str(error)}
-            emit(json.dumps(response, separators=(",", ":")))
+        try:
+            for line in sys.stdin:
+                request = json.loads(line)
+                try:
+                    text = capture(request["key"], request["columns"], request["lines"])
+                    response = {"preview": request["preview"], "text": text}
+                except RuntimeError as error:
+                    response = {"preview": request["preview"], "error": str(error)}
+                emit(json.dumps(response, separators=(",", ":")))
+        finally:
+            consumer.set()
 
     threading.Thread(target=requests, daemon=True).start()
-    for sessions in event_stream(args.host):
+    for sessions in event_stream(args.host, consumer):
         usage = quota_read() if args.host == hosts()[0] else {}
         emit(encode(sessions, usage))
 
@@ -53,6 +58,7 @@ def main():
         item = command(name, fn)
         item.add_argument("--host", required=True)
     command("serve", lambda _: asyncio.run(Fleet().serve()))
+    command("projection", lambda _: print(projection(), end=""))
     command("quota", lambda _: quota_update())
     command("rows", lambda _: ui.rows())
     command("items", lambda _: ui.rows(include_header=False))
@@ -60,12 +66,19 @@ def main():
     command("muster", lambda _: ui.muster())
     command("history-ui", lambda _: ui.history())
     command("history-rows", lambda _: actions.history())
+    item = command("transcripts", lambda a: print(json.dumps(transcript_history(a.limit))))
+    item.add_argument("--limit", type=int, default=100)
+    item = command("resume", lambda a: resume(a.agent, a.session, a.name))
+    item.add_argument("agent", choices=("claude", "codex"))
+    item.add_argument("session")
+    item.add_argument("name")
     item = command("resurrect", lambda a: actions.resurrect(a.key))
     item.add_argument("key")
     item = command("arrive", lambda a: actions.arrive(a.profile, a.available))
     item.add_argument("profile", choices=("laptop", "home", "office"))
     item.add_argument("--available", action="store_true")
     command("context", lambda _: actions.context())
+    command("commander-context", lambda _: actions.commander_context())
     item = command("mutate", lambda a: mutate(a.key, a.operation, a.arguments))
     item.add_argument("key")
     item.add_argument("operation")
@@ -74,6 +87,8 @@ def main():
                                   (RUNTIME / "fleet.changed").touch()))
     item = command("viewer", lambda a: viewer.serve(a.slot))
     item.add_argument("--slot", default="main")
+    item = command("viewer-status", lambda a: print(viewer.exchange(a.slot, "STATUS")))
+    item.add_argument("slot", nargs="?", default="main")
     item = command("show", lambda a: viewer.show(a.key, a.slot))
     item.add_argument("key")
     item.add_argument("--slot")
