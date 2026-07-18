@@ -46,7 +46,7 @@ def request(slot, key):
             focus = shlex.join(("env", "DISPLAY=:0", "i3-msg",
                                 '[instance="fleet-main"] focus'))
             subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", workstation,
-                            focus], check=True,
+                            focus], check=True, env=ssh_environment(),
                            stdout=subprocess.DEVNULL)
         return
     if key:
