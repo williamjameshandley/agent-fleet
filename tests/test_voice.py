@@ -1,11 +1,13 @@
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
 from alan_composer.archive import Archive
 from alan_composer.audio import Segmenter
 from alan_composer.model import Composition, Mode, classify
+from alan_composer.transcribe import text
 
 
 class VoiceModelTests(unittest.TestCase):
@@ -77,6 +79,14 @@ class VoiceModelTests(unittest.TestCase):
         for _ in range(21):
             segmenter.feed(np.zeros(1280, dtype="int16"))
         self.assertEqual(complete, [])
+
+    def test_transcription_confidence_rejects_prompt_hallucination(self):
+        weak = SimpleNamespace(text="Fowlie, Krylov",
+                               segments=[{"avg_logprob": -.626}])
+        strong = SimpleNamespace(text="actual distant speech",
+                                 segments=[{"avg_logprob": -.13}])
+        self.assertEqual(text(weak), "")
+        self.assertEqual(text(strong), "actual distant speech")
 
 
 if __name__ == "__main__":

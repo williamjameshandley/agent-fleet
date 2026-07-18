@@ -121,6 +121,11 @@ class Composer:
                                     audio=pending[2])
             return False
         self.composition = replace(self.composition, queued=self.composition.queued - 1)
+        if not raw:
+            self.archive.record(self.composition, "discarded", audio=pending[2])
+            self._log("Non-speech discarded")
+            self._render_status("LISTENING")
+            return False
         kind, value = classify(raw, opening=pending[3])
         self.archive.record(self.composition, "transcribed", raw=raw, kind=kind)
         if kind == "control":
