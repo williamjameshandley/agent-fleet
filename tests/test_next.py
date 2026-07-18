@@ -60,6 +60,8 @@ class IdentityTests(unittest.TestCase):
         main = (root / "fleet-viewer").read_text()
         service = (root / "fleet-next.service").read_text()
         self.assertIn('exec ssh -tt -o BatchMode=yes "$hub" fleet-muster', muster)
+        self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
+                      muster)
         self.assertIn("new-session -d -s fleet@main", main)
         self.assertIn("set-option -t fleet@main prefix None", main)
         self.assertIn("fleet-next viewer-status main", main)
@@ -85,6 +87,7 @@ class IdentityTests(unittest.TestCase):
     def test_viewer_uses_stable_agent_environment(self):
         source = (Path(__file__).parents[1] / "fleet_next/viewer.py").read_text()
         self.assertIn("ssh_environment().items()", source)
+        self.assertIn("focus], check=True, env=ssh_environment()", source)
 
     def test_management_prompts_never_read_raw_terminal_input(self):
         source = (Path(__file__).parents[1] / "fleet_next/actions.py").read_text()
