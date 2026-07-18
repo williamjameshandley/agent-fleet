@@ -11,6 +11,7 @@ from fleet_next.protocol import decode, encode
 from fleet_next.ui import STATE_ORDER
 from fleet_next.tmux import split_key
 from fleet_next.actions import agent_command
+from fleet_next.config import ssh_environment
 
 
 class IdentityTests(unittest.TestCase):
@@ -75,6 +76,15 @@ class IdentityTests(unittest.TestCase):
     def test_named_viewers_remain_local(self):
         launcher = (Path(__file__).parents[1] / "fleet-viewer").read_text()
         self.assertTrue(launcher.rstrip().endswith('exec fleet-next viewer --slot "$slot"'))
+
+    def test_ssh_environment_uses_stable_agent_socket(self):
+        environment = ssh_environment()
+        self.assertEqual(environment["SSH_AUTH_SOCK"],
+                         f"/run/user/{os.getuid()}/gnupg/S.gpg-agent.ssh")
+
+    def test_viewer_uses_stable_agent_environment(self):
+        source = (Path(__file__).parents[1] / "fleet_next/viewer.py").read_text()
+        self.assertIn("ssh_environment().items()", source)
 
     def test_management_prompts_never_read_raw_terminal_input(self):
         source = (Path(__file__).parents[1] / "fleet_next/actions.py").read_text()

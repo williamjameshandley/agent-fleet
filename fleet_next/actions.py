@@ -5,7 +5,7 @@ import json
 import time
 from pathlib import Path
 
-from .config import hosts
+from .config import hosts, ssh_environment
 from .remote import find
 from .daemon import preview as pane_preview, snapshot
 from .protocol import decode
@@ -187,8 +187,7 @@ def context():
 def commander_context():
     local = json.loads(subprocess.run(["fleet-next", "context"], text=True,
                                       capture_output=True, check=True).stdout)
-    environment = {**os.environ,
-                   "SSH_AUTH_SOCK": f"/run/user/{os.getuid()}/gnupg/S.gpg-agent.ssh"}
+    environment = ssh_environment()
     workstations = {}
     for host in ("boltzmann", "noether", "newton"):
         remote = json.loads(subprocess.run(

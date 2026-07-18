@@ -6,7 +6,7 @@ import socket
 import subprocess
 import re
 
-from .config import HUB, RUNTIME
+from .config import HUB, RUNTIME, ssh_environment
 from .tmux import inventory
 from .remote import find
 
@@ -137,7 +137,7 @@ def serve(slot):
                     child.wait()
                 source = key
                 try:
-                    environment = {name: value for name, value in os.environ.items()
+                    environment = {name: value for name, value in ssh_environment().items()
                                    if name not in {"TMUX", "TMUX_PANE"}}
                     child = subprocess.Popen(command(key), env=environment) if key else None
                 except OSError as error:
