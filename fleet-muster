@@ -1,4 +1,5 @@
 #!/bin/sh
+export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"
 hub=lovelace
 if [ "$(hostname -s)" != "$hub" ]; then
     exec ssh -tt -o BatchMode=yes "$hub" fleet-muster --workstation "$(hostname -s)"
