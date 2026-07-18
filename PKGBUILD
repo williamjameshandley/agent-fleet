@@ -1,6 +1,6 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=agent-fleet
-pkgver=0.3.0.r99
+pkgver=0.3.0.r1784390400.g0000000
 pkgrel=1
 pkgdesc='Awareness and one-keypress switching for a fleet of terminal AI-agent sessions in tmux'
 arch=('x86_64')
@@ -23,7 +23,9 @@ source=()
 sha256sums=()
 
 pkgver() {
-  printf '0.3.0.r%s\n' "$(git -C "$startdir" rev-list --count HEAD)"
+  printf '0.3.0.r%s.g%s\n' \
+    "$(git -C "$startdir" show -s --format=%ct HEAD)" \
+    "$(git -C "$startdir" rev-parse --short=7 HEAD)"
 }
 
 package() {
