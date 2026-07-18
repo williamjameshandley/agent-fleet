@@ -19,7 +19,7 @@ The screen is the commit boundary.
 - The bar always distinguishes recording, paused, transcribing, editing and
   unavailable states. It displays the selected machine, session, window and
   pane, or an unmistakable `NO DESTINATION`.
-- Raw Groq text appears immediately. A tool-using agent then cleans the new
+- Raw Nemotron text appears immediately. A tool-using agent then cleans the new
   segment while dictation continues. Changed spans are briefly highlighted.
   The first cleanup pass may be strong; settled text has a bias toward stability.
 - High-confidence technical corrections and path resolutions may enter the
@@ -57,10 +57,11 @@ and focus restoration, not for simulating typed text.
 
 ## Transcription and editing
 
-Groq Whisper is the initial transcription backend because it is already proven
-on Boltzmann. A local Lovelace backend must remain substitutable. Network failure
+The composer streams PCM through Alan Home's authenticated full-duplex audio
+ingress. Lovelace's Nemotron renderer owns speech endpointing and returns committed
+transcript events; Agent Fleet owns no VAD or recognition model. Network failure
 does not stop recording: utterances queue locally in order and the bar shows a
-persistent urgent status such as `GROQ UNAVAILABLE · 3 QUEUED`. Late results may
+persistent urgent status such as `TRANSCRIPTION UNAVAILABLE · 3 QUEUED`. Late results may
 update an open composition but never reopen or alter a sent or cancelled one.
 
 The editing agent prioritizes contextual strength and tool use over minimum
@@ -74,7 +75,7 @@ sources and concise decisions, not private reasoning.
 
 During the initial study, all microphone audio on Boltzmann is retained locally,
 including closed, recording, paused and unavailable periods. Raw household audio
-does not leave Boltzmann; only utterances selected for Groq transcription do.
+is retained on Boltzmann and streamed only while the composer is listening.
 
 Each composition records time-aligned audio references, raw transcripts, wake
 boundaries, control classifications, draft revisions, agent instructions,

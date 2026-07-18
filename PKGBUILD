@@ -16,7 +16,6 @@ optdepends=(
     'python-sounddevice: wake-dryrun harness (the mic machine)'
     'python-numpy: wake-dryrun harness (the mic machine)'
     'python-gobject: Alan composer interface (the mic machine)'
-    'python-groq: Alan transcription (the mic machine)'
     'xdotool: Alan destination focus restoration (the mic machine)'
     'ffmpeg: Alan ambient FLAC archive (the mic machine)'
 )

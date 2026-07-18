@@ -1,13 +1,13 @@
+import io
+import json
 import tempfile
+import threading
 import unittest
-from types import SimpleNamespace
-
-import numpy as np
+from unittest.mock import patch
 
 from alan_composer.archive import Archive
-from alan_composer.audio import Segmenter
 from alan_composer.model import Composition, Mode, classify
-from alan_composer.transcribe import text
+from alan_composer.transcribe import Transcriber
 
 
 class VoiceModelTests(unittest.TestCase):
@@ -37,57 +37,45 @@ class VoiceModelTests(unittest.TestCase):
             self.assertEqual(len(archive.events.read_text().splitlines()), 2)
             self.assertEqual(archive.latest()["draft"], "recover me")
 
-    def test_segmenter_preroll_and_stop(self):
-        class Detector:
+    def test_alan_home_stream_is_full_duplex(self):
+        received = []
+        done = threading.Event()
+
+        class FakeSocket:
             def __init__(self):
-                self.scores = iter([.3, .4, .8, *([.05] * 15)])
-                self.frames = []
+                self.sent = []
 
-            def predict(self, _block, frame_size):
-                self.frames.append(frame_size)
-                return next(self.scores)
+            def sendall(self, data):
+                self.sent.append(data)
 
-            def reset_states(self):
-                pass
+            def makefile(self):
+                return io.StringIO(
+                    '{"ok": true}\n'
+                    '{"type":"utterance","text":"hello"}\n')
 
-        complete = []
-        detector = Detector()
-        segmenter = Segmenter(complete.append, detector)
-        block = np.zeros(1280, dtype="int16")
-        segmenter.start()
-        for _ in range(18):
-            segmenter.feed(block)
-        self.assertEqual(len(complete[0]), 1280 * 3 * 2)
-        self.assertEqual(set(detector.frames), {640})
-        segmenter.stop()
-        self.assertEqual(segmenter.blocks, [])
+            def shutdown(self, _direction):
+                done.set()
 
-    def test_segmenter_rejects_an_isolated_vad_spike(self):
-        class Detector:
-            def __init__(self):
-                self.scores = iter([.3, *([.01] * 20)])
+        sock = FakeSocket()
+        auth = io.BytesIO(
+            b'endpoint_id="composer-boltzmann"\nauth_token="secret"\n')
+        transcriber = Transcriber(received.append)
+        with patch("urllib.request.urlopen", return_value=auth), \
+                patch("socket.create_connection", return_value=sock):
+            transcriber.start()
+            transcriber.feed(memoryview(b"pcm"))
+            transcriber.stop()
 
-            def predict(self, _block, frame_size):
-                return next(self.scores)
-
-            def reset_states(self):
-                pass
-
-        complete = []
-        segmenter = Segmenter(complete.append, Detector())
-        segmenter.start()
-        for _ in range(21):
-            segmenter.feed(np.zeros(1280, dtype="int16"))
-        self.assertEqual(complete, [])
-
-    def test_transcription_confidence_rejects_prompt_hallucination(self):
-        weak = SimpleNamespace(text="Fowlie, Krylov",
-                               segments=[{"avg_logprob": -.626}])
-        strong = SimpleNamespace(text="actual distant speech",
-                                 segments=[{"avg_logprob": -.13}])
-        self.assertEqual(text(weak), "")
-        self.assertEqual(text(strong), "actual distant speech")
-
+        self.assertTrue(done.wait(1))
+        header = json.loads(sock.sent[0])
+        self.assertEqual(header["protocol"], "alan-audio/2")
+        self.assertEqual(header["endpoint_id"], "composer-boltzmann")
+        self.assertEqual(sock.sent[1], b"pcm")
+        for _ in range(100):
+            if received:
+                break
+            done.wait(.01)
+        self.assertEqual(received, ["hello"])
 
 if __name__ == "__main__":
     unittest.main()

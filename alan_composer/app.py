@@ -13,7 +13,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from .archive import Archive, ROOT
-from .audio import Capture, RATE, Segmenter, WakeDetector
+from .audio import Capture, WakeDetector
 from . import delivery, destination
 from .editor import edit
 from .model import Composition, Destination, Mode, classify
@@ -28,12 +28,10 @@ class Composer:
     def __init__(self):
         self.composition = None
         self.archive = Archive()
-        self.transcriber = Transcriber()
+        self.transcriber = Transcriber(self._utterance)
         self.pool = ThreadPoolExecutor(max_workers=3)
-        self.pending = {}
         self.opening_from_wake = False
         self.paused_wake = False
-        self.segmenter = Segmenter(self._segment)
         self.window, self.entry, self.status, self.target, self.activity = self._window()
         self.entry.connect("changed", self._entry_changed)
         self.wake = None
@@ -51,7 +49,7 @@ class Composer:
             return
         self.composition = Composition(destination=destination.capture())
         self.opening_from_wake = wake
-        self.segmenter.start(preroll)
+        self.transcriber.start(preroll)
         self.entry.set_text("")
         self.activity.set_text("")
         self._show("LISTENING", "Opened")
@@ -63,7 +61,7 @@ class Composer:
             return
         target = Destination(**item["destination"]) if item.get("destination") else None
         self.composition = Composition(draft=item["draft"], destination=target)
-        self.segmenter.start()
+        self.transcriber.start()
         self.entry.set_text(item["draft"])
         self.entry.set_position(-1)
         self.activity.set_text("")
@@ -72,7 +70,8 @@ class Composer:
                             source=item["composition"], destination=self._destination_data())
 
     def _audio(self, block):
-        self.segmenter.feed(block)
+        if self.composition and self.composition.mode is Mode.RECORDING:
+            self.transcriber.feed(block)
         if self.wake and (not self.composition or self.composition.mode is Mode.PAUSED):
             self.wake.feed(block)
 
@@ -82,51 +81,20 @@ class Composer:
     def _activate_wake(self, preroll):
         if self.composition and self.composition.mode is Mode.PAUSED:
             self.paused_wake = True
-            self.segmenter.start(preroll)
+            self.transcriber.start(preroll)
         else:
             self.open(preroll, True)
         return False
 
-    def _segment(self, audio):
-        if not self.composition or (
-                self.composition.mode is not Mode.RECORDING and not self.paused_wake):
-            return
-        current = self.composition
-        if self.paused_wake:
-            self.paused_wake = False
-            self.segmenter.stop()
-        self.composition = replace(current, queued=current.queued + 1)
-        token = object()
-        path = self.archive.audio(current, audio, RATE)
+    def _utterance(self, raw):
+        GLib.idle_add(self._raw, raw)
+
+    def _raw(self, raw):
+        if not self.composition:
+            return False
         opening = self.opening_from_wake
         self.opening_from_wake = False
-        self.pending[token] = (current, audio, str(path), opening)
-        self.archive.record(current, "utterance", audio=str(path))
-        GLib.idle_add(self._render_status, "TRANSCRIBING")
-        self.pool.submit(self._transcribe, token, current.id, audio)
-
-    def _transcribe(self, token, composition_id, audio):
-        try:
-            raw = self.transcriber(audio, RATE)
-        except Exception as error:
-            GLib.idle_add(self._transcription_failed, token, composition_id, str(error))
-            return
-        GLib.idle_add(self._raw, token, composition_id, raw)
-
-    def _raw(self, token, composition_id, raw):
-        pending = self.pending.pop(token, None)
-        if not self.composition or self.composition.id != composition_id:
-            if pending:
-                self.archive.record(pending[0], "late_transcription", raw=raw,
-                                    audio=pending[2])
-            return False
-        self.composition = replace(self.composition, queued=self.composition.queued - 1)
-        if not raw:
-            self.archive.record(self.composition, "discarded", audio=pending[2])
-            self._log("Non-speech discarded")
-            self._render_status("LISTENING")
-            return False
-        kind, value = classify(raw, opening=pending[3])
+        kind, value = classify(raw, opening=opening)
         self.archive.record(self.composition, "transcribed", raw=raw, kind=kind)
         if kind == "control":
             self._control(value)
@@ -176,13 +144,12 @@ class Composer:
     def _control(self, command):
         if command == "pause":
             self.composition = self.composition.pause()
-            self.segmenter.stop()
+            self.transcriber.stop()
             if self.wake:
                 self.wake.reset()
             self._render_status("PAUSED")
         elif command == "resume":
             self.composition = self.composition.resume()
-            self.segmenter.start()
             self._render_status("LISTENING")
         elif command == "cancel":
             self._close("cancelled")
@@ -208,7 +175,7 @@ class Composer:
             self.archive.record(self.composition, outcome, draft=self.entry.get_text(),
                                 destination=self._destination_data())
         self.composition = None
-        self.segmenter.stop()
+        self.transcriber.stop()
         if self.wake:
             self.wake.reset()
         self.window.hide()
@@ -267,20 +234,6 @@ class Composer:
         if self.composition and self.composition.queued:
             value += f" · {self.composition.queued} QUEUED"
         self.status.set_text(value)
-        return False
-
-    def _transcription_failed(self, token, composition_id, error):
-        if self.composition and self.composition.id == composition_id:
-            self._render_status("GROQ UNAVAILABLE")
-            self._log(error)
-        GLib.timeout_add_seconds(5, self._retry, token)
-        return False
-
-    def _retry(self, token):
-        pending = self.pending.get(token)
-        if pending:
-            composition, audio, _path = pending
-            self.pool.submit(self._transcribe, token, composition.id, audio)
         return False
 
     def _log(self, message):
