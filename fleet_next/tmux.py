@@ -99,8 +99,10 @@ def event_stream(host, consumer=None):
                                Path.home() / ".codex/sessions", RUNTIME) if path.exists()]
     if paths:
         def transcripts():
-            for _ in watch(*paths):
-                changed.put("transcript")
+            quota_path = RUNTIME / "quota.changed"
+            for changes in watch(*paths):
+                changed.put("quota" if any(Path(path) == quota_path for _, path in changes)
+                            else "transcript")
         threading.Thread(target=transcripts, daemon=True).start()
     tmux = server()
     if not tmux.has_session("fleet@events"):
@@ -125,6 +127,7 @@ def event_stream(host, consumer=None):
         changed.put("closed")
     threading.Thread(target=topology, daemon=True).start()
     previous = None
+    force = False
     agent_cache = {}
     try:
         while True:
@@ -141,17 +144,19 @@ def event_stream(host, consumer=None):
                            if (cached := agent_cache.get(session.ref)) else session
                            for session in current]
             serial = tuple(current)
-            if serial != previous:
+            if serial != previous or force:
                 yield current
                 previous = serial
+                force = False
             if consumer and consumer.is_set():
                 return
-            event = changed.get()
+            events = {changed.get()}
             while not changed.empty():
-                event = changed.get_nowait()
+                events.add(changed.get_nowait())
             if consumer and consumer.is_set():
                 return
-            if event == "closed" or process.poll() is not None:
+            force = "quota" in events
+            if "closed" in events or process.poll() is not None:
                 error = process.stderr.read().strip() if process.stderr else ""
                 raise RuntimeError(error or "tmux control client closed")
     finally:
