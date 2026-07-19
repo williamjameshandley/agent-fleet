@@ -167,6 +167,11 @@ def attach(key):
             os.execvp("jupyter", ["jupyter", "console", "--existing",
                                    attachment["connection_file"]])
             return
+        if attachment.get("kind") == "codex":
+            os.execvp("codex", ["codex", "resume", "--remote",
+                                "unix://" + attachment["socket"],
+                                attachment["thread_id"]])
+            return
         raise SystemExit(f"actor {session.ref.session_id} has no supported attachment")
     host = session.ref.server.host
     current = [s for s in inventory(host) if s.ref.key == key]

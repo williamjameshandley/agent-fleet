@@ -112,5 +112,9 @@ def spawn_python(label, cwd):
     return request({"op": "spawn", "source": "python", "label": label, "cwd": cwd})["addr"]
 
 
+def spawn_codex(label, cwd):
+    return request({"op": "spawn", "source": "codex", "label": label, "cwd": cwd})["addr"]
+
+
 def rename(addr, label):
     request({"op": "rename", "addr": addr, "label": label})

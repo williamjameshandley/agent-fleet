@@ -124,6 +124,19 @@ class IdentityTests(unittest.TestCase):
         execute.assert_called_once_with(
             "jupyter", ["jupyter", "console", "--existing", "/run/kernel.json"])
 
+    def test_alan_attach_execs_the_exact_native_codex_thread(self):
+        actor = alan_inventory("lovelace", [{
+            "addr": "codex-1", "type": "codex", "state": "live",
+            "label": "review", "cwd": "/work", "native": {"id": "thread-1"},
+            "attachment": {"kind": "codex", "socket": "/run/codex.sock",
+                           "thread_id": "thread-1"},
+        }])[0]
+        with mock.patch("fleet_next.viewer.find", return_value=actor), \
+             mock.patch("os.execvp") as execute:
+            viewer.attach(actor.ref.key)
+        execute.assert_called_once_with(
+            "codex", ["codex", "resume", "--remote", "unix:///run/codex.sock", "thread-1"])
+
     def test_python_create_routes_through_alan_and_opens_the_actor_identity(self):
         host = os.uname().nodename
         with mock.patch("fleet_next.actions.desktop_input",
@@ -134,6 +147,17 @@ class IdentityTests(unittest.TestCase):
             actions.create()
         spawn.assert_called_once_with("analysis", "/work")
         show.assert_called_once_with("main", f"alan:{host}:python-deadbeef")
+
+    def test_codex_create_routes_through_alan_without_a_tmux_identity(self):
+        host = os.uname().nodename
+        with mock.patch("fleet_next.actions.desktop_input",
+                        side_effect=[host, "codex", "analysis", "/work"]), \
+             mock.patch("fleet_next.actions.spawn_codex",
+                        return_value="codex-deadbeef") as spawn, \
+             mock.patch("fleet_next.actions.viewer.request") as show:
+            actions.create()
+        spawn.assert_called_once_with("analysis", "/work")
+        show.assert_called_once_with("main", f"alan:{host}:codex-deadbeef")
 
     def test_done_is_attention_not_agent_or_lifecycle_state(self):
         session = self.session("newton")

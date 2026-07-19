@@ -11,7 +11,7 @@ from .daemon import preview as pane_preview, snapshot
 from .protocol import decode
 from .protocol import decode_message
 from . import viewer
-from .alan import spawn_python, rename as alan_rename
+from .alan import spawn_codex, spawn_python, rename as alan_rename
 
 
 def host_command(host, *command, capture_output=False):
@@ -65,13 +65,14 @@ def create():
     cwd = desktop_input("directory", (str(Path.home()),)) or str(Path.home())
     if not name:
         raise SystemExit("session name is required")
-    if agent == "python":
+    if agent in ("python", "codex"):
         if host != os.uname().nodename:
-            result = host_command(host, "fleet-next", "alan-spawn", name, cwd,
+            result = host_command(host, "fleet-next", "alan-spawn", agent, name, cwd,
                                   capture_output=True)
             key = f"alan:{host}:{result.stdout.strip()}"
         else:
-            key = f"alan:{host}:{spawn_python(name, cwd)}"
+            spawn = spawn_python if agent == "python" else spawn_codex
+            key = f"alan:{host}:{spawn(name, cwd)}"
     else:
         host_command(host, "tmux", "new-session", "-d", "-s", name, "-c", cwd,
                      *agent_command(agent, name))

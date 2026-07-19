@@ -70,7 +70,7 @@ fleet-viewer SLOT               run a workstation-local named slot
 fleet-next show SOURCE          focus/open a source
 fleet-next show SOURCE --slot S explicit replacement
 fleet-next dismiss --slot S     detach a viewer only
-fleet-next create               create a tmux session or Alan Python actor
+fleet-next create               create a tmux session or Alan Python/Codex actor
 fleet-next rename SOURCE        rename the native source
 fleet-next done SOURCE          shelve its attention loop
 fleet-view                      laptop 50:50 launcher
