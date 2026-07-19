@@ -1,6 +1,7 @@
 import importlib.machinery
 import io
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -18,17 +19,34 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(line.index("7d"), 30)
         self.assertRegex(week, r"@[A-Z][a-z]{2} \d\d \d\d:\d\d$")
 
-    def test_codex_uses_cached_proxy_quota(self):
+    def test_codex_falls_back_to_cached_proxy_quota(self):
         body = {"accounts": [{"status": "active", "quota": {
             "rate_limit": {"used_percent": 4, "reset_at": 1784493419,
                            "limit_window_seconds": 604800},
             "secondary_rate_limit": None,
         }}]}
-        with patch.object(usage.urllib.request, "urlopen",
+        with patch.object(usage, "codex_local", return_value=None), \
+             patch.object(usage.urllib.request, "urlopen",
                           return_value=io.StringIO(json.dumps(body))):
             text = usage.codex()
         self.assertIn("5h [--------]   0%/0h", text)
         self.assertIn("7d [--------]   4%", text)
+
+    def test_codex_prefers_latest_local_rate_limit(self):
+        event = {"payload": {"type": "token_count", "rate_limits": {
+            "primary": {"used_percent": 14, "resets_at": 1784958277,
+                        "window_minutes": 10080},
+            "secondary": None,
+        }}}
+        with tempfile.TemporaryDirectory() as home:
+            path = Path(home) / ".codex/sessions/2026/07/19/session.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(event) + "\n")
+            with patch.object(usage.Path, "home", return_value=Path(home)), \
+                 patch.object(usage.urllib.request, "urlopen") as urlopen:
+                text = usage.codex()
+        self.assertIn("7d [#-------]  14%", text)
+        urlopen.assert_not_called()
 
     def test_claude_keeps_usage_when_reset_is_unavailable(self):
         body = {"limits": [
@@ -53,7 +71,7 @@ class UsageTests(unittest.TestCase):
         with patch.object(usage.urllib.request, "urlopen",
                           return_value=io.StringIO(json.dumps(body))):
             with self.assertRaises(ValueError):
-                usage.codex()
+                usage.codex_proxy()
 
 
 if __name__ == "__main__":

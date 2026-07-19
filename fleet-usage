@@ -53,7 +53,37 @@ def claude():
     return "  ".join(fields[name] for name in ("5h", "7d"))
 
 
-def codex():
+def codex_local():
+    root = Path.home() / ".codex/sessions"
+    paths = sorted(root.rglob("*.jsonl"), key=lambda path: path.stat().st_mtime,
+                   reverse=True) if root.exists() else []
+    for path in paths:
+        lines = path.read_text(errors="replace").splitlines()
+        for line in reversed(lines):
+            try:
+                event = json.loads(line)
+                limits = event["payload"]["rate_limits"]
+                if event["payload"]["type"] != "token_count" or not limits:
+                    continue
+                windows = {"5h": field("5h"), "7d": field("7d")}
+                for quota in (limits.get("primary"), limits.get("secondary")):
+                    if quota is None:
+                        continue
+                    minutes = quota["window_minutes"]
+                    if minutes == 300:
+                        name = "5h"
+                    elif minutes == 10080:
+                        name = "7d"
+                    else:
+                        raise ValueError(f"unknown Codex limit window {minutes}m")
+                    windows[name] = field(name, quota["used_percent"], quota["resets_at"])
+                return "  ".join(windows[name] for name in ("5h", "7d"))
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+    return None
+
+
+def codex_proxy():
     accounts = json.load(urllib.request.urlopen(f"{PROXY}/auth/accounts", timeout=10))["accounts"]
     accounts = [a for a in accounts if a["status"] == "active" and a.get("quota")]
     if len(accounts) != 1:
@@ -72,6 +102,10 @@ def codex():
             raise ValueError(f"unknown Codex limit window {seconds!r}s")
         windows[name] = field(name, quota["used_percent"], quota["reset_at"])
     return "  ".join(windows[name] for name in ("5h", "7d"))
+
+
+def codex():
+    return codex_local() or codex_proxy()
 
 
 def main():
