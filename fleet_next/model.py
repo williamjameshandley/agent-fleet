@@ -44,6 +44,7 @@ class Session:
     recency: int = 0
     transcript_id: str = ""
     attachment: dict | None = None
+    human_activity: int = 0
 
     @property
     def agent(self):

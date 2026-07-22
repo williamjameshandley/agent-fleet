@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fleet_next.model import ServerRef, Session, SessionRef
 from fleet_next.protocol import decode, encode
-from fleet_next.ui import STATE_ORDER
+from fleet_next.ui import STATE_ORDER, recency
 from fleet_next.tmux import split_key
 from fleet_next.actions import agent_command, next_waiting_key, session_name
 from fleet_next import actions
@@ -209,15 +209,19 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(session_name(" Test session. "), "Test session")
         self.assertEqual(session_name("docs:v2.1"), "docs-v2-1")
 
-    def test_tmux_name_normalization_preserves_spaces(self):
-        self.assertEqual(session_name(" Test session. "), "Test session")
-        self.assertEqual(session_name("docs:v2.1"), "docs-v2-1")
-
     def test_done_is_attention_not_agent_or_lifecycle_state(self):
         session = self.session("newton")
         done = Session(**{**session.__dict__, "attention": "done"})
         self.assertEqual((session.agent, done.agent), ("codex", "codex"))
         self.assertEqual(done.state, "waiting")
+
+    def test_working_recency_is_human_activity(self):
+        working = Session(**{**self.session("newton").__dict__,
+                             "reported_state": "working", "recency": 20,
+                             "human_activity": 10})
+        waiting = Session(**{**working.__dict__, "reported_state": "waiting"})
+        self.assertEqual(recency(working), 10)
+        self.assertEqual(recency(waiting), 20)
 
     def test_working_sorts_before_waiting_and_done(self):
         self.assertLess(STATE_ORDER["working"], STATE_ORDER["waiting"])
