@@ -41,7 +41,7 @@ def rows(include_header=True):
     width = shutil.get_terminal_size((100, 24)).columns
     placement = {source: slot for slot, source in viewer.slots() if source}
     for session in sessions:
-        age = max(0, now - (session.recency or session.activity))
+        age = max(0, now - recency(session))
         elapsed = f"{age // 60}m" if age < 3600 else f"{age // 3600}h"
         marker = ("?" if session.ref.server.host in unavailable else
                   "x" if session.attention == "done" else
@@ -67,8 +67,14 @@ def ordered():
     sessions, usage, unavailable = decode_message(snapshot())
     sessions.sort(key=lambda s: (s.ref.server.host in unavailable,
                                  s.attention == "done", STATE_ORDER.get(s.state, 2),
-                                 -(s.recency or s.activity), s.ref.key))
+                                 -recency(s), s.ref.key))
     return sessions, usage, unavailable
+
+
+def recency(session):
+    if session.state == "working" and session.human_activity:
+        return session.human_activity
+    return session.recency or session.activity
 
 
 def muster():

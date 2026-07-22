@@ -106,12 +106,6 @@ def rename_tab(key):
                     command], check=True)
 
 
-def rename_tab(key):
-    command = shlex.join(("exec", "fleet-next", "rename", key))
-    subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "rename",
-                    command], check=True)
-
-
 def rename(key):
     session = find(key)
     name = session_name(muster_input("name", initial=session.name,

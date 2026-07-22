@@ -15,6 +15,7 @@ def encode(sessions, usage=None, unavailable=None):
         "summary": s.summary, "recency": s.recency,
         "transcript_id": s.transcript_id,
         "attachment": s.attachment,
+        "human_activity": s.human_activity,
         "source_kind": s.ref.server.kind,
     } for s in sessions]
     return json.dumps({"sessions": items, "usage": usage or {},
