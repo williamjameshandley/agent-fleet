@@ -11,8 +11,7 @@ from .daemon import preview as pane_preview, snapshot
 from .protocol import decode
 from .protocol import decode_message
 from . import viewer
-from .alan import (spawn_claude, spawn_codex, spawn_python,
-                   rename as alan_rename, set_attention as alan_attention)
+from .alan import rename as alan_rename, set_attention as alan_attention
 
 
 def host_command(host, *command, capture_output=False):
@@ -40,6 +39,25 @@ def desktop_input(prompt, values=(), fixed=False):
     return result.stdout.strip()
 
 
+def muster_input(prompt, values=(), initial="", context=""):
+    from .ui import FZF_COLOUR
+    command = ["fzf", "--layout=reverse", "--no-multi", "--no-unicode",
+               f"--color={FZF_COLOUR}", f"--prompt={prompt}> ",
+               f"--header=Create session  {context}"]
+    if values:
+        result = subprocess.run(command, input="\n".join(values) + "\n",
+                                text=True, stdout=subprocess.PIPE)
+        if result.returncode:
+            raise SystemExit(result.returncode)
+        return result.stdout.strip()
+    command.extend(("--disabled", "--print-query", f"--query={initial}"))
+    result = subprocess.run(command, input=initial + "\n", text=True,
+                            stdout=subprocess.PIPE)
+    if result.returncode:
+        raise SystemExit(result.returncode)
+    return result.stdout.splitlines()[0].strip()
+
+
 def agent_command(agent, name):
     if agent == "claude":
         return ["claude", "--dangerously-skip-permissions", "--name", name]
@@ -59,27 +77,23 @@ def created_key(host, name):
     return matches[0]
 
 
+def create_tab():
+    subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
+                    "exec fleet-next create"], check=True)
+
+
 def create():
-    host = desktop_input("host", hosts(), fixed=True)
-    agent = desktop_input("agent", ("claude", "codex", "python", "shell"), fixed=True)
-    name = desktop_input("session name")
-    cwd = desktop_input("directory", (str(Path.home()),)) or str(Path.home())
+    host = muster_input("host", hosts())
+    agent = muster_input("agent", ("claude", "codex", "shell"),
+                         context=host)
+    name = muster_input("name", context=f"{host} · {agent}")
+    cwd = muster_input("directory", initial=str(Path.home()),
+                       context=f"{host} · {agent} · {name}") or str(Path.home())
     if not name:
         raise SystemExit("session name is required")
-    if agent in ("python", "codex", "claude"):
-        if host != os.uname().nodename:
-            result = host_command(host, "fleet-next", "alan-spawn", agent, name, cwd,
-                                  capture_output=True)
-            key = f"alan:{host}:{result.stdout.strip()}"
-        else:
-            spawn = {"python": spawn_python, "codex": spawn_codex,
-                     "claude": spawn_claude}[agent]
-            key = f"alan:{host}:{spawn(name, cwd)}"
-    else:
-        host_command(host, "tmux", "new-session", "-d", "-s", name, "-c", cwd,
-                     *agent_command(agent, name))
-        key = created_key(host, name)
-    viewer.request("main", key)
+    host_command(host, "tmux", "new-session", "-d", "-s", name, "-c", cwd,
+                 *agent_command(agent, name))
+    viewer.request("main", created_key(host, name))
 
 
 def rename(key):

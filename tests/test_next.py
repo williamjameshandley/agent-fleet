@@ -191,38 +191,19 @@ class IdentityTests(unittest.TestCase):
         execute.assert_called_once_with(
             "tmux", ["tmux", "attach-session", "-t", "fleet@actor-claude-1"])
 
-    def test_python_create_routes_through_alan_and_opens_the_actor_identity(self):
+    def test_create_opens_a_real_tmux_session_in_main(self):
         host = os.uname().nodename
-        with mock.patch("fleet_next.actions.desktop_input",
-                        side_effect=[host, "python", "analysis", "/work"]), \
-             mock.patch("fleet_next.actions.spawn_python",
-                        return_value="python-deadbeef") as spawn, \
-             mock.patch("fleet_next.actions.viewer.request") as show:
-            actions.create()
-        spawn.assert_called_once_with("analysis", "/work")
-        show.assert_called_once_with("main", f"alan:{host}:python-deadbeef")
-
-    def test_codex_create_routes_through_alan_without_a_tmux_identity(self):
-        host = os.uname().nodename
-        with mock.patch("fleet_next.actions.desktop_input",
+        with mock.patch("fleet_next.actions.muster_input",
                         side_effect=[host, "codex", "analysis", "/work"]), \
-             mock.patch("fleet_next.actions.spawn_codex",
-                        return_value="codex-deadbeef") as spawn, \
+             mock.patch("fleet_next.actions.host_command") as run, \
+             mock.patch("fleet_next.actions.created_key",
+                        return_value="source-key"), \
              mock.patch("fleet_next.actions.viewer.request") as show:
             actions.create()
-        spawn.assert_called_once_with("analysis", "/work")
-        show.assert_called_once_with("main", f"alan:{host}:codex-deadbeef")
-
-    def test_claude_create_routes_through_alan_actor_identity(self):
-        host = os.uname().nodename
-        with mock.patch("fleet_next.actions.desktop_input",
-                        side_effect=[host, "claude", "analysis", "/work"]), \
-             mock.patch("fleet_next.actions.spawn_claude",
-                        return_value="claude-deadbeef") as spawn, \
-             mock.patch("fleet_next.actions.viewer.request") as show:
-            actions.create()
-        spawn.assert_called_once_with("analysis", "/work")
-        show.assert_called_once_with("main", f"alan:{host}:claude-deadbeef")
+        run.assert_called_once_with(
+            host, "tmux", "new-session", "-d", "-s", "analysis", "-c", "/work",
+            "codex", "--sandbox", "danger-full-access", "--ask-for-approval", "never")
+        show.assert_called_once_with("main", "source-key")
 
     def test_done_is_attention_not_agent_or_lifecycle_state(self):
         session = self.session("newton")
@@ -285,6 +266,14 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("enable-search+toggle-sort", source)
         self.assertNotIn('"--nth=2.."', source)
         self.assertIn("change-prompt(Search: )", source)
+        self.assertIn("c:execute-silent(fleet-next create-tab)", source)
+
+    def test_create_opens_inside_the_muster(self):
+        with mock.patch("subprocess.run") as run:
+            actions.create_tab()
+        run.assert_called_once_with(
+            ["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
+             "exec fleet-next create"], check=True)
 
     def test_named_viewers_remain_local(self):
         launcher = (Path(__file__).parents[1] / "fleet-viewer").read_text()

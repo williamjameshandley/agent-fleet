@@ -91,7 +91,7 @@ def muster():
         "--bind=enter:execute-silent(fleet-next show --slot main {1})",
         "--bind=left-click:execute-silent(fleet-next show --slot main {1})",
         "--bind=double-click:execute-silent(fleet-next show --slot main {1})",
-        "--bind=c:execute-silent(fleet-next create)+reload-sync(fleet-next items)",
+        "--bind=c:execute-silent(fleet-next create-tab)",
         "--bind=r:execute-silent(fleet-next rename {1})+reload-sync(fleet-next items)",
         "--bind=d:execute-silent(fleet-next done {1})+reload(fleet-next items)",
         "--bind=x:execute-silent(fleet-next dismiss-source {1})+reload-sync(fleet-next items)",

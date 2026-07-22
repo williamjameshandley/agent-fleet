@@ -72,7 +72,7 @@ fleet-next show SOURCE          focus/open a source
 fleet-next next-waiting         advance main to the next waiting source
 fleet-next show SOURCE --slot S explicit replacement
 fleet-next dismiss --slot S     detach a viewer only
-fleet-next create               create shell or Alan Python/Codex/Claude work
+fleet-next create               create Claude, Codex or shell work inside Muster
 fleet-next rename SOURCE        rename the native source
 fleet-next done SOURCE          shelve its attention loop
 fleet-view                      laptop 50:50 launcher

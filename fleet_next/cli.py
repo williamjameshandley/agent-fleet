@@ -99,6 +99,7 @@ def main():
     item = command("attach", lambda a: viewer.attach(a.key))
     item.add_argument("key")
     command("create", lambda _: actions.create())
+    command("create-tab", lambda _: actions.create_tab())
     item = command("alan-spawn", lambda a: print(
         {"python": spawn_python, "codex": spawn_codex,
          "claude": spawn_claude}[a.agent](a.name, a.cwd)))
