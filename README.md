@@ -69,6 +69,7 @@ fleet-muster                    attach the global Lovelace Muster
 fleet-viewer main               attach the global Lovelace Main
 fleet-viewer SLOT               run a workstation-local named slot
 fleet-next show SOURCE          focus/open a source
+fleet-next next-waiting         advance main to the next waiting source
 fleet-next show SOURCE --slot S explicit replacement
 fleet-next dismiss --slot S     detach a viewer only
 fleet-next create               create shell or Alan Python/Codex/Claude work

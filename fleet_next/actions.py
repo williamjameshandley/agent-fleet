@@ -126,6 +126,27 @@ def dismiss_source(key):
                     "Viewer dismissed; source session is still running"])
 
 
+def next_waiting_key(sessions, active):
+    waiting = [session for session in sessions
+               if session.attention != "done" and session.state == "waiting"]
+    if not waiting:
+        return None
+    current = next((i for i, session in enumerate(waiting)
+                    if session.ref.key == active), -1)
+    return waiting[(current + 1) % len(waiting)].ref.key
+
+
+def next_waiting():
+    from .ui import ordered
+    sessions, _, _ = ordered()
+    key = next_waiting_key(sessions, dict(viewer.slots()).get("main"))
+    if key is None:
+        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+                        "No waiting sessions"])
+        return
+    viewer.show(key, "main")
+
+
 def preview(key, columns=0, lines=0):
     session = find(key)
     if session.ref.server.kind == "alan":

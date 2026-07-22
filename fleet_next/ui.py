@@ -1,4 +1,5 @@
 import os
+import subprocess
 import time
 import shutil
 import re
@@ -113,8 +114,27 @@ def header():
 
 def cursor():
     sessions, _, _ = ordered()
+    active = dict(viewer.slots()).get("main")
+    if active:
+        position = next((i for i, session in enumerate(sessions, 1)
+                         if session.ref.key == active), None)
+        if position:
+            return position
     return next((i for i, session in enumerate(sessions, 1)
                  if session.attention != "done" and session.state == "waiting"), 1)
+
+
+def select(key):
+    sessions, _, _ = ordered()
+    position = next((i for i, session in enumerate(sessions, 1)
+                     if session.ref.key == key), None)
+    if position is None:
+        return
+    path = RUNTIME / "muster.sock"
+    if path.exists():
+        subprocess.run(["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
+                        "-XPOST", "-d", f"pos({position})", "http://localhost"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def history():

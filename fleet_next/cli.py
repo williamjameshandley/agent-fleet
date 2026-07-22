@@ -111,6 +111,7 @@ def main():
     item = command("alan-attention", lambda a: alan_attention(a.addr, a.attention))
     item.add_argument("addr")
     item.add_argument("attention", choices=("tracked", "done"))
+    command("next-waiting", lambda _: actions.next_waiting())
     for name, fn in (("rename", actions.rename), ("done", actions.done),
                      ("dismiss-source", actions.dismiss_source)):
         item = command(name, lambda a, fn=fn: fn(a.key))

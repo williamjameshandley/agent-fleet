@@ -15,7 +15,7 @@ from fleet_next.model import ServerRef, Session, SessionRef
 from fleet_next.protocol import decode, encode
 from fleet_next.ui import STATE_ORDER
 from fleet_next.tmux import split_key
-from fleet_next.actions import agent_command
+from fleet_next.actions import agent_command, next_waiting_key
 from fleet_next import actions
 from fleet_next.config import ssh_environment
 from fleet_next.alan import inventory as alan_inventory
@@ -232,6 +232,18 @@ class IdentityTests(unittest.TestCase):
 
     def test_working_sorts_before_waiting_and_done(self):
         self.assertLess(STATE_ORDER["working"], STATE_ORDER["waiting"])
+
+    def test_next_waiting_follows_active_and_wraps(self):
+        working = Session(**{**self.session("newton", "$0").__dict__,
+                             "reported_state": "working"})
+        first = self.session("newton", "$1")
+        second = self.session("lovelace", "$2")
+        done = Session(**{**self.session("turing", "$3").__dict__,
+                          "attention": "done"})
+        sessions = [working, first, second, done]
+        self.assertEqual(next_waiting_key(sessions, working.ref.key), first.ref.key)
+        self.assertEqual(next_waiting_key(sessions, first.ref.key), second.ref.key)
+        self.assertEqual(next_waiting_key(sessions, second.ref.key), first.ref.key)
 
     def test_source_key_contains_server_generation(self):
         session = self.session("newton")

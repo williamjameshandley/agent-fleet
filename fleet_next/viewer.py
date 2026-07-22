@@ -85,12 +85,20 @@ def show(key, slot=None):
     for name, source in available:
         if source == key:
             request(name, key)
+            if name == "main":
+                from .ui import select
+                select(key)
             return
     if slot:
         request(slot, key)
+        if slot == "main":
+            from .ui import select
+            select(key)
         return
     if len(available) == 1 and available[0][0] == "main":
         request("main", key)
+        from .ui import select
+        select(key)
         return
     for name, source in available:
         if not source:
