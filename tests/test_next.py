@@ -267,6 +267,8 @@ class IdentityTests(unittest.TestCase):
                       muster)
         self.assertIn("new-session -d -s fleet@main", main)
         self.assertIn("set-option -t fleet@main prefix None", main)
+        self.assertIn("set-option -u -t fleet@main mouse", main)
+        self.assertNotIn("set-option -t fleet@main mouse off", main)
         self.assertIn("fleet-next viewer-status main", main)
         self.assertIn("ConditionHost=lovelace", service)
 
