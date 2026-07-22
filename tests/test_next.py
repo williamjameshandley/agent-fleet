@@ -269,8 +269,7 @@ class IdentityTests(unittest.TestCase):
     def test_muster_always_opens_the_global_main_viewer(self):
         source = (Path(__file__).parents[1] / "fleet_next/ui.py").read_text()
         self.assertIn("fleet-next show --slot main {1}", source)
-        self.assertIn("load:pos({cursor()})", source)
-        self.assertNotIn("unbind(load)", source)
+        self.assertIn("load:pos({cursor()})+unbind(load)", source)
         self.assertIn('"--no-sort"', source)
         self.assertIn("enable-search+toggle-sort", source)
         self.assertNotIn('"--nth=2.."', source)

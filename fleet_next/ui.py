@@ -87,7 +87,7 @@ def muster():
         "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,d,x,j,k)+rebind(esc)",
         "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,d,x,j,k)",
         "--bind=j:down,k:up",
-        f"--bind=load:pos({cursor()})",
+        f"--bind=load:pos({cursor()})+unbind(load)",
         "--bind=enter:execute-silent(fleet-next show --slot main {1})",
         "--bind=left-click:execute-silent(fleet-next show --slot main {1})",
         "--bind=double-click:execute-silent(fleet-next show --slot main {1})",
