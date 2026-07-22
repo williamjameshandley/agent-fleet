@@ -15,7 +15,7 @@ from fleet_next.model import ServerRef, Session, SessionRef
 from fleet_next.protocol import decode, encode
 from fleet_next.ui import STATE_ORDER
 from fleet_next.tmux import split_key
-from fleet_next.actions import agent_command, next_waiting_key
+from fleet_next.actions import agent_command, next_waiting_key, session_name
 from fleet_next import actions
 from fleet_next.config import ssh_environment
 from fleet_next.alan import inventory as alan_inventory
@@ -194,7 +194,7 @@ class IdentityTests(unittest.TestCase):
     def test_create_opens_a_real_tmux_session_in_main(self):
         host = os.uname().nodename
         with mock.patch("fleet_next.actions.muster_input",
-                        side_effect=[host, "codex", "analysis", "/work"]), \
+                        side_effect=[host, "codex", "analysis.", "/work"]), \
              mock.patch("fleet_next.actions.host_command") as run, \
              mock.patch("fleet_next.actions.created_key",
                         return_value="source-key"), \
@@ -204,6 +204,10 @@ class IdentityTests(unittest.TestCase):
             host, "tmux", "new-session", "-d", "-s", "analysis", "-c", "/work",
             "codex", "--sandbox", "danger-full-access", "--ask-for-approval", "never")
         show.assert_called_once_with("main", "source-key")
+
+    def test_tmux_name_normalization_preserves_spaces(self):
+        self.assertEqual(session_name(" Test session. "), "Test session")
+        self.assertEqual(session_name("docs:v2.1"), "docs-v2-1")
 
     def test_done_is_attention_not_agent_or_lifecycle_state(self):
         session = self.session("newton")
@@ -261,12 +265,14 @@ class IdentityTests(unittest.TestCase):
     def test_muster_always_opens_the_global_main_viewer(self):
         source = (Path(__file__).parents[1] / "fleet_next/ui.py").read_text()
         self.assertIn("fleet-next show --slot main {1}", source)
-        self.assertIn("load:pos({cursor()})+unbind(load)", source)
+        self.assertIn("load:pos({cursor()})", source)
+        self.assertNotIn("unbind(load)", source)
         self.assertIn('"--no-sort"', source)
         self.assertIn("enable-search+toggle-sort", source)
         self.assertNotIn('"--nth=2.."', source)
         self.assertIn("change-prompt(Search: )", source)
         self.assertIn("c:execute-silent(fleet-next create-tab)", source)
+        self.assertIn("r:execute-silent(fleet-next rename-tab {1})", source)
 
     def test_create_opens_inside_the_muster(self):
         with mock.patch("subprocess.run") as run:
@@ -274,6 +280,14 @@ class IdentityTests(unittest.TestCase):
         run.assert_called_once_with(
             ["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
              "exec fleet-next create"], check=True)
+
+    def test_rename_opens_inside_the_muster(self):
+        key = "lovelace:/tmp/tmux:1:2:$3"
+        with mock.patch("subprocess.run") as run:
+            actions.rename_tab(key)
+        run.assert_called_once_with(
+            ["tmux", "new-window", "-t", "fleet@muster", "-n", "rename",
+             "exec fleet-next rename 'lovelace:/tmp/tmux:1:2:$3'"], check=True)
 
     def test_named_viewers_remain_local(self):
         launcher = (Path(__file__).parents[1] / "fleet-viewer").read_text()

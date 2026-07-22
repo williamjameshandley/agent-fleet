@@ -39,11 +39,11 @@ def desktop_input(prompt, values=(), fixed=False):
     return result.stdout.strip()
 
 
-def muster_input(prompt, values=(), initial="", context=""):
+def muster_input(prompt, values=(), initial="", context="", title="Create session"):
     from .ui import FZF_COLOUR
     command = ["fzf", "--layout=reverse", "--no-multi", "--no-unicode",
                f"--color={FZF_COLOUR}", f"--prompt={prompt}> ",
-               f"--header=Create session  {context}"]
+               f"--header={title}  {context}"]
     if values:
         result = subprocess.run(command, input="\n".join(values) + "\n",
                                 text=True, stdout=subprocess.PIPE)
@@ -77,6 +77,10 @@ def created_key(host, name):
     return matches[0]
 
 
+def session_name(value):
+    return value.strip().strip(".:").replace(".", "-").replace(":", "-")
+
+
 def create_tab():
     subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
                     "exec fleet-next create"], check=True)
@@ -86,7 +90,7 @@ def create():
     host = muster_input("host", hosts())
     agent = muster_input("agent", ("claude", "codex", "shell"),
                          context=host)
-    name = muster_input("name", context=f"{host} · {agent}")
+    name = session_name(muster_input("name", context=f"{host} · {agent}"))
     cwd = muster_input("directory", initial=str(Path.home()),
                        context=f"{host} · {agent} · {name}") or str(Path.home())
     if not name:
@@ -96,9 +100,17 @@ def create():
     viewer.request("main", created_key(host, name))
 
 
+def rename_tab(key):
+    command = shlex.join(("exec", "fleet-next", "rename", key))
+    subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "rename",
+                    command], check=True)
+
+
 def rename(key):
     session = find(key)
-    name = desktop_input(f"rename {session.name}")
+    name = session_name(muster_input("name", initial=session.name,
+                                     context=session.ref.server.host,
+                                     title="Rename session"))
     if name:
         if session.ref.server.kind == "alan":
             if session.ref.server.host == os.uname().nodename:
