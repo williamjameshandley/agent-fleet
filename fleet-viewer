@@ -15,7 +15,7 @@ if [ "$slot" = main ]; then
         tmux set-option -t fleet@main prefix2 None
         tmux set-option -t fleet@main window-size latest
     fi
-    tmux set-option -u -t fleet@main mouse
+    tmux set-option -t fleet@main mouse on
     exec tmux -u attach-session -t fleet@main
 fi
 exec fleet-next viewer --slot "$slot"

@@ -195,4 +195,7 @@ def attach(key):
     current = [s for s in inventory(host) if s.ref.key == key]
     if len(current) != 1:
         raise SystemExit(f"session identity changed: {key}")
+    if current[0].agent == "codex":
+        subprocess.run(["tmux", "set-option", "-t", current[0].ref.session_id,
+                        "mouse", "on"], check=True)
     os.execvp("tmux", ["tmux", "attach-session", "-t", current[0].ref.session_id])

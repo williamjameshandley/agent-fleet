@@ -41,8 +41,10 @@ def rows(include_header=True):
     width = shutil.get_terminal_size((100, 24)).columns
     placement = {source: slot for slot, source in viewer.slots() if source}
     for session in sessions:
-        age = max(0, now - recency(session))
-        elapsed = f"{age // 60}m" if age < 3600 else f"{age // 3600}h"
+        timestamp = recency(session)
+        age = max(0, now - timestamp)
+        elapsed = ("?" if not timestamp else
+                   f"{age // 60}m" if age < 3600 else f"{age // 3600}h")
         marker = ("?" if session.ref.server.host in unavailable else
                   "x" if session.attention == "done" else
                   {"needs-action": "!", "working": "*", "waiting": ".",
@@ -72,7 +74,7 @@ def ordered():
 
 
 def recency(session):
-    if session.state == "working" and session.human_activity:
+    if session.state == "working":
         return session.human_activity
     return session.recency or session.activity
 

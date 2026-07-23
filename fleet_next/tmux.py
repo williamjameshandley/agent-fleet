@@ -72,12 +72,18 @@ def capture(key, columns=0, lines=0):
 
 def inventory(host):
     tmux = server()
-    attention = dict(line.split("\t", 1) for line in tmux.cmd(
-        "list-sessions", "-F", "#{session_id}\t#{@fleet_attention}").stdout)
-    human_activity = {}
+    metadata = {sid: (attention, int(activity or 0))
+                for sid, attention, activity in (line.split("\t") for line in tmux.cmd(
+                    "list-sessions", "-F",
+                    "#{session_id}\t#{@fleet_attention}\t#{@fleet_human_activity}").stdout)}
+    human_activity = {sid: activity for sid, (_, activity) in metadata.items()}
     for line in tmux.cmd("list-clients", "-F", "#{session_id}\t#{client_activity}").stdout:
         session_id, activity = line.split("\t", 1)
         human_activity[session_id] = max(human_activity.get(session_id, 0), int(activity))
+    for session_id, activity in human_activity.items():
+        if activity > metadata[session_id][1]:
+            tmux.cmd("set-option", "-t", session_id,
+                     "@fleet_human_activity", str(activity))
     sessions = []
     for item in tmux.sessions:
         if item.session_name.startswith("fleet@"):
@@ -88,7 +94,7 @@ def inventory(host):
             int(item.session_created), int(item.session_activity),
             int(item.session_attached), int(item.session_windows),
             item.pane_current_command, item.pane_title, item.pane_current_path,
-            attention[item.session_id] or "tracked",
+            metadata[item.session_id][0] or "tracked",
             human_activity=human_activity.get(item.session_id, 0)))
     return sessions
 

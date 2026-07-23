@@ -21,6 +21,7 @@ done
 if ! tmux has-session -t fleet@muster 2>/dev/null; then
     tmux new-session -d -s fleet@muster -n live 'exec fleet-next items | exec fleet-next muster'
 fi
+tmux set-option -t fleet@muster mouse off
 tmux list-windows -t fleet@muster -F '#{window_name}' | grep -qx history ||
     tmux new-window -d -t fleet@muster -n history 'exec fleet-next history-rows | exec fleet-next history-ui'
 [ -z "$workstation" ] || tmux set-option -t fleet@muster @fleet_workstation "$workstation"
