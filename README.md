@@ -43,9 +43,9 @@ sorting and preview never run SSH.
 Opening a remote source in Main or a named workstation viewer creates the one
 unavoidable long-lived interactive SSH attachment with `BatchMode=yes`.
 
-Pane previews use `capture-pane -eN`, reconstruct the terminal grid with
-libvterm, and apply tmux's `screen_write_preview` cursor-centred crop. Wide
-panes are clipped as terminal cells rather than wrapped as text.
+Tmux previews use `capture-pane -eN`, reconstruct the terminal grid with
+libvterm, and apply tmux's `screen_write_preview` cursor-centred crop. Alan
+Claude and Codex previews show the recent authoritative vendor transcript.
 
 Tmux identity is:
 
@@ -95,19 +95,19 @@ Host aliases come from `~/.config/agent-fleet/hosts`. Routing and credentials
 belong to OpenSSH configuration. Machine labels are ASCII (`N L B T OE`), so
 Fleet has no icon-font dependency.
 
-The packaged Alan socket configuration is `/etc/agent-fleet/alan-socket` and
-may be overridden per user by `~/.config/agent-fleet/alan-socket` or explicitly
-with `LOOP_SOCKET`. An unavailable Alan socket removes Alan rows but does not
-invalidate healthy tmux inventory on the same host.
+Fleet resolves the personal Alan socket from `LOOP_SOCKET`, then
+`~/.config/agent-fleet/alan-socket`, then `/etc/agent-fleet/alan-socket`. The
+package does not install a system-wide value. An unavailable Alan socket removes
+Alan rows but does not invalidate healthy tmux inventory on the same host.
 
 Alan lifecycle actors are Python, Codex and Claude (plus Alan's direct `llm`
 type, which has no Fleet attachment). There is no native Alan Gemini actor.
 Already-running standalone Gemini terminals remain ordinary legacy tmux rows.
 Muster creates new Claude, Codex and Python work through Alan, so the actor is
 durable and asynchronously addressable before Fleet opens its preferred viewer.
-Only a plain shell is created directly as a tmux session. Existing standalone
-vendor terminals remain ordinary tmux rows; Fleet does not silently migrate or
-replace their native conversations.
+Only a plain shell is created directly as a tmux session. Refresh replaces an
+idle Alan Claude or Codex provider at the same actor and vendor identity; Fleet
+does not bare-resume standalone vendor terminals.
 
 ## Development
 

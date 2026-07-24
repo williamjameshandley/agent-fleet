@@ -25,9 +25,9 @@ from fleet_next.alan import socket_path as alan_socket_path
 from fleet_next.alan import Watcher as AlanWatcher
 from fleet_next.alan import set_attention as alan_set_attention
 from fleet_next.alan import refresh as alan_refresh
-from fleet_next.tmux import refresh as tmux_refresh
 from fleet_next import viewer
 from fleet_next import workstation
+from fleet_next import tmux
 
 
 class IdentityTests(unittest.TestCase):
@@ -413,15 +413,10 @@ class IdentityTests(unittest.TestCase):
 
     def test_new_cli_has_no_destructive_surface(self):
         root = Path(__file__).parents[1]
-        paths = [root / "fleet-next", *(path for path in (root / "fleet_next").glob("*.py")
-                                       if path.name != "migration.py")]
+        paths = [root / "fleet-next", *(root / "fleet_next").glob("*.py")]
         source = "\n".join(path.read_text() for path in paths)
         for command in ("kill-session", "kill-window", "unlink-window"):
             self.assertNotIn(command, source)
-        migration = (root / "fleet_next/migration.py").read_text()
-        self.assertIn("kill-session", migration)
-        self.assertNotIn("kill-window", migration)
-        self.assertNotIn("unlink-window", migration)
 
     def test_commander_uses_native_codex(self):
         launcher = (Path(__file__).parents[1] / "fleet-commander").read_text()
@@ -537,51 +532,39 @@ class IdentityTests(unittest.TestCase):
             actions.refresh_local(f"alan:{host}:claude-1")
         refresh.assert_called_once_with("claude-1")
 
-    def test_legacy_codex_refresh_uses_exact_resume_argv_and_identity_guard(self):
-        host = os.uname().nodename
-        item = Session(SessionRef(ServerRef(host, "/tmp/tmux", 12, 10), "$1"),
-                       "work", 1, 2, 0, 1, "codex", "waiting", "/work", "tracked",
-                       "codex", "waiting", transcript_id="thread-1", human_activity=7)
-        pane = mock.Mock(pane_id="%1")
-        pane.pane_id = "%1"
-        native = mock.Mock(socket_path="/tmp/tmux", pid=12, start_time=10,
-                           windows=[mock.Mock(panes=[pane])])
-        tmux = mock.Mock()
-        tmux.cmd.return_value.stdout = []
-        key = item.ref.key
-        with mock.patch("fleet_next.tmux.inventory", return_value=[item]), \
-             mock.patch("fleet_next.tmux.observe", return_value=[item]), \
-             mock.patch("fleet_next.tmux.server", return_value=tmux), \
-             mock.patch("fleet_next.tmux.TmuxSession.from_session_id",
-                        return_value=native):
-            tmux_refresh(key)
-        command = tmux.cmd.call_args.args
-        self.assertEqual(command[:4], ("if-shell", "-t", "%1", "-F"))
-        self.assertIn("respawn-pane -k -t %1 -c /work codex --sandbox danger-full-access --ask-for-approval never resume thread-1",
-                      command[5])
-        self.assertEqual(command[6], "display-message -p FLEET_STALE")
+    def test_refresh_local_refuses_legacy_tmux_sessions(self):
+        with self.assertRaisesRegex(SystemExit, "Alan-owned"):
+            actions.refresh_local("lovelace:/tmp/tmux:12:10:$1")
 
-    def test_legacy_refresh_refuses_working_and_multi_pane_sessions(self):
+    def test_alan_preview_uses_the_native_transcript(self):
         host = os.uname().nodename
-        base = Session(SessionRef(ServerRef(host, "/tmp/tmux", 12, 10), "$1"),
-                       "work", 1, 2, 0, 1, "claude", "waiting", "/work", "tracked",
-                       "claude", "working", transcript_id="session-1")
-        with mock.patch("fleet_next.tmux.inventory", return_value=[base]), \
-             mock.patch("fleet_next.tmux.observe", return_value=[base]):
-            with self.assertRaisesRegex(SystemExit, "requires waiting"):
-                tmux_refresh(base.ref.key)
+        actor = {"addr": "codex-1", "type": "codex",
+                 "native": {"id": "thread-1"}}
+        with mock.patch("fleet_next.tmux.alan_request",
+                        return_value={"actors": [actor]}), \
+             mock.patch("fleet_next.tmux.transcript_preview",
+                        return_value="conversation\n") as render:
+            result = tmux.capture(f"alan:{host}:codex-1", 80, 20)
+        self.assertEqual(result, "conversation\n")
+        render.assert_called_once_with("codex", "thread-1", 80, 20)
 
-        waiting = Session(**{**base.__dict__, "reported_state": "waiting"})
-        panes = [mock.Mock(pane_id="%1"), mock.Mock(pane_id="%2")]
-        native = mock.Mock(socket_path="/tmp/tmux", pid=12, start_time=10,
-                           windows=[mock.Mock(panes=panes)])
-        with mock.patch("fleet_next.tmux.inventory", return_value=[waiting]), \
-             mock.patch("fleet_next.tmux.observe", return_value=[waiting]), \
-             mock.patch("fleet_next.tmux.server"), \
-             mock.patch("fleet_next.tmux.TmuxSession.from_session_id",
-                        return_value=native):
-            with self.assertRaisesRegex(SystemExit, "exactly one agent pane"):
-                tmux_refresh(waiting.ref.key)
+    def test_alan_preview_refuses_a_disappeared_actor(self):
+        host = os.uname().nodename
+        with mock.patch("fleet_next.tmux.alan_request",
+                        return_value={"actors": []}):
+            with self.assertRaisesRegex(RuntimeError, "disappeared"):
+                tmux.capture(f"alan:{host}:codex-1", 80, 20)
+
+    def test_alan_preview_reports_a_disappeared_transcript(self):
+        host = os.uname().nodename
+        actor = {"addr": "codex-1", "type": "codex",
+                 "native": {"id": "missing"}}
+        with mock.patch("fleet_next.tmux.alan_request",
+                        return_value={"actors": [actor]}), \
+             mock.patch("fleet_next.tmux.transcript_preview",
+                        side_effect=SystemExit("no transcript matches 'missing'")):
+            with self.assertRaisesRegex(RuntimeError, "no transcript matches"):
+                tmux.capture(f"alan:{host}:codex-1", 80, 20)
 
     def test_failed_refresh_reopens_a_still_usable_source_then_reports_failure(self):
         session = self.session("newton")

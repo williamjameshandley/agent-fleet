@@ -1,7 +1,8 @@
 import json
 
+import fleet_next.transcripts as transcripts
 from fleet_next.transcripts import (PANE_FORMAT, indexed_claude_agents, last_human_time,
-                                    select_codex, transcript)
+                                    preview, select_codex, transcript)
 
 
 def rollout(path, identity, source="cli"):
@@ -66,3 +67,33 @@ def test_codex_human_activity_uses_latest_user_message(tmp_path):
     ]
     path.write_text("".join(json.dumps(event) + "\n" for event in events))
     assert last_human_time(transcript("codex", path)) == 1784541600
+
+
+def test_preview_renders_recent_native_conversation(tmp_path, monkeypatch):
+    path = tmp_path / "rollout-thread-1.jsonl"
+    path.write_text("".join(json.dumps(event) + "\n" for event in [
+        {"type": "event_msg", "payload": {
+            "type": "user_message", "message": "inspect the interface"}},
+        {"type": "event_msg", "payload": {
+            "type": "agent_message", "message": "working on it"}},
+    ]))
+    native = type("Native", (), {"path": path})()
+    monkeypatch.setattr(transcripts, "find", lambda session_id, agent: native)
+
+    assert preview("codex", "thread-1", columns=80, lines=20) == (
+        "User\ninspect the interface\n\nAssistant\nworking on it\n")
+
+
+def test_claude_preview_keeps_only_the_last_eight_messages(tmp_path, monkeypatch):
+    path = tmp_path / "session.jsonl"
+    path.write_text("".join(json.dumps({
+        "type": "user", "message": {"content": f"message {index}"}}) + "\n"
+        for index in range(10)))
+    native = type("Native", (), {"path": path})()
+    monkeypatch.setattr(transcripts, "find", lambda session_id, agent: native)
+
+    rendered = preview("claude", "session-1")
+    assert "message 0" not in rendered
+    assert "message 1" not in rendered
+    assert "message 2" in rendered
+    assert "message 9" in rendered

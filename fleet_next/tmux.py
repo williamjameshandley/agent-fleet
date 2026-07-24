@@ -15,6 +15,8 @@ from .model import ServerRef, Session, SessionRef
 from .agent import observe
 from .config import RUNTIME
 from .alan import Watcher as AlanWatcher, inventory as alan_inventory
+from .alan import request as alan_request
+from .transcripts import preview as transcript_preview
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
 
@@ -50,49 +52,22 @@ def mutate(key, operation, arguments):
         raise SystemExit(f"stale source identity: {key}")
 
 
-def refresh(key):
-    host, socket, pid, started, session_id = split_key(key)
-    if host != os.uname().nodename:
-        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
-    matches = [item for item in observe(inventory(host)) if item.ref.key == key]
-    if len(matches) != 1:
-        raise SystemExit(f"stale source identity: {key}")
-    item = matches[0]
-    if item.windows != 1:
-        raise SystemExit("refresh requires exactly one window")
-    if item.agent not in {"claude", "codex"}:
-        raise SystemExit(f"refresh does not support {item.agent}")
-    if item.state != "waiting":
-        raise SystemExit(f"refresh requires waiting state, got {item.state}")
-    if not item.transcript_id:
-        raise SystemExit("refresh requires a durable transcript identity")
-    tmux = server()
-    session = TmuxSession.from_session_id(tmux, session_id)
-    if (session.socket_path, int(session.pid), int(session.start_time)) != (socket, pid, started):
-        raise SystemExit(f"stale source identity: {key}")
-    panes = [pane for window in session.windows for pane in window.panes]
-    if len(panes) != 1:
-        raise SystemExit("refresh requires exactly one agent pane")
-    argv = (["claude", "--dangerously-skip-permissions", "--resume", item.transcript_id]
-            if item.agent == "claude" else
-            ["codex", "--sandbox", "danger-full-access", "--ask-for-approval", "never",
-             "resume", item.transcript_id])
-    checks = [f"#{{==:#{{socket_path}},{socket}}}", f"#{{==:#{{pid}},{pid}}}",
-              f"#{{==:#{{start_time}},{started}}}",
-              f"#{{==:#{{session_id}},{session_id}}}",
-              "#{==:#{session_windows},1}", "#{==:#{window_panes},1}",
-              f"#{{==:#{{pane_id}},{panes[0].pane_id}}}"]
-    condition = checks[-1]
-    for check in reversed(checks[:-1]):
-        condition = f"#{{&&:{check},{condition}}}"
-    command = ["respawn-pane", "-k", "-t", panes[0].pane_id, "-c", item.cwd, *argv]
-    result = tmux.cmd("if-shell", "-t", panes[0].pane_id, "-F", condition,
-                      shlex.join(command), "display-message -p FLEET_STALE")
-    if result.stdout and result.stdout[0] == "FLEET_STALE":
-        raise SystemExit(f"stale source identity: {key}")
-
-
 def capture(key, columns=0, lines=0):
+    if key.startswith("alan:"):
+        _, host, addr = key.split(":", 2)
+        if host != os.uname().nodename:
+            raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
+        actor = next((item for item in alan_request({"op": "list"})["actors"]
+                      if item["addr"] == addr), None)
+        if actor is None:
+            raise RuntimeError(f"Alan actor disappeared: {addr}")
+        native_id = (actor.get("native") or {}).get("id")
+        if actor.get("type") not in {"claude", "codex"} or not native_id:
+            raise RuntimeError(f"{actor.get('type')} has no transcript preview")
+        try:
+            return transcript_preview(actor["type"], native_id, columns, lines)
+        except SystemExit as error:
+            raise RuntimeError(str(error)) from error
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:
         raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")

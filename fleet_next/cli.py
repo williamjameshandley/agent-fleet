@@ -13,7 +13,6 @@ from .config import RUNTIME, hosts
 from .transcripts import history as transcript_history, resume
 from .alan import (spawn_claude, spawn_codex, spawn_python,
                    rename as alan_rename, set_attention as alan_attention)
-from .migration import adopt_local, inventory_records
 
 
 def events(args):
@@ -86,18 +85,6 @@ def main():
     item = command("refresh-check", lambda a: actions.refresh_check(a.key, a.native_id))
     item.add_argument("key")
     item.add_argument("native_id")
-    item = command("adopt", lambda a: print(json.dumps(actions.adopt(a.key))))
-    item.add_argument("key")
-    item = command("adopt-local", lambda a: print(json.dumps(
-        adopt_local(a.key, a.migration_id, a.provider, a.native_id))))
-    item.add_argument("key")
-    item.add_argument("migration_id")
-    item.add_argument("provider", choices=("codex", "claude"))
-    item.add_argument("native_id")
-    item = command("migration-inventory", lambda a: print(json.dumps(
-        inventory_records(a.host))))
-    item.add_argument("--host", required=True)
-    command("migration-converge", lambda _: actions.converge())
     item = command("arrive", lambda a: actions.arrive(a.profile, a.available))
     item.add_argument("profile", choices=("laptop", "home", "office"))
     item.add_argument("--available", action="store_true")

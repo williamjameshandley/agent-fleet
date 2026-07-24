@@ -4,6 +4,7 @@ import os
 import re
 import shlex
 import subprocess
+import textwrap
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -116,14 +117,40 @@ def event_text(agent, event, role):
     return ""
 
 
+def preview(agent, session_id, columns=0, lines=0):
+    messages = deque()
+    for event in reverse_events(find(session_id, agent).path):
+        for role in ("user", "assistant"):
+            if text := event_text(agent, event, role):
+                messages.appendleft((role, text.strip()))
+                break
+        if len(messages) == 8:
+            break
+    rendered = "\n\n".join(
+        f"{role.capitalize()}\n{text}" for role, text in messages)
+    if columns:
+        rendered = "\n".join(
+            line if not line else "\n".join(textwrap.wrap(
+                line, width=columns, replace_whitespace=False,
+                drop_whitespace=False))
+            for line in rendered.splitlines())
+    if lines:
+        rendered = "\n".join(rendered.splitlines()[-lines:])
+    return rendered + ("\n" if rendered else "")
+
+
 def reverse_events(path):
     with open(path, "rb") as stream, mmap.mmap(
             stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
         end = len(data)
-        while end:
+        while end > 0:
             start = data.rfind(b"\n", 0, end)
-            line = data[start + 1:end]
-            end = start
+            if start < 0:
+                line = data[:end]
+                end = 0
+            else:
+                line = data[start + 1:end]
+                end = start
             if line:
                 yield json.loads(line)
 

@@ -47,25 +47,6 @@ def request(payload):
     return result
 
 
-def import_native(provider, native_id, label, cwd, attention, last_touch,
-                  source, migration_id):
-    return raw_request({
-        "op": "import_native", "provider": provider, "native_id": native_id,
-        "label": label, "cwd": cwd, "attention": attention,
-        "last_touch": last_touch, "source": source,
-        "migration_id": migration_id})
-
-
-def native_import_status(provider, native_id, migration_id):
-    return request({"op": "native_import_status", "provider": provider,
-                    "native_id": native_id, "migration_id": migration_id})
-
-
-def discard_native_import(provider, native_id, migration_id):
-    return request({"op": "discard_native_import", "provider": provider,
-                    "native_id": native_id, "migration_id": migration_id})
-
-
 class Watcher:
     def __init__(self, changed, consumer=None):
         self.actors = []
