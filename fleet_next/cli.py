@@ -4,7 +4,7 @@ import json
 import sys
 import threading
 
-from . import actions, ui, viewer
+from . import actions, ui, viewer, workstation
 from .daemon import Fleet, projection
 from .protocol import encode
 from .quota import read as quota_read, update as quota_update
@@ -76,6 +76,15 @@ def main():
     item.add_argument("name")
     item = command("resurrect", lambda a: actions.resurrect(a.key))
     item.add_argument("key")
+    item = command("refresh", lambda a: actions.refresh_command(a.key, a.all_sessions))
+    target = item.add_mutually_exclusive_group(required=True)
+    target.add_argument("key", nargs="?")
+    target.add_argument("--all", dest="all_sessions", action="store_true")
+    item = command("refresh-local", lambda a: actions.refresh_local(a.key))
+    item.add_argument("key")
+    item = command("refresh-check", lambda a: actions.refresh_check(a.key, a.native_id))
+    item.add_argument("key")
+    item.add_argument("native_id")
     item = command("arrive", lambda a: actions.arrive(a.profile, a.available))
     item.add_argument("profile", choices=("laptop", "home", "office"))
     item.add_argument("--available", action="store_true")
@@ -87,6 +96,8 @@ def main():
     item.add_argument("arguments", nargs="*")
     command("signal", lambda _: (RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True),
                                   (RUNTIME / "fleet.changed").touch()))
+    item = command("workstation", lambda a: workstation.serve(a.socket))
+    item.add_argument("--socket", required=True)
     item = command("viewer", lambda a: viewer.serve(a.slot))
     item.add_argument("--slot", default="main")
     item = command("viewer-status", lambda a: print(viewer.exchange(a.slot, "STATUS")))

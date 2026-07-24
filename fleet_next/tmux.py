@@ -15,6 +15,8 @@ from .model import ServerRef, Session, SessionRef
 from .agent import observe
 from .config import RUNTIME
 from .alan import Watcher as AlanWatcher, inventory as alan_inventory
+from .alan import request as alan_request
+from .transcripts import preview as transcript_preview
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
 
@@ -51,6 +53,21 @@ def mutate(key, operation, arguments):
 
 
 def capture(key, columns=0, lines=0):
+    if key.startswith("alan:"):
+        _, host, addr = key.split(":", 2)
+        if host != os.uname().nodename:
+            raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
+        actor = next((item for item in alan_request({"op": "list"})["actors"]
+                      if item["addr"] == addr), None)
+        if actor is None:
+            raise RuntimeError(f"Alan actor disappeared: {addr}")
+        native_id = (actor.get("native") or {}).get("id")
+        if actor.get("type") not in {"claude", "codex"} or not native_id:
+            raise RuntimeError(f"{actor.get('type')} has no transcript preview")
+        try:
+            return transcript_preview(actor["type"], native_id, columns, lines)
+        except SystemExit as error:
+            raise RuntimeError(str(error)) from error
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:
         raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
@@ -70,23 +87,15 @@ def capture(key, columns=0, lines=0):
     return result.stdout
 
 
-def inventory(host, include_fleet=False):
+def inventory(host):
     tmux = server()
     metadata = {sid: (attention, int(activity or 0))
                 for sid, attention, activity in (line.split("\t") for line in tmux.cmd(
                     "list-sessions", "-F",
                     "#{session_id}\t#{@fleet_attention}\t#{@fleet_human_activity}").stdout)}
-    human_activity = {sid: activity for sid, (_, activity) in metadata.items()}
-    for line in tmux.cmd("list-clients", "-F", "#{session_id}\t#{client_activity}").stdout:
-        session_id, activity = line.split("\t", 1)
-        human_activity[session_id] = max(human_activity.get(session_id, 0), int(activity))
-    for session_id, activity in human_activity.items():
-        if activity > metadata[session_id][1]:
-            tmux.cmd("set-option", "-t", session_id,
-                     "@fleet_human_activity", str(activity))
     sessions = []
     for item in tmux.sessions:
-        if item.session_name.startswith("fleet@") and not include_fleet:
+        if item.session_name.startswith("fleet@"):
             continue
         source = ServerRef(host, item.socket_path, int(item.pid), int(item.start_time))
         sessions.append(Session(
@@ -95,7 +104,7 @@ def inventory(host, include_fleet=False):
             int(item.session_attached), int(item.session_windows),
             item.pane_current_command, item.pane_title, item.pane_current_path,
             metadata[item.session_id][0] or "tracked",
-            human_activity=human_activity.get(item.session_id, 0)))
+            human_activity=metadata[item.session_id][1]))
     return sessions
 
 
@@ -148,14 +157,8 @@ def event_stream(host, consumer=None):
             if alan.error and alan.error != alan_error:
                 print(alan.error, file=sys.stderr, flush=True)
             alan_error = alan.error
-            tmux_sessions = inventory(host, include_fleet=True)
-            viewer_activity = {session.name: session.human_activity
-                               for session in tmux_sessions
-                               if session.name.startswith("fleet@")}
-            current = ([session for session in tmux_sessions
-                        if not session.name.startswith("fleet@")] +
-                       alan_inventory(host, alan.actors, alan.attention,
-                                      viewer_activity))
+            current = inventory(host) + alan_inventory(
+                host, alan.actors, alan.attention, alan.activity_baseline)
             try:
                 current = observe(current)
                 agent_cache = {session.ref: session for session in current}

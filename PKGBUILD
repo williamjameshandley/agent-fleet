@@ -30,7 +30,6 @@ pkgver() {
 
 package() {
   install -Dm755 "$startdir/fleet-next" "$pkgdir/usr/bin/fleet-next"
-  install -Dm644 "$startdir/alan-socket" "$pkgdir/etc/agent-fleet/alan-socket"
   for script in fleet-muster fleet-viewer fleet-view fleet-deck fleet-office fleet-commander fleet-snapshot; do
     install -Dm755 "$startdir/$script" "$pkgdir/usr/bin/$script"
   done

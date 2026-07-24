@@ -74,9 +74,7 @@ def ordered():
 
 
 def recency(session):
-    if session.state == "working":
-        return session.human_activity
-    return session.recency or session.activity
+    return session.human_activity or session.created
 
 
 def muster():
@@ -92,8 +90,8 @@ def muster():
         "--layout=reverse", "--no-sort", "--no-multi", "--info=inline", "--border=none",
         f"--header={header()}",
         "--bind=start:unbind(esc)",
-        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,d,x,j,k)+rebind(esc)",
-        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,d,x,j,k)",
+        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k)+rebind(esc)",
+        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k)",
         "--bind=j:down,k:up",
         f"--bind=load:pos({cursor()})+unbind(load)",
         "--bind=enter:execute-silent(fleet-next show --slot main {1})",
@@ -101,6 +99,7 @@ def muster():
         "--bind=double-click:execute-silent(fleet-next show --slot main {1})",
         "--bind=c:execute-silent(fleet-next create-tab)",
         "--bind=r:execute-silent(fleet-next rename-tab {1})",
+        "--bind=R:execute-silent(fleet-next refresh {1})+reload-sync(fleet-next items)",
         "--bind=d:execute-silent(fleet-next done {1})+reload(fleet-next items)",
         "--bind=x:execute-silent(fleet-next dismiss-source {1})+reload-sync(fleet-next items)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
@@ -117,7 +116,7 @@ def header():
     offline = f"  |  offline {' '.join(unavailable)}" if unavailable else ""
     return (f"Claude {usage.get('claude', empty)}{offline}\n"
             f"OpenAI {usage.get('codex', empty)}\n"
-            "N/L/B/T/OE  * working  ! needs action  Enter show  / search  Tab history  c create  r rename  d done  x dismiss")
+            "N/L/B/T/OE  * working  ! needs action  Enter show  / search  Tab history  c create  r rename  R refresh  d done  x dismiss")
 
 
 def cursor():

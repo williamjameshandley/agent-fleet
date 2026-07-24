@@ -6,10 +6,11 @@ import socket
 import subprocess
 import re
 
-from .config import HUB, RUNTIME, ssh_environment
+from .config import RUNTIME, ssh_environment
 from .tmux import inventory
 from .remote import find
 from .model import key_host
+from . import workstation
 
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -38,21 +39,22 @@ def exchange(slot, message):
 
 def request(slot, key):
     exchange(slot, f"OPEN {key}" if key else "CLEAR")
-    if key and slot == "main" and os.uname().nodename.split(".", 1)[0] == HUB:
-        result = subprocess.run(["tmux", "show-options", "-qv", "-t", "fleet@muster",
-                                 "@fleet_workstation"], text=True,
-                                capture_output=True, check=True)
-        workstation = result.stdout.strip()
-        if workstation:
-            focus = shlex.join(("env", "DISPLAY=:0", "i3-msg",
-                                '[instance="fleet-main"] focus'))
-            subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", workstation,
-                            focus], check=True, env=ssh_environment(),
-                           stdout=subprocess.DEVNULL)
+    if key and slot == "main":
+        focus_main()
         return
     if key:
         subprocess.run(["i3-msg", f'[instance="fleet-{slot}"] focus'],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def focus_main():
+    result = subprocess.run(
+        ["tmux", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
+        text=True, capture_output=True, check=True)
+    name = result.stdout.strip()
+    if not name:
+        raise RuntimeError("Muster has no attached workstation")
+    workstation.request(name, {"operation": "focus", "slot": "main"})
 
 
 def slots():

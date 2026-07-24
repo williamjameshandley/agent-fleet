@@ -11,7 +11,10 @@ from .daemon import preview as pane_preview, snapshot
 from .protocol import decode
 from .protocol import decode_message
 from . import viewer
+from . import workstation
 from .alan import rename as alan_rename, set_attention as alan_attention
+from .alan import refresh as alan_refresh
+from .alan import attachment_usable as alan_attachment_usable
 
 
 def host_command(host, *command, capture_output=False):
@@ -24,19 +27,16 @@ def desktop_input(prompt, values=(), fixed=False):
     result = subprocess.run(
         ["tmux", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
         text=True, capture_output=True, check=True)
-    workstation = result.stdout.strip()
-    if not workstation:
+    name = result.stdout.strip()
+    if not name:
         raise SystemExit("Muster has no attached workstation")
-    command = ["env", "DISPLAY=:0", "rofi", "-dmenu", "-p", prompt,
-               "-location", "2", "-theme", "rofi"]
-    if fixed:
-        command.extend(("-i", "-no-custom"))
-    result = subprocess.run(
-        ["ssh", "-T", "-o", "BatchMode=yes", workstation, shlex.join(command)],
-        input="\n".join(values) + "\n", text=True, capture_output=True)
-    if result.returncode:
-        raise SystemExit(result.returncode)
-    return result.stdout.strip()
+    try:
+        return workstation.request(name, {
+            "operation": "prompt", "prompt": prompt,
+            "values": list(values), "fixed": fixed,
+        })
+    except (OSError, RuntimeError) as error:
+        raise SystemExit(str(error))
 
 
 def muster_input(prompt, values=(), initial="", context="", title="Create session"):
@@ -103,6 +103,7 @@ def create():
         result = host_command(host, "fleet-next", "alan-spawn", agent, name, cwd,
                               capture_output=True)
         key = f"alan:{host}:{result.stdout.strip()}"
+        wait_for_projection(key)
     viewer.open_main(key)
 
 
@@ -158,6 +159,116 @@ def dismiss_source(key):
                     "Viewer dismissed; source session is still running"])
 
 
+def refresh_local(key):
+    if not key.startswith("alan:"):
+        raise SystemExit("refresh requires an Alan-owned session")
+    _, host, addr = key.split(":", 2)
+    if host != os.uname().nodename:
+        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+    alan_refresh(addr)
+
+
+def refresh_check(key, native_id):
+    if not key.startswith("alan:"):
+        raise SystemExit("refresh requires an Alan-owned session")
+    _, host, addr = key.split(":", 2)
+    if host != os.uname().nodename:
+        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+    if not alan_attachment_usable(addr, native_id):
+        raise SystemExit(f"actor {addr} has no usable current attachment")
+
+
+def wait_for_projection(key, native_id=None):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            session = find(key)
+        except SystemExit:
+            time.sleep(.1)
+            continue
+        attachment = session.attachment or {}
+        if (session.ref.server.kind != "alan" or
+                ((native_id is None or session.transcript_id == native_id) and
+                 attachment.get("kind") not in {None, "none"})):
+            return
+        time.sleep(.1)
+    raise RuntimeError(f"Fleet projection did not restore {key}")
+
+
+def refresh(key):
+    session = find(key)
+    shown = [slot for slot, source in viewer.slots() if source == key]
+    try:
+        host_command(session.ref.server.host, "fleet-next", "refresh-local", key,
+                     capture_output=True)
+    except subprocess.CalledProcessError as failure:
+        try:
+            host_command(session.ref.server.host, "fleet-next", "refresh-check", key,
+                         session.transcript_id, capture_output=True)
+        except subprocess.CalledProcessError:
+            pass
+        else:
+            for slot in shown:
+                viewer.request(slot, key)
+        raise failure
+    else:
+        wait_for_projection(key, session.transcript_id)
+        for slot in shown:
+            viewer.request(slot, key)
+
+
+def refresh_report(key):
+    try:
+        refresh(key)
+    except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
+        reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
+                  and error.stderr else str(error))
+        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+                        f"Refresh failed: {reason}"])
+        raise SystemExit(reason)
+
+
+def refresh_all():
+    sessions, _, unavailable = decode_message(snapshot())
+    failed = False
+    for session in sorted(sessions, key=lambda item: item.ref.key):
+        key = session.ref.key
+        reason = None
+        if session.ref.server.host in unavailable:
+            reason = "unavailable"
+        elif session.agent not in {"claude", "codex"}:
+            reason = f"unsupported-{session.agent}"
+        elif session.state != "waiting":
+            reason = session.state
+        elif session.windows != 1:
+            reason = f"windows-{session.windows}"
+        elif not session.transcript_id:
+            reason = "no-durable-identity"
+        if reason:
+            print(f"{key}\tskipped: {reason}")
+            continue
+        try:
+            refresh(key)
+        except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
+            detail = (error.stderr.strip()
+                      if isinstance(error, subprocess.CalledProcessError) and error.stderr
+                      else str(error))
+            detail = " ".join(detail.split())
+            print(f"{key}\tfailed: {detail}")
+            failed = True
+        else:
+            print(f"{key}\trefreshed")
+    if failed:
+        raise SystemExit(1)
+
+
+def refresh_command(key, all_sessions):
+    if all_sessions:
+        refresh_all()
+    else:
+        refresh_report(key)
+
+
 def next_waiting_key(sessions, active):
     waiting = [session for session in sessions
                if session.attention != "done" and session.state == "waiting"]
@@ -180,11 +291,8 @@ def next_waiting():
 
 
 def preview(key, columns=0, lines=0):
-    session = find(key)
-    if session.ref.server.kind == "alan":
-        print(f"{session.name}\n{session.agent} · {session.state}\n{session.cwd}")
-    else:
-        print(pane_preview(key, columns, lines), end="")
+    find(key)
+    print(pane_preview(key, columns, lines), end="")
 
 
 def history():
@@ -236,7 +344,7 @@ def arrive(profile, available=False):
                      and session.ref.key not in shown),
                     key=lambda session: ({"needs-action": 0, "working": 1,
                                           "waiting": 2, "finished": 3}.get(session.state, 2),
-                                         -(session.recency or session.activity)))
+                                         -session.human_activity))
     for slot, session in zip(free, ranked):
         viewer.request(slot, session.ref.key)
 
@@ -265,7 +373,7 @@ def context():
         "slots": [{"slot": slot, "source": source} for slot, source in viewer.slots()],
         "sessions": [{"source": s.ref.key, "host": s.ref.server.host, "name": s.name,
                       "agent": s.agent, "state": s.state, "attention": s.attention,
-                      "summary": s.summary, "recency": s.recency or s.activity}
+                      "summary": s.summary, "recency": s.human_activity}
                      for s in sessions],
     }
     print(json.dumps(data, indent=2))

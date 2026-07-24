@@ -1,8 +1,8 @@
 import json
 
-from fleet_next.model import ServerRef, Session, SessionRef
-from fleet_next.transcripts import (PANE_FORMAT, indexed_claude_agents, observe_native,
-                                    select_codex, transcript)
+import fleet_next.transcripts as transcripts
+from fleet_next.transcripts import (PANE_FORMAT, indexed_claude_agents, last_human_time,
+                                    preview, select_codex, transcript)
 
 
 def rollout(path, identity, source="cli"):
@@ -43,16 +43,57 @@ def test_transcript_identity_comes_from_rollout_filename(tmp_path):
     assert transcript("codex", path).session_id == "00000000-0000-0000-0000-000000000001"
 
 
-def test_native_actor_recency_comes_from_its_vendor_transcript(tmp_path, monkeypatch):
+def test_claude_human_activity_excludes_tool_results_and_meta_events(tmp_path):
     path = tmp_path / "00000000-0000-0000-0000-000000000001.jsonl"
-    path.write_text('{"timestamp":"2026-07-24T08:27:16Z"}\n')
-    item = transcript("claude", path)
-    actor = Session(
-        SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), "claude-1"),
-        "review", 0, 0, 0, 1, "tmux", "", "/work", "tracked",
-        "claude", "waiting", transcript_id=item.session_id)
-    monkeypatch.setattr("fleet_next.transcripts.all_transcripts", lambda: [item])
+    events = [
+        {"type": "user", "timestamp": "2026-07-20T10:00:00Z",
+         "message": {"content": "human prompt"}},
+        {"type": "user", "timestamp": "2026-07-20T11:00:00Z",
+         "message": {"content": [{"type": "tool_result"}]}},
+        {"type": "user", "timestamp": "2026-07-20T12:00:00Z", "isMeta": True,
+         "message": {"content": "synthetic"}},
+    ]
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    assert last_human_time(transcript("claude", path)) == 1784541600
 
-    observed = observe_native([actor])[0]
 
-    assert observed.recency == 1784881636
+def test_codex_human_activity_uses_latest_user_message(tmp_path):
+    path = tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
+    events = [
+        {"type": "event_msg", "timestamp": "2026-07-20T10:00:00Z",
+         "payload": {"type": "user_message", "message": "human prompt"}},
+        {"type": "event_msg", "timestamp": "2026-07-20T11:00:00Z",
+         "payload": {"type": "agent_message", "message": "response"}},
+    ]
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    assert last_human_time(transcript("codex", path)) == 1784541600
+
+
+def test_preview_renders_recent_native_conversation(tmp_path, monkeypatch):
+    path = tmp_path / "rollout-thread-1.jsonl"
+    path.write_text("".join(json.dumps(event) + "\n" for event in [
+        {"type": "event_msg", "payload": {
+            "type": "user_message", "message": "inspect the interface"}},
+        {"type": "event_msg", "payload": {
+            "type": "agent_message", "message": "working on it"}},
+    ]))
+    native = type("Native", (), {"path": path})()
+    monkeypatch.setattr(transcripts, "find", lambda session_id, agent: native)
+
+    assert preview("codex", "thread-1", columns=80, lines=20) == (
+        "User\ninspect the interface\n\nAssistant\nworking on it\n")
+
+
+def test_claude_preview_keeps_only_the_last_eight_messages(tmp_path, monkeypatch):
+    path = tmp_path / "session.jsonl"
+    path.write_text("".join(json.dumps({
+        "type": "user", "message": {"content": f"message {index}"}}) + "\n"
+        for index in range(10)))
+    native = type("Native", (), {"path": path})()
+    monkeypatch.setattr(transcripts, "find", lambda session_id, agent: native)
+
+    rendered = preview("claude", "session-1")
+    assert "message 0" not in rendered
+    assert "message 1" not in rendered
+    assert "message 2" in rendered
+    assert "message 9" in rendered
