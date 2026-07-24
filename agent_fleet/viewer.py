@@ -78,16 +78,16 @@ def show(key, slot=None):
     session = find(key)
     if session.attention == "done":
         host = session.ref.server.host
-        operation = (("fleet-next", "alan-attention", session.ref.session_id, "tracked")
+        operation = (("fleet", "alan-attention", session.ref.session_id, "tracked")
                      if session.ref.server.kind == "alan" else
-                     ("fleet-next", "mutate", key, "attention", "tracked"))
+                     ("fleet", "mutate", key, "attention", "tracked"))
         command = shlex.join(operation)
         argv = (list(operation)
                 if host == os.uname().nodename else
                 ["ssh", "-T", "-o", "BatchMode=yes", host, command])
         subprocess.run(argv, check=True)
-        signal = (["fleet-next", "signal"] if host == os.uname().nodename else
-                  ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet-next signal"])
+        signal = (["fleet", "signal"] if host == os.uname().nodename else
+                  ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet signal"])
         subprocess.run(signal, check=True)
     available = slots()
     for name, source in available:
@@ -117,9 +117,22 @@ def show(key, slot=None):
 def command(key):
     host = key_host(key)
     local = os.uname().nodename
-    attach = ["fleet-next", "attach", key]
+    attach = ["fleet", "attach", key]
     return attach if host == local else ["ssh", "-tt", "-o", "BatchMode=yes", host,
                                          shlex.join(attach)]
+
+
+def stop_child(child):
+    if not child or child.poll() is not None:
+        return
+    os.killpg(child.pid, signal.SIGHUP)
+    try:
+        child.wait(timeout=.1)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    os.killpg(child.pid, signal.SIGKILL)
+    child.wait()
 
 
 def serve(slot):
@@ -151,13 +164,13 @@ def serve(slot):
                 if verb != "OPEN":
                     raise ValueError(f"unknown viewer request {verb!r}")
                 if child and child.poll() is None:
-                    child.send_signal(signal.SIGHUP)
-                    child.wait()
+                    stop_child(child)
                 source = key
                 try:
                     environment = {name: value for name, value in ssh_environment().items()
                                    if name not in {"TMUX", "TMUX_PANE"}}
-                    child = subprocess.Popen(command(key), env=environment) if key else None
+                    child = subprocess.Popen(command(key), env=environment,
+                                             start_new_session=True) if key else None
                 except OSError as error:
                     connection.sendall((f"ERROR {error}\n").encode())
                     connection.close()
@@ -171,8 +184,7 @@ def serve(slot):
                 source = ""
     finally:
         if child and child.poll() is None:
-            child.send_signal(signal.SIGHUP)
-            child.wait()
+            stop_child(child)
         path.unlink(missing_ok=True)
 
 
@@ -180,16 +192,12 @@ def attach(key):
     session = find(key)
     if session.ref.server.kind == "alan":
         attachment = session.attachment or {}
-        if attachment.get("kind") == "jupyter":
-            os.execvp("jupyter", ["jupyter", "console", "--existing",
-                                   attachment["connection_file"]])
-            return
-        if attachment.get("kind") == "codex":
-            os.execvp("codex", ["codex", "resume", "--remote",
-                                "unix://" + attachment["socket"],
-                                attachment["thread_id"]])
-            return
         if attachment.get("kind") == "tmux":
+            generation = subprocess.run(
+                ["tmux", "show-options", "-v", "-t", attachment["session"],
+                 "@fleet_generation"], text=True, capture_output=True).stdout.strip()
+            if generation != attachment.get("generation"):
+                raise SystemExit(f"stale actor presentation: {session.ref.session_id}")
             os.execvp("tmux", ["tmux", "attach-session", "-t", attachment["session"]])
             return
         raise SystemExit(f"actor {session.ref.session_id} has no supported attachment")

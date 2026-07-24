@@ -163,6 +163,8 @@ def inventory(host, actors, attention=None, activity_baseline=None):
     activity_baseline = activity_baseline or {}
     sessions = []
     for actor in actors:
+        if actor.get("type") not in {"claude", "codex"}:
+            continue
         attachment = actor.get("attachment") or {"kind": "none"}
         if attachment.get("kind") == "none":
             continue
@@ -183,10 +185,6 @@ def inventory(host, actors, attention=None, activity_baseline=None):
             "", 0, (actor.get("native") or {}).get("id", ""), attachment,
             max(actor.get("human_activity", 0), baseline_epoch)))
     return sessions
-
-
-def spawn_python(label, cwd):
-    return request({"op": "spawn", "source": "python", "label": label, "cwd": cwd})["addr"]
 
 
 def spawn_codex(label, cwd):

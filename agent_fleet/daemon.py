@@ -22,10 +22,10 @@ class Fleet:
         self.next_preview = 0
 
     async def collect(self, host):
-        command = ([sys.executable, "-m", "fleet_next.cli", "events", "--host", host]
+        command = ([sys.executable, "-m", "agent_fleet.cli", "events", "--host", host]
                    if host == os.uname().nodename
                    else ["ssh", "-T", "-o", "BatchMode=yes", host,
-                         shlex.join(("fleet-next", "events", "--host", host))])
+                         shlex.join(("fleet", "events", "--host", host))])
         while True:
             process = await asyncio.create_subprocess_exec(*command,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -86,7 +86,7 @@ class Fleet:
             return
         process = await asyncio.create_subprocess_exec(
             "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-            "-XPOST", "-d", "reload-sync(fleet-next items)+transform-header(fleet-next header)",
+            "-XPOST", "-d", "reload-sync(fleet items)+transform-header(fleet header)",
             "http://localhost",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await process.wait()
@@ -119,9 +119,11 @@ class Fleet:
                     group.create_task(self.collect(host))
 
     async def preview(self, key, columns=0, lines=0):
+        if not any(session.ref.key == key for group in self.sessions.values() for session in group):
+            raise RuntimeError(f"session disappeared: {key}")
         host = key_host(key)
         if host in self.unavailable:
-            raise RuntimeError(f"{host} is disconnected")
+            raise RuntimeError(f"{host} is disconnected; refusing action")
         process = self.processes[host]
         assert process.stdin
         self.next_preview += 1
@@ -153,7 +155,7 @@ def snapshot():
     if os.uname().nodename.split(".", 1)[0] == HUB:
         return projection()
     return subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", HUB,
-                           "fleet-next projection"], text=True,
+                           "fleet projection"], text=True,
                           capture_output=True, check=True).stdout
 
 

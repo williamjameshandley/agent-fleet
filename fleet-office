@@ -20,5 +20,5 @@ launch fleet-commander org.agentfleet.Commander fleet-commander
     while [ "$(find "$runtime" -maxdepth 1 -name 'viewer-newton-*.sock' 2>/dev/null | wc -l)" -lt 6 ]; do
         sleep .05
     done
-    fleet-next arrive office
+    fleet arrive office
 ) &

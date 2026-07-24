@@ -11,7 +11,7 @@ from .quota import read as quota_read, update as quota_update
 from .tmux import capture, event_stream, inventory, mutate
 from .config import RUNTIME, hosts
 from .transcripts import history as transcript_history, resume
-from .alan import (spawn_claude, spawn_codex, spawn_python,
+from .alan import (spawn_claude, spawn_codex,
                    rename as alan_rename, set_attention as alan_attention)
 
 
@@ -48,7 +48,7 @@ def snapshot(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="fleet-next")
+    parser = argparse.ArgumentParser(prog="fleet")
     commands = parser.add_subparsers(required=True)
 
     def command(name, fn):
@@ -114,9 +114,9 @@ def main():
     item = command("rename-tab", lambda a: actions.rename_tab(a.key))
     item.add_argument("key")
     item = command("alan-spawn", lambda a: print(
-        {"python": spawn_python, "codex": spawn_codex,
+        {"codex": spawn_codex,
          "claude": spawn_claude}[a.agent](a.name, a.cwd)))
-    item.add_argument("agent", choices=("python", "codex", "claude"))
+    item.add_argument("agent", choices=("codex", "claude"))
     item.add_argument("name")
     item.add_argument("cwd")
     item = command("alan-rename", lambda a: alan_rename(a.addr, a.label))

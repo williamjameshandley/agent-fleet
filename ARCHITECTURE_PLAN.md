@@ -4,7 +4,7 @@ The accepted design is a thin Python/fzf/tmux application, not a full TUI.
 
 ## Implemented in parallel
 
-- `fleet_next/`: typed server/session identities and NDJSON host protocol.
+- `agent_fleet/`: typed server/session identities and NDJSON host protocol.
 - Host event adapter: complete tmux inventory, control-mode topology events,
   transcript filesystem events and the verified vendor transcript reader.
 - Lovelace collector: the sole in-memory projection, one persistent stream per

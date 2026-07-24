@@ -4,4 +4,4 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/fleet-next quota
+ExecStart=/usr/bin/fleet quota
