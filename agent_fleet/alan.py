@@ -1,5 +1,4 @@
 import json
-import os
 import socket
 import threading
 import time
@@ -9,11 +8,6 @@ from .model import ServerRef, Session, SessionRef
 
 
 def socket_path():
-    if value := os.environ.get("LOOP_SOCKET"):
-        path = Path(value)
-        if path.is_absolute():
-            return path
-        raise RuntimeError("Alan socket path must be absolute")
     for path in (Path.home() / ".config/agent-fleet/alan-socket",
                  Path("/etc/agent-fleet/alan-socket")):
         if path.exists():

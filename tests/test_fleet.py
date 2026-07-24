@@ -253,7 +253,7 @@ class IdentityTests(unittest.TestCase):
         self.assertNotIn("/etc/agent-fleet/alan-socket",
                          (root / "PKGBUILD").read_text())
         self.assertNotIn("LOOP_SOCKET=", (root / "fleet.service").read_text())
-        with mock.patch.dict(os.environ, {}, clear=True), \
+        with mock.patch.dict(os.environ, {"LOOP_SOCKET": "/run/alan-loop/loop.sock"}), \
              mock.patch("agent_fleet.alan.Path.home", return_value=Path("/home/will")), \
              mock.patch("agent_fleet.alan.Path.exists", return_value=True), \
              mock.patch("agent_fleet.alan.Path.read_text",
@@ -285,7 +285,7 @@ class IdentityTests(unittest.TestCase):
             self.assertTrue(ready.wait(1))
             changed = queue.Queue()
             stopped = threading.Event()
-            with mock.patch.dict(os.environ, {"LOOP_SOCKET": str(path)}):
+            with mock.patch("agent_fleet.alan.socket_path", return_value=path):
                 watcher = AlanWatcher(changed, stopped)
                 deadline = time.monotonic() + 2
                 while watcher.actors and time.monotonic() < deadline:
