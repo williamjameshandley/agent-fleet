@@ -74,6 +74,16 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(actor.state, "needs-action")
         self.assertEqual(actor.human_activity, 123)
 
+    def test_alan_inventory_preserves_creation_time_as_recency_fallback(self):
+        actor = alan_inventory("lovelace", [{
+            "addr": "codex-1", "type": "codex", "state": "waiting",
+            "created": 456, "human_activity": 0, "native": {"id": "thread-1"},
+            "attachment": {"kind": "codex", "socket": "/run/codex.sock",
+                           "thread_id": "thread-1"},
+        }])[0]
+        self.assertEqual(actor.created, 456)
+        self.assertEqual(recency(actor), 456)
+
     def test_alan_refresh_waits_for_same_identity_and_usable_attachment(self):
         before = {"addr": "codex-1", "type": "codex", "state": "waiting",
                   "native": {"id": "thread-1"},
@@ -238,6 +248,17 @@ class IdentityTests(unittest.TestCase):
         execute.assert_called_once_with(
             "tmux", ["tmux", "attach-session", "-t", "$1"])
 
+    def test_main_viewer_focus_does_not_wait_for_remote_workstation(self):
+        session = self.session(os.uname().nodename)
+        with mock.patch("fleet_next.viewer.HUB", os.uname().nodename), \
+             mock.patch("fleet_next.viewer.exchange") as exchange, \
+             mock.patch("fleet_next.viewer.subprocess.run") as run, \
+             mock.patch("fleet_next.viewer.subprocess.Popen") as popen:
+            run.return_value.stdout = "boltzmann\n"
+            viewer.request("main", session.ref.key)
+        exchange.assert_called_once_with("main", f"OPEN {session.ref.key}")
+        popen.assert_called_once()
+
     def test_create_materializes_codex_as_an_alan_actor(self):
         host = os.uname().nodename
         with mock.patch("fleet_next.actions.muster_input",
@@ -284,11 +305,11 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(recency(working), 10)
         self.assertEqual(recency(waiting), 10)
 
-    def test_working_without_observed_human_activity_does_not_follow_output(self):
+    def test_working_without_observed_human_activity_uses_creation_not_output(self):
         working = Session(**{**self.session("newton").__dict__,
                              "reported_state": "working", "recency": 20,
                              "human_activity": 0})
-        self.assertEqual(recency(working), 0)
+        self.assertEqual(recency(working), working.created)
 
     def test_working_sorts_before_waiting_and_done(self):
         self.assertLess(STATE_ORDER["working"], STATE_ORDER["waiting"])
@@ -377,7 +398,7 @@ class IdentityTests(unittest.TestCase):
     def test_viewer_uses_stable_agent_environment(self):
         source = (Path(__file__).parents[1] / "fleet_next/viewer.py").read_text()
         self.assertIn("ssh_environment().items()", source)
-        self.assertIn("focus], check=True, env=ssh_environment()", source)
+        self.assertIn("focus], env=ssh_environment()", source)
 
     def test_management_prompts_never_read_raw_terminal_input(self):
         source = (Path(__file__).parents[1] / "fleet_next/actions.py").read_text()

@@ -74,7 +74,7 @@ def ordered():
 
 
 def recency(session):
-    return session.human_activity
+    return session.human_activity or session.created
 
 
 def muster():

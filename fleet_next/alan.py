@@ -146,7 +146,8 @@ def inventory(host, actors, attention=None):
                           "needs-action" if state == "needs-action" else "waiting")
         sessions.append(Session(
             SessionRef(source, actor["addr"]), actor.get("label") or actor["addr"],
-            0, 0, 0, 1, attachment.get("kind", "alan"), actor.get("label", ""),
+            actor.get("created", 0), 0, 0, 1, attachment.get("kind", "alan"),
+            actor.get("label", ""),
             actor.get("cwd") or "", attention.get(actor["addr"], "tracked"),
             actor.get("type", "alan"), reported_state,
             "", 0, (actor.get("native") or {}).get("id", ""), attachment,
