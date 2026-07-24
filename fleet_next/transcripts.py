@@ -136,6 +136,22 @@ def last_event_time(path):
     raise ValueError(f"no timestamped events in {path}")
 
 
+def last_human_time(item):
+    for event in reverse_events(item.path):
+        human = False
+        if item.agent == "claude" and event.get("type") == "user" and not event.get("isMeta"):
+            content = event.get("message", {}).get("content")
+            human = (isinstance(content, str) or
+                     (isinstance(content, list) and
+                      any(block.get("type") == "text" for block in content)))
+        elif item.agent == "codex" and event.get("type") == "event_msg":
+            human = event.get("payload", {}).get("type") == "user_message"
+        if human and "timestamp" in event:
+            return int(datetime.fromisoformat(
+                event["timestamp"].replace("Z", "+00:00")).timestamp())
+    return 0
+
+
 def codex_state(item):
     boundary, summary, updated = "task_complete", "", 0
     for event in item.events():
@@ -235,6 +251,7 @@ def observe(sessions):
                      "working")
             path = CLAUDE / entry["cwd"].replace("/", "-").replace(".", "-") / f"{identity}.jsonl"
             updated = last_event_time(path) if path.exists() else 0
+            human_activity = last_human_time(transcript("claude", path)) if path.exists() else 0
             summary = title
         else:
             try:
@@ -243,7 +260,9 @@ def observe(sessions):
                 continue
             identity = item.session_id
             state, summary, updated = codex_state(item)
-        rows.append((session_id, agent, state, " ".join(summary.split()), updated, identity))
+            human_activity = last_human_time(item)
+        rows.append((session_id, agent, state, " ".join(summary.split()), updated, identity,
+                     human_activity))
 
     by_session, counts = {}, {}
     for row in rows:
@@ -255,6 +274,9 @@ def observe(sessions):
             current = list(by_session[sid])
             current[4] = row[4]
             by_session[sid] = tuple(current)
+        current = list(by_session[sid])
+        current[6] = max(current[6], row[6])
+        by_session[sid] = tuple(current)
     result = []
     for session in sessions:
         row = by_session.get(session.ref.session_id)
@@ -265,8 +287,10 @@ def observe(sessions):
             result.append(replace(session, agent_name="multiple",
                                   reported_state="needs-action",
                                   summary=f"{count} agent panes — management required",
-                                  recency=row[4]))
+                                  recency=row[4],
+                                  human_activity=row[6] or session.human_activity))
         else:
             result.append(replace(session, agent_name=row[1], reported_state=row[2],
-                                  summary=row[3], recency=row[4], transcript_id=row[5]))
+                                  summary=row[3], recency=row[4], transcript_id=row[5],
+                                  human_activity=row[6] or session.human_activity))
     return result

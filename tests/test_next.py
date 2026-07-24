@@ -311,6 +311,10 @@ class IdentityTests(unittest.TestCase):
                              "human_activity": 0})
         self.assertEqual(recency(working), working.created)
 
+    def test_tmux_inventory_does_not_promote_client_activity_to_human_activity(self):
+        source = (Path(__file__).parents[1] / "fleet_next/tmux.py").read_text()
+        self.assertNotIn("#{client_activity}", source)
+
     def test_working_sorts_before_waiting_and_done(self):
         self.assertLess(STATE_ORDER["working"], STATE_ORDER["waiting"])
 
