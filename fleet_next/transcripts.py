@@ -210,7 +210,21 @@ def indexed_claude_agents(output):
     return {item["pid"]: item for item in json.loads(output) if item.get("pid") is not None}
 
 
+def observe_native(sessions):
+    wanted = {(session.agent, session.transcript_id)
+              for session in sessions if session.transcript_id}
+    transcripts = {}
+    for item in all_transcripts():
+        key = item.agent, item.session_id
+        if key in wanted:
+            transcripts.setdefault(key, item)
+    return [replace(session, recency=last_event_time(item.path))
+            if (item := transcripts.get((session.agent, session.transcript_id)))
+            else session for session in sessions]
+
+
 def observe(sessions):
+    sessions = observe_native(sessions)
     claude = indexed_claude_agents(subprocess.run(
         ["claude", "agents", "--json"], text=True, capture_output=True,
         check=True).stdout)

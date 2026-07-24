@@ -67,6 +67,14 @@ class IdentityTests(unittest.TestCase):
         }], {"python-1": "done"})[0]
         self.assertEqual(actor.attention, "done")
 
+    def test_alan_inventory_uses_attached_tmux_viewer_human_activity(self):
+        actor = alan_inventory("lovelace", [{
+            "addr": "claude-1", "type": "claude", "state": "working",
+            "attachment": {"kind": "tmux", "session": "fleet@actor-claude-1"},
+        }], viewer_activity={"fleet@actor-claude-1": 1234})[0]
+
+        self.assertEqual(actor.human_activity, 1234)
+
     def test_alan_attention_appends_a_fleet_mailbox_event(self):
         with mock.patch("fleet_next.alan.request") as request:
             alan_set_attention("claude-1", "done")

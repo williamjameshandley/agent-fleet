@@ -133,9 +133,10 @@ class Watcher:
                 time.sleep(1)
 
 
-def inventory(host, actors, attention=None):
+def inventory(host, actors, attention=None, viewer_activity=None):
     source = ServerRef(host, "", 0, 0, "alan")
     attention = attention or {}
+    viewer_activity = viewer_activity or {}
     sessions = []
     for actor in actors:
         attachment = actor.get("attachment") or {"kind": "none"}
@@ -148,7 +149,8 @@ def inventory(host, actors, attention=None):
             actor.get("cwd") or "", attention.get(actor["addr"], "tracked"),
             actor.get("type", "alan"),
             "working" if state in {"busy", "working"} else "waiting",
-            "", 0, (actor.get("native") or {}).get("id", ""), attachment))
+            "", 0, (actor.get("native") or {}).get("id", ""), attachment,
+            viewer_activity.get(attachment.get("session", ""), 0)))
     return sessions
 
 

@@ -70,7 +70,7 @@ def capture(key, columns=0, lines=0):
     return result.stdout
 
 
-def inventory(host):
+def inventory(host, include_fleet=False):
     tmux = server()
     metadata = {sid: (attention, int(activity or 0))
                 for sid, attention, activity in (line.split("\t") for line in tmux.cmd(
@@ -86,7 +86,7 @@ def inventory(host):
                      "@fleet_human_activity", str(activity))
     sessions = []
     for item in tmux.sessions:
-        if item.session_name.startswith("fleet@"):
+        if item.session_name.startswith("fleet@") and not include_fleet:
             continue
         source = ServerRef(host, item.socket_path, int(item.pid), int(item.start_time))
         sessions.append(Session(
@@ -148,7 +148,14 @@ def event_stream(host, consumer=None):
             if alan.error and alan.error != alan_error:
                 print(alan.error, file=sys.stderr, flush=True)
             alan_error = alan.error
-            current = inventory(host) + alan_inventory(host, alan.actors, alan.attention)
+            tmux_sessions = inventory(host, include_fleet=True)
+            viewer_activity = {session.name: session.human_activity
+                               for session in tmux_sessions
+                               if session.name.startswith("fleet@")}
+            current = ([session for session in tmux_sessions
+                        if not session.name.startswith("fleet@")] +
+                       alan_inventory(host, alan.actors, alan.attention,
+                                      viewer_activity))
             try:
                 current = observe(current)
                 agent_cache = {session.ref: session for session in current}
