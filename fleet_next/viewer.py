@@ -6,7 +6,7 @@ import socket
 import subprocess
 import re
 
-from .config import HUB, RUNTIME, ssh_environment
+from .config import RUNTIME, ssh_environment
 from .tmux import inventory
 from .remote import find
 from .model import key_host
@@ -38,22 +38,26 @@ def exchange(slot, message):
 
 def request(slot, key):
     exchange(slot, f"OPEN {key}" if key else "CLEAR")
-    if key and slot == "main" and os.uname().nodename.split(".", 1)[0] == HUB:
-        result = subprocess.run(["tmux", "show-options", "-qv", "-t", "fleet@muster",
-                                 "@fleet_workstation"], text=True,
-                                capture_output=True, check=True)
-        workstation = result.stdout.strip()
-        if workstation:
-            focus = shlex.join(("env", "DISPLAY=:0", "i3-msg",
-                                '[instance="fleet-main"] focus'))
-            subprocess.Popen(["ssh", "-T", "-o", "BatchMode=yes", workstation,
-                              focus], env=ssh_environment(),
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+    if key and slot == "main":
+        focus_main()
         return
     if key:
         subprocess.run(["i3-msg", f'[instance="fleet-{slot}"] focus'],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def focus_main():
+    result = subprocess.run(
+        ["tmux", "list-clients", "-t", "fleet@main", "-F", "#{client_tty}"],
+        text=True, capture_output=True, check=True)
+    for tty in result.stdout.splitlines():
+        if not re.fullmatch(r"/dev/pts/[0-9]+", tty):
+            raise RuntimeError(f"unexpected Fleet client tty {tty!r}")
+        descriptor = os.open(tty, os.O_WRONLY | os.O_NOCTTY | os.O_NOFOLLOW)
+        try:
+            os.write(descriptor, b"\033[5t")
+        finally:
+            os.close(descriptor)
 
 
 def slots():

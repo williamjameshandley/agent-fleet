@@ -248,16 +248,19 @@ class IdentityTests(unittest.TestCase):
         execute.assert_called_once_with(
             "tmux", ["tmux", "attach-session", "-t", "$1"])
 
-    def test_main_viewer_focus_does_not_wait_for_remote_workstation(self):
+    def test_main_viewer_focus_uses_its_attached_client(self):
         session = self.session(os.uname().nodename)
-        with mock.patch("fleet_next.viewer.HUB", os.uname().nodename), \
-             mock.patch("fleet_next.viewer.exchange") as exchange, \
+        with mock.patch("fleet_next.viewer.exchange") as exchange, \
              mock.patch("fleet_next.viewer.subprocess.run") as run, \
-             mock.patch("fleet_next.viewer.subprocess.Popen") as popen:
-            run.return_value.stdout = "boltzmann\n"
+             mock.patch("fleet_next.viewer.os.open", return_value=7) as opened, \
+             mock.patch("fleet_next.viewer.os.write") as write, \
+             mock.patch("fleet_next.viewer.os.close"):
+            run.return_value.stdout = "/dev/pts/16\n"
             viewer.request("main", session.ref.key)
         exchange.assert_called_once_with("main", f"OPEN {session.ref.key}")
-        popen.assert_called_once()
+        opened.assert_called_once_with(
+            "/dev/pts/16", os.O_WRONLY | os.O_NOCTTY | os.O_NOFOLLOW)
+        write.assert_called_once_with(7, b"\033[5t")
 
     def test_create_materializes_codex_as_an_alan_actor(self):
         host = os.uname().nodename
@@ -402,7 +405,6 @@ class IdentityTests(unittest.TestCase):
     def test_viewer_uses_stable_agent_environment(self):
         source = (Path(__file__).parents[1] / "fleet_next/viewer.py").read_text()
         self.assertIn("ssh_environment().items()", source)
-        self.assertIn("focus], env=ssh_environment()", source)
 
     def test_management_prompts_never_read_raw_terminal_input(self):
         source = (Path(__file__).parents[1] / "fleet_next/actions.py").read_text()
