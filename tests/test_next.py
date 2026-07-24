@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 import os
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from fleet_next.alan import refresh as alan_refresh
 from fleet_next import viewer
 from fleet_next import workstation
 from fleet_next import tmux
+from fleet_next.daemon import Fleet
 
 
 class IdentityTests(unittest.TestCase):
@@ -52,6 +54,30 @@ class IdentityTests(unittest.TestCase):
     def test_protocol_round_trip_preserves_canonical_identity(self):
         sessions = [self.session("newton"), self.session("lovelace")]
         self.assertEqual(decode(encode(sessions)), sessions)
+
+    def test_preview_daemon_rejects_stale_and_malformed_keys_before_dispatch(self):
+        fleet = Fleet()
+        fleet.sessions = {"lovelace": [self.session("lovelace")]}
+        for key in ["lovelace:/tmp/tmux/default:12:10:$gone", "malformed"]:
+            with self.assertRaises(RuntimeError) as raised:
+                asyncio.run(fleet.preview(key))
+            self.assertEqual(str(raised.exception), f"session disappeared: {key}")
+
+        fleet.unavailable = {"lovelace"}
+        with self.assertRaises(RuntimeError) as raised:
+            asyncio.run(fleet.preview(self.session("lovelace").ref.key))
+        self.assertEqual(
+            str(raised.exception), "lovelace is disconnected; refusing action"
+        )
+
+    def test_preview_fast_path_preserves_argument_errors(self):
+        executable = Path(__file__).parents[1] / "fleet-next"
+        for arguments in [[], ["key", "bad"], ["key", "1", "2", "extra"]]:
+            result = subprocess.run(
+                [executable, "preview", *arguments], text=True, capture_output=True
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("usage: fleet-next preview", result.stderr)
 
     def test_alan_inventory_excludes_python(self):
         actors = alan_inventory("newton", [{

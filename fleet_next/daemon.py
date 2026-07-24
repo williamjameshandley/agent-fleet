@@ -119,9 +119,11 @@ class Fleet:
                     group.create_task(self.collect(host))
 
     async def preview(self, key, columns=0, lines=0):
+        if not any(session.ref.key == key for group in self.sessions.values() for session in group):
+            raise RuntimeError(f"session disappeared: {key}")
         host = key_host(key)
         if host in self.unavailable:
-            raise RuntimeError(f"{host} is disconnected")
+            raise RuntimeError(f"{host} is disconnected; refusing action")
         process = self.processes[host]
         assert process.stdin
         self.next_preview += 1
