@@ -88,7 +88,7 @@ def create_tab():
 
 def create():
     host = muster_input("host", hosts())
-    agent = muster_input("agent", ("claude", "codex", "python", "shell"),
+    agent = muster_input("agent", ("claude", "codex", "shell"),
                          context=host)
     name = session_name(muster_input("name", context=f"{host} · {agent}"))
     cwd = muster_input("directory", initial=str(Path.home()),

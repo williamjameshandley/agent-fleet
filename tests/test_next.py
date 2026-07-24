@@ -38,32 +38,36 @@ class IdentityTests(unittest.TestCase):
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
 
+    def test_viewer_force_reaps_a_signal_ignoring_process_group(self):
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             "import signal,time; signal.signal(signal.SIGHUP, signal.SIG_IGN); time.sleep(30)"],
+            start_new_session=True)
+        time.sleep(.05)
+        started = time.monotonic()
+        viewer.stop_child(child)
+        self.assertLess(time.monotonic() - started, .5)
+        self.assertIsNotNone(child.returncode)
+
     def test_protocol_round_trip_preserves_canonical_identity(self):
         sessions = [self.session("newton"), self.session("lovelace")]
         self.assertEqual(decode(encode(sessions)), sessions)
 
-    def test_protocol_round_trip_preserves_tagged_alan_identity(self):
-        actor = alan_inventory("newton", [{
+    def test_alan_inventory_excludes_python(self):
+        actors = alan_inventory("newton", [{
             "addr": "python-deadbeef", "type": "python", "state": "live",
             "label": "notebook", "cwd": "/work", "native": {"id": "kernel-1"},
             "attachment": {"kind": "jupyter", "connection_file": "/run/kernel.json"},
-        }])[0]
+        }])
+        self.assertEqual(actors, [])
 
-        self.assertEqual(actor.ref.key, "alan:newton:python-deadbeef")
-        self.assertEqual(decode(encode([actor])), [actor])
-        self.assertEqual(actor.agent, "python")
-        self.assertEqual(actor.attachment["connection_file"], "/run/kernel.json")
-
-    def test_alan_inventory_maps_busy_actor_without_creating_tmux_identity(self):
-        actor = alan_inventory("lovelace", [{
+    def test_alan_inventory_excludes_busy_python_actor(self):
+        actors = alan_inventory("lovelace", [{
             "addr": "python-1", "type": "python", "state": "busy",
             "label": "analysis", "cwd": None, "native": None,
             "attachment": {"kind": "jupyter", "connection_file": "/run/kernel.json"},
-        }])[0]
-
-        self.assertEqual(actor.ref.server.kind, "alan")
-        self.assertEqual(actor.state, "working")
-        self.assertEqual(actor.name, "analysis")
+        }])
+        self.assertEqual(actors, [])
 
     def test_alan_inventory_preserves_needs_action_and_human_activity(self):
         actor = alan_inventory("lovelace", [{
@@ -117,11 +121,12 @@ class IdentityTests(unittest.TestCase):
             mock.call({"op": "list"}),
         ])
 
-    def test_alan_inventory_reconstructs_attention_from_fleet_mailbox(self):
+    def test_alan_inventory_applies_reconstructed_attention(self):
         actor = alan_inventory("lovelace", [{
-            "addr": "python-1", "type": "python", "state": "live",
-            "attachment": {"kind": "jupyter", "connection_file": "/run/k.json"},
-        }], {"python-1": "done"})[0]
+            "addr": "codex-1", "type": "codex", "state": "waiting",
+            "attachment": {"kind": "tmux", "session": "fleet@codex-work-1",
+                           "generation": "thread-1"},
+        }], {"codex-1": "done"})[0]
         self.assertEqual(actor.attention, "done")
 
     def test_alan_attention_appends_a_fleet_mailbox_event(self):
@@ -265,42 +270,35 @@ class IdentityTests(unittest.TestCase):
                 self.assertGreaterEqual(changed.qsize(), 2)
                 stopped.set()
 
-    def test_alan_attach_execs_the_declared_jupyter_connection_file(self):
-        actor = alan_inventory("lovelace", [{
-            "addr": "python-1", "type": "python", "state": "live",
-            "label": "analysis", "cwd": "/work",
-            "attachment": {"kind": "jupyter", "connection_file": "/run/kernel.json"},
-        }])[0]
-        with mock.patch("fleet_next.viewer.find", return_value=actor), \
-             mock.patch("os.execvp") as execute:
-            viewer.attach(actor.ref.key)
-        execute.assert_called_once_with(
-            "jupyter", ["jupyter", "console", "--existing", "/run/kernel.json"])
-
-    def test_alan_attach_execs_the_exact_native_codex_thread(self):
+    def test_alan_attach_execs_the_declared_codex_tmux_session(self):
         actor = alan_inventory("lovelace", [{
             "addr": "codex-1", "type": "codex", "state": "live",
             "label": "review", "cwd": "/work", "native": {"id": "thread-1"},
-            "attachment": {"kind": "codex", "socket": "/run/codex.sock",
-                           "thread_id": "thread-1"},
+            "attachment": {"kind": "tmux", "session": "fleet@codex-review-1",
+                           "generation": "thread-1"},
         }])[0]
         with mock.patch("fleet_next.viewer.find", return_value=actor), \
+             mock.patch("fleet_next.viewer.subprocess.run",
+                        return_value=mock.Mock(stdout="thread-1\n")), \
              mock.patch("os.execvp") as execute:
             viewer.attach(actor.ref.key)
         execute.assert_called_once_with(
-            "codex", ["codex", "resume", "--remote", "unix:///run/codex.sock", "thread-1"])
+            "tmux", ["tmux", "attach-session", "-t", "fleet@codex-review-1"])
 
     def test_alan_attach_execs_the_declared_claude_tmux_session(self):
         actor = alan_inventory("lovelace", [{
             "addr": "claude-1", "type": "claude", "state": "waiting",
             "label": "review", "cwd": "/work", "native": {"id": "session-1"},
-            "attachment": {"kind": "tmux", "session": "fleet@actor-claude-1"},
+            "attachment": {"kind": "tmux", "session": "fleet@claude-review-1",
+                           "generation": "session-1"},
         }])[0]
         with mock.patch("fleet_next.viewer.find", return_value=actor), \
+             mock.patch("fleet_next.viewer.subprocess.run",
+                        return_value=mock.Mock(stdout="session-1\n")), \
              mock.patch("os.execvp") as execute:
             viewer.attach(actor.ref.key)
         execute.assert_called_once_with(
-            "tmux", ["tmux", "attach-session", "-t", "fleet@actor-claude-1"])
+            "tmux", ["tmux", "attach-session", "-t", "fleet@claude-review-1"])
 
     def test_codex_tmux_attach_enables_native_nested_mouse_routing(self):
         session = self.session(os.uname().nodename)
@@ -536,34 +534,36 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "Alan-owned"):
             actions.refresh_local("lovelace:/tmp/tmux:12:10:$1")
 
-    def test_alan_preview_uses_the_native_transcript(self):
+    def test_alan_preview_captures_the_persistent_tmux_pane(self):
         host = os.uname().nodename
-        actor = {"addr": "codex-1", "type": "codex",
-                 "native": {"id": "thread-1"}}
-        with mock.patch("fleet_next.tmux.alan_request",
-                        return_value={"actors": [actor]}), \
-             mock.patch("fleet_next.tmux.transcript_preview",
+        attachment = {"kind": "tmux", "session": "fleet@codex-review-1",
+                      "generation": "12:34:$1"}
+        session = mock.Mock(session_name=attachment["session"])
+        server = mock.Mock(sessions=[session])
+        server.cmd.return_value.stdout = [attachment["generation"]]
+        with mock.patch.dict(tmux._alan_attachments, {"codex-1": attachment}, clear=True), \
+             mock.patch("fleet_next.tmux.server", return_value=server), \
+             mock.patch("fleet_next.tmux.capture_pane",
                         return_value="conversation\n") as render:
             result = tmux.capture(f"alan:{host}:codex-1", 80, 20)
         self.assertEqual(result, "conversation\n")
-        render.assert_called_once_with("codex", "thread-1", 80, 20)
+        render.assert_called_once_with(session, 80, 20)
 
     def test_alan_preview_refuses_a_disappeared_actor(self):
         host = os.uname().nodename
-        with mock.patch("fleet_next.tmux.alan_request",
-                        return_value={"actors": []}):
+        with mock.patch.dict(tmux._alan_attachments, {}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "disappeared"):
                 tmux.capture(f"alan:{host}:codex-1", 80, 20)
 
-    def test_alan_preview_reports_a_disappeared_transcript(self):
+    def test_alan_preview_rejects_stale_tmux_generation(self):
         host = os.uname().nodename
-        actor = {"addr": "codex-1", "type": "codex",
-                 "native": {"id": "missing"}}
-        with mock.patch("fleet_next.tmux.alan_request",
-                        return_value={"actors": [actor]}), \
-             mock.patch("fleet_next.tmux.transcript_preview",
-                        side_effect=SystemExit("no transcript matches 'missing'")):
-            with self.assertRaisesRegex(RuntimeError, "no transcript matches"):
+        attachment = {"kind": "tmux", "session": "fleet@codex-review-1",
+                      "generation": "new"}
+        server = mock.Mock()
+        server.cmd.return_value.stdout = ["old"]
+        with mock.patch.dict(tmux._alan_attachments, {"codex-1": attachment}, clear=True), \
+             mock.patch("fleet_next.tmux.server", return_value=server):
+            with self.assertRaisesRegex(RuntimeError, "stale Alan presentation"):
                 tmux.capture(f"alan:{host}:codex-1", 80, 20)
 
     def test_failed_refresh_reopens_a_still_usable_source_then_reports_failure(self):

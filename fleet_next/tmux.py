@@ -15,10 +15,9 @@ from .model import ServerRef, Session, SessionRef
 from .agent import observe
 from .config import RUNTIME
 from .alan import Watcher as AlanWatcher, inventory as alan_inventory
-from .alan import request as alan_request
-from .transcripts import preview as transcript_preview
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
+_alan_attachments = {}
 
 
 def server():
@@ -57,17 +56,21 @@ def capture(key, columns=0, lines=0):
         _, host, addr = key.split(":", 2)
         if host != os.uname().nodename:
             raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
-        actor = next((item for item in alan_request({"op": "list"})["actors"]
-                      if item["addr"] == addr), None)
-        if actor is None:
+        attachment = _alan_attachments.get(addr)
+        if attachment is None:
             raise RuntimeError(f"Alan actor disappeared: {addr}")
-        native_id = (actor.get("native") or {}).get("id")
-        if actor.get("type") not in {"claude", "codex"} or not native_id:
-            raise RuntimeError(f"{actor.get('type')} has no transcript preview")
-        try:
-            return transcript_preview(actor["type"], native_id, columns, lines)
-        except SystemExit as error:
-            raise RuntimeError(str(error)) from error
+        if attachment.get("kind") != "tmux":
+            raise RuntimeError(f"Alan actor {addr} has no tmux presentation")
+        tmux = server()
+        name = attachment["session"]
+        generation = attachment.get("generation", "")
+        if tmux.cmd("show-options", "-v", "-t", name,
+                    "@fleet_generation").stdout != [generation]:
+            raise RuntimeError(f"stale Alan presentation: {addr}")
+        session = next((item for item in tmux.sessions if item.session_name == name), None)
+        if session is None:
+            raise RuntimeError(f"Alan presentation disappeared: {addr}")
+        return capture_pane(session, columns, lines)
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:
         raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
@@ -75,6 +78,10 @@ def capture(key, columns=0, lines=0):
     session = TmuxSession.from_session_id(tmux, session_id)
     if (session.socket_path, int(session.pid), int(session.start_time)) != (socket, pid, started):
         raise RuntimeError(f"stale source identity: {key}")
+    return capture_pane(session, columns, lines)
+
+
+def capture_pane(session, columns=0, lines=0):
     pane = session.active_pane
     content = pane.capture_pane(start=0, end="-", escape_sequences=True,
                                 preserve_trailing=True) or []
@@ -157,6 +164,10 @@ def event_stream(host, consumer=None):
             if alan.error and alan.error != alan_error:
                 print(alan.error, file=sys.stderr, flush=True)
             alan_error = alan.error
+            global _alan_attachments
+            _alan_attachments = {
+                actor["addr"]: actor.get("attachment") or {"kind": "none"}
+                for actor in alan.actors if actor.get("type") in {"claude", "codex"}}
             current = inventory(host) + alan_inventory(
                 host, alan.actors, alan.attention, alan.activity_baseline)
             try:
