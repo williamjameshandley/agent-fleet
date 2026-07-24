@@ -32,21 +32,45 @@ def configured():
         return False
 
 
-def request(payload):
+def raw_request(payload):
     with socket.socket(socket.AF_UNIX) as client:
         client.connect(str(socket_path()))
         client.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode())
         line = client.makefile().readline()
-    result = json.loads(line)
+    return json.loads(line)
+
+
+def request(payload):
+    result = raw_request(payload)
     if not result.get("ok"):
         raise RuntimeError(result.get("error", "Alan request failed"))
     return result
+
+
+def import_native(provider, native_id, label, cwd, attention, last_touch,
+                  source, migration_id):
+    return raw_request({
+        "op": "import_native", "provider": provider, "native_id": native_id,
+        "label": label, "cwd": cwd, "attention": attention,
+        "last_touch": last_touch, "source": source,
+        "migration_id": migration_id})
+
+
+def native_import_status(provider, native_id, migration_id):
+    return request({"op": "native_import_status", "provider": provider,
+                    "native_id": native_id, "migration_id": migration_id})
+
+
+def discard_native_import(provider, native_id, migration_id):
+    return request({"op": "discard_native_import", "provider": provider,
+                    "native_id": native_id, "migration_id": migration_id})
 
 
 class Watcher:
     def __init__(self, changed, consumer=None):
         self.actors = []
         self.attention = {}
+        self.activity_baseline = {}
         self.available = False
         self.error = None
         self.initialized = threading.Event()
@@ -100,6 +124,7 @@ class Watcher:
         while not (self._consumer and self._consumer.is_set()):
             after = -1
             reconstructed = {}
+            baselines = {}
             replaying = True
             try:
                 while not (self._consumer and self._consumer.is_set()):
@@ -116,12 +141,29 @@ class Watcher:
                         attention = payload.get("attention")
                         if isinstance(addr, str) and attention in {"tracked", "done"}:
                             reconstructed[addr] = attention
+                            last_touch = payload.get("last_touch")
+                            migration_id = payload.get("migration_id")
+                            source = payload.get("source")
+                            if (isinstance(last_touch, int) and last_touch >= 0 and
+                                    isinstance(migration_id, str) and migration_id and
+                                    isinstance(source, dict) and
+                                    isinstance(source.get("host"), str) and
+                                    isinstance(source.get("key"), str) and
+                                    payload.get("provider") in {"codex", "claude"} and
+                                    isinstance(payload.get("native_id"), str)):
+                                current = baselines.get(addr)
+                                if current is None or last_touch > current["last_touch"]:
+                                    baselines[addr] = {
+                                        "last_touch": last_touch,
+                                        "provider": payload["provider"],
+                                        "native_id": payload["native_id"]}
                             changed = True
                     replay_complete = len(messages) < 100
                     if ((replaying and replay_complete and
                          reconstructed != self.attention) or
                             (not replaying and changed)):
                         self.attention = dict(reconstructed)
+                        self.activity_baseline = dict(baselines)
                         self._changed.put("alan-attention")
                     if replay_complete:
                         replaying = False
@@ -129,19 +171,26 @@ class Watcher:
                     OSError, RuntimeError, KeyError, TypeError):
                 if self.attention:
                     self.attention = {}
+                    self.activity_baseline = {}
                     self._changed.put("alan-attention")
                 time.sleep(1)
 
 
-def inventory(host, actors, attention=None):
+def inventory(host, actors, attention=None, activity_baseline=None):
     source = ServerRef(host, "", 0, 0, "alan")
     attention = attention or {}
+    activity_baseline = activity_baseline or {}
     sessions = []
     for actor in actors:
         attachment = actor.get("attachment") or {"kind": "none"}
         if attachment.get("kind") == "none":
             continue
         state = actor.get("state", "live")
+        baseline = activity_baseline.get(actor["addr"])
+        baseline_epoch = 0
+        if (isinstance(baseline, dict) and baseline.get("provider") == actor.get("type") and
+                baseline.get("native_id") == (actor.get("native") or {}).get("id")):
+            baseline_epoch = baseline.get("last_touch", 0)
         reported_state = ("working" if state in {"busy", "working"} else
                           "needs-action" if state == "needs-action" else "waiting")
         sessions.append(Session(
@@ -151,7 +200,7 @@ def inventory(host, actors, attention=None):
             actor.get("cwd") or "", attention.get(actor["addr"], "tracked"),
             actor.get("type", "alan"), reported_state,
             "", 0, (actor.get("native") or {}).get("id", ""), attachment,
-            actor.get("human_activity", 0)))
+            max(actor.get("human_activity", 0), baseline_epoch)))
     return sessions
 
 

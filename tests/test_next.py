@@ -74,6 +74,18 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(actor.state, "needs-action")
         self.assertEqual(actor.human_activity, 123)
 
+    def test_alan_inventory_keeps_migration_activity_until_later_human_input(self):
+        actor = {"addr": "codex-1", "type": "codex", "state": "waiting",
+                 "human_activity": 123, "native": {"id": "thread-1"},
+                 "attachment": {"kind": "codex", "socket": "/run/codex.sock"}}
+        baseline = {"codex-1": {"last_touch": 456, "provider": "codex",
+                                "native_id": "thread-1"}}
+        migrated = alan_inventory("lovelace", [actor], activity_baseline=baseline)[0]
+        advanced = alan_inventory("lovelace", [{**actor, "human_activity": 789}],
+                                   activity_baseline=baseline)[0]
+        self.assertEqual(migrated.human_activity, 456)
+        self.assertEqual(advanced.human_activity, 789)
+
     def test_alan_inventory_preserves_creation_time_as_recency_fallback(self):
         actor = alan_inventory("lovelace", [{
             "addr": "codex-1", "type": "codex", "state": "waiting",
@@ -122,6 +134,7 @@ class IdentityTests(unittest.TestCase):
     def test_attention_replay_paginates_before_publishing(self):
         watcher = object.__new__(AlanWatcher)
         watcher.attention = {}
+        watcher.activity_baseline = {}
         watcher._changed = queue.Queue()
         watcher._consumer = threading.Event()
         first = [{"idx": index, "payload": {"kind": "fleet_attention",
@@ -144,6 +157,58 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(watcher.attention["python-0"], "tracked")
         self.assertEqual(len(watcher.attention), 100)
         self.assertEqual(watcher._changed.qsize(), 1)
+
+    def test_attention_replay_retains_migration_activity_across_later_attention(self):
+        watcher = object.__new__(AlanWatcher)
+        watcher.attention = {}
+        watcher.activity_baseline = {}
+        watcher._changed = queue.Queue()
+        watcher._consumer = threading.Event()
+        messages = [{"idx": 0, "payload": {
+            "kind": "fleet_attention", "actor": "codex-1", "attention": "tracked",
+            "last_touch": 456, "migration_id": "migration-1", "provider": "codex",
+            "native_id": "thread-1", "source": {
+                "host": "lovelace", "key": "tmux:key"}}}, {"idx": 1, "payload": {
+                "kind": "fleet_attention", "actor": "codex-1", "attention": "done"}}]
+
+        def response(_payload):
+            watcher._consumer.set()
+            return {"messages": messages}
+
+        with mock.patch("fleet_next.alan.configured", return_value=True), \
+             mock.patch("fleet_next.alan.request", side_effect=response):
+            watcher._run_attention()
+        self.assertEqual(watcher.attention["codex-1"], "done")
+        self.assertEqual(watcher.activity_baseline["codex-1"], {
+            "last_touch": 456, "provider": "codex", "native_id": "thread-1"})
+
+    def test_migration_activity_requires_matching_actor_native_identity(self):
+        actor = {"addr": "codex-1", "type": "codex", "state": "waiting",
+                 "human_activity": 123, "native": {"id": "thread-new"},
+                 "attachment": {"kind": "codex", "socket": "/run/codex.sock"}}
+        baseline = {"codex-1": {"last_touch": 456, "provider": "codex",
+                                "native_id": "thread-old"}}
+        projected = alan_inventory(
+            "lovelace", [actor], activity_baseline=baseline)[0]
+        self.assertEqual(projected.human_activity, 123)
+
+    def test_attention_event_cannot_set_activity_without_migration_provenance(self):
+        watcher = object.__new__(AlanWatcher)
+        watcher.attention = {}
+        watcher.activity_baseline = {}
+        watcher._changed = queue.Queue()
+        watcher._consumer = threading.Event()
+
+        def response(_payload):
+            watcher._consumer.set()
+            return {"messages": [{"idx": 0, "payload": {
+                "kind": "fleet_attention", "actor": "codex-1",
+                "attention": "tracked", "last_touch": 999}}]}
+
+        with mock.patch("fleet_next.alan.configured", return_value=True), \
+             mock.patch("fleet_next.alan.request", side_effect=response):
+            watcher._run_attention()
+        self.assertEqual(watcher.activity_baseline, {})
 
     def test_non_attachable_alan_actors_are_not_fleet_rows(self):
         self.assertEqual(alan_inventory("lovelace", [{
@@ -340,10 +405,15 @@ class IdentityTests(unittest.TestCase):
 
     def test_new_cli_has_no_destructive_surface(self):
         root = Path(__file__).parents[1]
-        paths = [root / "fleet-next", *(root / "fleet_next").glob("*.py")]
+        paths = [root / "fleet-next", *(path for path in (root / "fleet_next").glob("*.py")
+                                       if path.name != "migration.py")]
         source = "\n".join(path.read_text() for path in paths)
         for command in ("kill-session", "kill-window", "unlink-window"):
             self.assertNotIn(command, source)
+        migration = (root / "fleet_next/migration.py").read_text()
+        self.assertIn("kill-session", migration)
+        self.assertNotIn("kill-window", migration)
+        self.assertNotIn("unlink-window", migration)
 
     def test_commander_uses_native_codex(self):
         launcher = (Path(__file__).parents[1] / "fleet-commander").read_text()
