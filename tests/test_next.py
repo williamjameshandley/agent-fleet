@@ -27,6 +27,7 @@ from fleet_next.alan import set_attention as alan_set_attention
 from fleet_next.alan import refresh as alan_refresh
 from fleet_next.tmux import refresh as tmux_refresh
 from fleet_next import viewer
+from fleet_next import workstation
 
 
 class IdentityTests(unittest.TestCase):
@@ -313,19 +314,26 @@ class IdentityTests(unittest.TestCase):
         execute.assert_called_once_with(
             "tmux", ["tmux", "attach-session", "-t", "$1"])
 
-    def test_main_viewer_focus_uses_its_attached_client(self):
+    def test_main_viewer_focus_uses_workstation_reverse_socket(self):
         session = self.session(os.uname().nodename)
         with mock.patch("fleet_next.viewer.exchange") as exchange, \
              mock.patch("fleet_next.viewer.subprocess.run") as run, \
-             mock.patch("fleet_next.viewer.os.open", return_value=7) as opened, \
-             mock.patch("fleet_next.viewer.os.write") as write, \
-             mock.patch("fleet_next.viewer.os.close"):
-            run.return_value.stdout = "/dev/pts/16\n"
+             mock.patch("fleet_next.viewer.workstation.request") as request:
+            run.return_value.stdout = "boltzmann\n"
             viewer.request("main", session.ref.key)
         exchange.assert_called_once_with("main", f"OPEN {session.ref.key}")
-        opened.assert_called_once_with(
-            "/dev/pts/16", os.O_WRONLY | os.O_NOCTTY | os.O_NOFOLLOW)
-        write.assert_called_once_with(7, b"\033[5t")
+        request.assert_called_once_with(
+            "boltzmann", {"operation": "focus", "slot": "main"})
+
+    def test_workstation_server_exposes_only_focus_and_prompt(self):
+        with mock.patch("fleet_next.workstation.subprocess.run") as run:
+            run.return_value.returncode = 0
+            workstation.dispatch({"operation": "focus", "slot": "main"})
+        run.assert_called_once_with(
+            ["i3-msg", '[instance="fleet-main"] focus'],
+            text=True, capture_output=True)
+        with self.assertRaisesRegex(RuntimeError, "unknown workstation operation"):
+            workstation.dispatch({"operation": "exec", "command": ["sh"]})
 
     def test_create_materializes_codex_as_an_alan_actor(self):
         host = os.uname().nodename
@@ -427,7 +435,9 @@ class IdentityTests(unittest.TestCase):
         muster = (root / "fleet-muster").read_text()
         main = (root / "fleet-viewer").read_text()
         service = (root / "fleet-next.service").read_text()
-        self.assertIn('exec ssh -tt -o BatchMode=yes "$hub" fleet-muster', muster)
+        self.assertIn('fleet-next workstation --socket "$local_socket"', muster)
+        self.assertIn('-R "$remote_socket:$local_socket"', muster)
+        self.assertIn('set -- --workstation "$workstation"', muster)
         self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
                       muster)
         self.assertIn("new-session -d -s fleet@main", main)
@@ -478,8 +488,10 @@ class IdentityTests(unittest.TestCase):
 
     def test_management_prompts_never_read_raw_terminal_input(self):
         source = (Path(__file__).parents[1] / "fleet_next/actions.py").read_text()
+        workstation_source = (
+            Path(__file__).parents[1] / "fleet_next/workstation.py").read_text()
         self.assertNotRegex(source, r"(?<![A-Za-z_])input\(")
-        self.assertIn('"rofi", "-dmenu"', source)
+        self.assertIn('"rofi", "-dmenu"', workstation_source)
 
     def test_created_agents_skip_startup_permission_interstitials(self):
         self.assertEqual(agent_command("claude", "work"),

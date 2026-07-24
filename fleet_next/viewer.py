@@ -10,6 +10,7 @@ from .config import RUNTIME, ssh_environment
 from .tmux import inventory
 from .remote import find
 from .model import key_host
+from . import workstation
 
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -48,16 +49,12 @@ def request(slot, key):
 
 def focus_main():
     result = subprocess.run(
-        ["tmux", "list-clients", "-t", "fleet@main", "-F", "#{client_tty}"],
+        ["tmux", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
         text=True, capture_output=True, check=True)
-    for tty in result.stdout.splitlines():
-        if not re.fullmatch(r"/dev/pts/[0-9]+", tty):
-            raise RuntimeError(f"unexpected Fleet client tty {tty!r}")
-        descriptor = os.open(tty, os.O_WRONLY | os.O_NOCTTY | os.O_NOFOLLOW)
-        try:
-            os.write(descriptor, b"\033[5t")
-        finally:
-            os.close(descriptor)
+    name = result.stdout.strip()
+    if not name:
+        raise RuntimeError("Muster has no attached workstation")
+    workstation.request(name, {"operation": "focus", "slot": "main"})
 
 
 def slots():

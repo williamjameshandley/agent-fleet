@@ -12,6 +12,7 @@ from .daemon import preview as pane_preview, snapshot
 from .protocol import decode
 from .protocol import decode_message
 from . import viewer
+from . import workstation
 from .alan import rename as alan_rename, set_attention as alan_attention
 from .alan import refresh as alan_refresh
 from .alan import attachment_usable as alan_attachment_usable
@@ -29,19 +30,16 @@ def desktop_input(prompt, values=(), fixed=False):
     result = subprocess.run(
         ["tmux", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
         text=True, capture_output=True, check=True)
-    workstation = result.stdout.strip()
-    if not workstation:
+    name = result.stdout.strip()
+    if not name:
         raise SystemExit("Muster has no attached workstation")
-    command = ["env", "DISPLAY=:0", "rofi", "-dmenu", "-p", prompt,
-               "-location", "2", "-theme", "rofi"]
-    if fixed:
-        command.extend(("-i", "-no-custom"))
-    result = subprocess.run(
-        ["ssh", "-T", "-o", "BatchMode=yes", workstation, shlex.join(command)],
-        input="\n".join(values) + "\n", text=True, capture_output=True)
-    if result.returncode:
-        raise SystemExit(result.returncode)
-    return result.stdout.strip()
+    try:
+        return workstation.request(name, {
+            "operation": "prompt", "prompt": prompt,
+            "values": list(values), "fixed": fixed,
+        })
+    except (OSError, RuntimeError) as error:
+        raise SystemExit(str(error))
 
 
 def muster_input(prompt, values=(), initial="", context="", title="Create session"):
