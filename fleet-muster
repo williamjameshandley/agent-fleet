@@ -17,6 +17,9 @@ if [ "$local_host" != "$hub" ]; then
         [ "$i" -lt 100 ] || exit 1
         sleep .05
     done
+    ssh -T -o BatchMode=yes "$hub" \
+        "if [ -S '$remote_socket' ]; then unlink '$remote_socket'; elif [ -e '$remote_socket' ]; then exit 1; fi" ||
+        exit
     ssh -tt -o BatchMode=yes -o ExitOnForwardFailure=yes \
         -o StreamLocalBindUnlink=yes -o StreamLocalBindMask=0177 \
         -R "$remote_socket:$local_socket" \
