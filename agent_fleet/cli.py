@@ -48,7 +48,7 @@ def snapshot(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="fleet-next")
+    parser = argparse.ArgumentParser(prog="fleet")
     commands = parser.add_subparsers(required=True)
 
     def command(name, fn):

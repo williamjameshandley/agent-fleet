@@ -14,22 +14,22 @@ import io
 from unittest import mock
 from pathlib import Path
 
-from fleet_next.model import ServerRef, Session, SessionRef
-from fleet_next.protocol import decode, encode
-from fleet_next.ui import STATE_ORDER, recency
-from fleet_next.tmux import split_key
-from fleet_next.actions import agent_command, next_waiting_key, session_name
-from fleet_next import actions
-from fleet_next.config import ssh_environment
-from fleet_next.alan import inventory as alan_inventory
-from fleet_next.alan import socket_path as alan_socket_path
-from fleet_next.alan import Watcher as AlanWatcher
-from fleet_next.alan import set_attention as alan_set_attention
-from fleet_next.alan import refresh as alan_refresh
-from fleet_next import viewer
-from fleet_next import workstation
-from fleet_next import tmux
-from fleet_next.daemon import Fleet
+from agent_fleet.model import ServerRef, Session, SessionRef
+from agent_fleet.protocol import decode, encode
+from agent_fleet.ui import STATE_ORDER, recency
+from agent_fleet.tmux import split_key
+from agent_fleet.actions import agent_command, next_waiting_key, session_name
+from agent_fleet import actions
+from agent_fleet.config import ssh_environment
+from agent_fleet.alan import inventory as alan_inventory
+from agent_fleet.alan import socket_path as alan_socket_path
+from agent_fleet.alan import Watcher as AlanWatcher
+from agent_fleet.alan import set_attention as alan_set_attention
+from agent_fleet.alan import refresh as alan_refresh
+from agent_fleet import viewer
+from agent_fleet import workstation
+from agent_fleet import tmux
+from agent_fleet.daemon import Fleet
 
 
 class IdentityTests(unittest.TestCase):
@@ -71,13 +71,13 @@ class IdentityTests(unittest.TestCase):
         )
 
     def test_preview_fast_path_preserves_argument_errors(self):
-        executable = Path(__file__).parents[1] / "fleet-next"
+        executable = Path(__file__).parents[1] / "fleet"
         for arguments in [[], ["key", "bad"], ["key", "1", "2", "extra"]]:
             result = subprocess.run(
                 [executable, "preview", *arguments], text=True, capture_output=True
             )
             self.assertEqual(result.returncode, 2)
-            self.assertIn("usage: fleet-next preview", result.stderr)
+            self.assertIn("usage: fleet preview", result.stderr)
 
     def test_alan_inventory_excludes_python(self):
         actors = alan_inventory("newton", [{
@@ -137,8 +137,8 @@ class IdentityTests(unittest.TestCase):
             {"actors": [before]}, {"addr": "codex-1"},
             {"actors": [starting]}, {"actors": [ready]},
         ]
-        with mock.patch("fleet_next.alan.request", side_effect=responses) as request, \
-             mock.patch("fleet_next.alan.time.sleep"):
+        with mock.patch("agent_fleet.alan.request", side_effect=responses) as request, \
+             mock.patch("agent_fleet.alan.time.sleep"):
             alan_refresh("codex-1")
         self.assertEqual(request.call_args_list, [
             mock.call({"op": "list"}),
@@ -156,7 +156,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(actor.attention, "done")
 
     def test_alan_attention_appends_a_fleet_mailbox_event(self):
-        with mock.patch("fleet_next.alan.request") as request:
+        with mock.patch("agent_fleet.alan.request") as request:
             alan_set_attention("claude-1", "done")
         request.assert_called_once_with({
             "op": "send", "to": "fleet", "payload": {
@@ -183,8 +183,8 @@ class IdentityTests(unittest.TestCase):
             return {"messages": second}
 
         response.calls = 0
-        with mock.patch("fleet_next.alan.configured", return_value=True), \
-             mock.patch("fleet_next.alan.request", side_effect=response):
+        with mock.patch("agent_fleet.alan.configured", return_value=True), \
+             mock.patch("agent_fleet.alan.request", side_effect=response):
             watcher._run_attention()
         self.assertEqual(watcher.attention["python-0"], "tracked")
         self.assertEqual(len(watcher.attention), 100)
@@ -207,8 +207,8 @@ class IdentityTests(unittest.TestCase):
             watcher._consumer.set()
             return {"messages": messages}
 
-        with mock.patch("fleet_next.alan.configured", return_value=True), \
-             mock.patch("fleet_next.alan.request", side_effect=response):
+        with mock.patch("agent_fleet.alan.configured", return_value=True), \
+             mock.patch("agent_fleet.alan.request", side_effect=response):
             watcher._run_attention()
         self.assertEqual(watcher.attention["codex-1"], "done")
         self.assertEqual(watcher.activity_baseline["codex-1"], {
@@ -237,8 +237,8 @@ class IdentityTests(unittest.TestCase):
                 "kind": "fleet_attention", "actor": "codex-1",
                 "attention": "tracked", "last_touch": 999}}]}
 
-        with mock.patch("fleet_next.alan.configured", return_value=True), \
-             mock.patch("fleet_next.alan.request", side_effect=response):
+        with mock.patch("agent_fleet.alan.configured", return_value=True), \
+             mock.patch("agent_fleet.alan.request", side_effect=response):
             watcher._run_attention()
         self.assertEqual(watcher.activity_baseline, {})
 
@@ -252,11 +252,11 @@ class IdentityTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         self.assertNotIn("/etc/agent-fleet/alan-socket",
                          (root / "PKGBUILD").read_text())
-        self.assertNotIn("LOOP_SOCKET=", (root / "fleet-next.service").read_text())
+        self.assertNotIn("LOOP_SOCKET=", (root / "fleet.service").read_text())
         with mock.patch.dict(os.environ, {}, clear=True), \
-             mock.patch("fleet_next.alan.Path.home", return_value=Path("/home/will")), \
-             mock.patch("fleet_next.alan.Path.exists", return_value=True), \
-             mock.patch("fleet_next.alan.Path.read_text",
+             mock.patch("agent_fleet.alan.Path.home", return_value=Path("/home/will")), \
+             mock.patch("agent_fleet.alan.Path.exists", return_value=True), \
+             mock.patch("agent_fleet.alan.Path.read_text",
                         return_value="/home/will/.local/state/alan/loop.sock\n"):
             self.assertEqual(alan_socket_path(),
                              Path("/home/will/.local/state/alan/loop.sock"))
@@ -303,8 +303,8 @@ class IdentityTests(unittest.TestCase):
             "attachment": {"kind": "tmux", "session": "fleet@codex-review-1",
                            "generation": "thread-1"},
         }])[0]
-        with mock.patch("fleet_next.viewer.find", return_value=actor), \
-             mock.patch("fleet_next.viewer.subprocess.run",
+        with mock.patch("agent_fleet.viewer.find", return_value=actor), \
+             mock.patch("agent_fleet.viewer.subprocess.run",
                         return_value=mock.Mock(stdout="thread-1\n")), \
              mock.patch("os.execvp") as execute:
             viewer.attach(actor.ref.key)
@@ -318,8 +318,8 @@ class IdentityTests(unittest.TestCase):
             "attachment": {"kind": "tmux", "session": "fleet@claude-review-1",
                            "generation": "session-1"},
         }])[0]
-        with mock.patch("fleet_next.viewer.find", return_value=actor), \
-             mock.patch("fleet_next.viewer.subprocess.run",
+        with mock.patch("agent_fleet.viewer.find", return_value=actor), \
+             mock.patch("agent_fleet.viewer.subprocess.run",
                         return_value=mock.Mock(stdout="session-1\n")), \
              mock.patch("os.execvp") as execute:
             viewer.attach(actor.ref.key)
@@ -328,8 +328,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_codex_tmux_attach_enables_native_nested_mouse_routing(self):
         session = self.session(os.uname().nodename)
-        with mock.patch("fleet_next.viewer.find", return_value=session), \
-             mock.patch("fleet_next.viewer.inventory", return_value=[session]), \
+        with mock.patch("agent_fleet.viewer.find", return_value=session), \
+             mock.patch("agent_fleet.viewer.inventory", return_value=[session]), \
              mock.patch("subprocess.run") as run, \
              mock.patch("os.execvp") as execute:
             viewer.attach(session.ref.key)
@@ -340,9 +340,9 @@ class IdentityTests(unittest.TestCase):
 
     def test_main_viewer_focus_uses_workstation_reverse_socket(self):
         session = self.session(os.uname().nodename)
-        with mock.patch("fleet_next.viewer.exchange") as exchange, \
-             mock.patch("fleet_next.viewer.subprocess.run") as run, \
-             mock.patch("fleet_next.viewer.workstation.request") as request:
+        with mock.patch("agent_fleet.viewer.exchange") as exchange, \
+             mock.patch("agent_fleet.viewer.subprocess.run") as run, \
+             mock.patch("agent_fleet.viewer.workstation.request") as request:
             run.return_value.stdout = "boltzmann\n"
             viewer.request("main", session.ref.key)
         exchange.assert_called_once_with("main", f"OPEN {session.ref.key}")
@@ -350,7 +350,7 @@ class IdentityTests(unittest.TestCase):
             "boltzmann", {"operation": "focus", "slot": "main"})
 
     def test_workstation_server_exposes_only_focus_and_prompt(self):
-        with mock.patch("fleet_next.workstation.subprocess.run") as run:
+        with mock.patch("agent_fleet.workstation.subprocess.run") as run:
             run.return_value.returncode = 0
             workstation.dispatch({"operation": "focus", "slot": "main"})
         run.assert_called_once_with(
@@ -361,26 +361,26 @@ class IdentityTests(unittest.TestCase):
 
     def test_create_materializes_codex_as_an_alan_actor(self):
         host = os.uname().nodename
-        with mock.patch("fleet_next.actions.muster_input",
+        with mock.patch("agent_fleet.actions.muster_input",
                         side_effect=[host, "codex", "analysis.", "/work"]), \
-             mock.patch("fleet_next.actions.host_command") as run, \
-             mock.patch("fleet_next.actions.wait_for_projection") as wait, \
-             mock.patch("fleet_next.actions.viewer.open_main") as show:
+             mock.patch("agent_fleet.actions.host_command") as run, \
+             mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
+             mock.patch("agent_fleet.actions.viewer.open_main") as show:
             run.return_value.stdout = "codex-deadbeef\n"
             actions.create()
         run.assert_called_once_with(
-            host, "fleet-next", "alan-spawn", "codex", "analysis", "/work",
+            host, "fleet", "alan-spawn", "codex", "analysis", "/work",
             capture_output=True)
         wait.assert_called_once_with(f"alan:{host}:codex-deadbeef")
         show.assert_called_once_with(f"alan:{host}:codex-deadbeef")
 
     def test_create_keeps_plain_shells_as_tmux_sessions(self):
         host = os.uname().nodename
-        with mock.patch("fleet_next.actions.muster_input",
+        with mock.patch("agent_fleet.actions.muster_input",
                         side_effect=[host, "shell", "terminal", "/work"]), \
-             mock.patch("fleet_next.actions.host_command") as run, \
-             mock.patch("fleet_next.actions.created_key", return_value="source-key"), \
-             mock.patch("fleet_next.actions.viewer.open_main") as show:
+             mock.patch("agent_fleet.actions.host_command") as run, \
+             mock.patch("agent_fleet.actions.created_key", return_value="source-key"), \
+             mock.patch("agent_fleet.actions.viewer.open_main") as show:
             actions.create()
         run.assert_called_once_with(
             host, "tmux", "new-session", "-d", "-s", "terminal", "-c", "/work",
@@ -412,7 +412,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(recency(working), working.created)
 
     def test_tmux_inventory_does_not_promote_client_activity_to_human_activity(self):
-        source = (Path(__file__).parents[1] / "fleet_next/tmux.py").read_text()
+        source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()
         self.assertNotIn("#{client_activity}", source)
 
     def test_working_sorts_before_waiting_and_done(self):
@@ -437,7 +437,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_new_cli_has_no_destructive_surface(self):
         root = Path(__file__).parents[1]
-        paths = [root / "fleet-next", *(root / "fleet_next").glob("*.py")]
+        paths = [root / "fleet", *(root / "agent_fleet").glob("*.py")]
         source = "\n".join(path.read_text() for path in paths)
         for command in ("kill-session", "kill-window", "unlink-window"):
             self.assertNotIn(command, source)
@@ -447,14 +447,14 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('.thread_name == "commander"', launcher)
         self.assertIn("codex --sandbox danger-full-access resume $id", launcher)
         self.assertIn('"$1" = restart', launcher)
-        self.assertNotIn("fleet-next commander\"", launcher)
+        self.assertNotIn("fleet commander\"", launcher)
 
     def test_muster_and_main_route_to_the_lovelace_hub(self):
         root = Path(__file__).parents[1]
         muster = (root / "fleet-muster").read_text()
         main = (root / "fleet-viewer").read_text()
-        service = (root / "fleet-next.service").read_text()
-        self.assertIn('fleet-next workstation --socket "$local_socket"', muster)
+        service = (root / "fleet.service").read_text()
+        self.assertIn('fleet workstation --socket "$local_socket"', muster)
         self.assertIn('-R "$remote_socket:$local_socket"', muster)
         self.assertIn('set -- --workstation "$workstation"', muster)
         self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
@@ -463,26 +463,26 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("set-option -t fleet@main prefix None", main)
         self.assertIn("set-option -t fleet@main mouse on", main)
         self.assertIn("set-option -t fleet@muster mouse off", muster)
-        self.assertIn("fleet-next viewer-status main", main)
+        self.assertIn("fleet viewer-status main", main)
         self.assertIn("ConditionHost=lovelace", service)
 
     def test_muster_always_opens_the_global_main_viewer(self):
-        source = (Path(__file__).parents[1] / "fleet_next/ui.py").read_text()
-        self.assertIn("fleet-next show --slot main {1}", source)
+        source = (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text()
+        self.assertIn("fleet show --slot main {1}", source)
         self.assertIn("load:pos({cursor()})+unbind(load)", source)
         self.assertIn('"--no-sort"', source)
         self.assertIn("enable-search+toggle-sort", source)
         self.assertNotIn('"--nth=2.."', source)
         self.assertIn("change-prompt(Search: )", source)
-        self.assertIn("c:execute-silent(fleet-next create-tab)", source)
-        self.assertIn("r:execute-silent(fleet-next rename-tab {1})", source)
+        self.assertIn("c:execute-silent(fleet create-tab)", source)
+        self.assertIn("r:execute-silent(fleet rename-tab {1})", source)
 
     def test_create_opens_inside_the_muster(self):
         with mock.patch("subprocess.run") as run:
             actions.create_tab()
         run.assert_called_once_with(
             ["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
-             "exec fleet-next create"], check=True)
+             "exec fleet create"], check=True)
 
     def test_rename_opens_inside_the_muster(self):
         key = "lovelace:/tmp/tmux:1:2:$3"
@@ -490,11 +490,11 @@ class IdentityTests(unittest.TestCase):
             actions.rename_tab(key)
         run.assert_called_once_with(
             ["tmux", "new-window", "-t", "fleet@muster", "-n", "rename",
-             "exec fleet-next rename 'lovelace:/tmp/tmux:1:2:$3'"], check=True)
+             "exec fleet rename 'lovelace:/tmp/tmux:1:2:$3'"], check=True)
 
     def test_named_viewers_remain_local(self):
         launcher = (Path(__file__).parents[1] / "fleet-viewer").read_text()
-        self.assertTrue(launcher.rstrip().endswith('exec fleet-next viewer --slot "$slot"'))
+        self.assertTrue(launcher.rstrip().endswith('exec fleet viewer --slot "$slot"'))
 
     def test_ssh_environment_uses_stable_agent_socket(self):
         environment = ssh_environment()
@@ -502,13 +502,13 @@ class IdentityTests(unittest.TestCase):
                          f"/run/user/{os.getuid()}/gnupg/S.gpg-agent.ssh")
 
     def test_viewer_uses_stable_agent_environment(self):
-        source = (Path(__file__).parents[1] / "fleet_next/viewer.py").read_text()
+        source = (Path(__file__).parents[1] / "agent_fleet/viewer.py").read_text()
         self.assertIn("ssh_environment().items()", source)
 
     def test_management_prompts_never_read_raw_terminal_input(self):
-        source = (Path(__file__).parents[1] / "fleet_next/actions.py").read_text()
+        source = (Path(__file__).parents[1] / "agent_fleet/actions.py").read_text()
         workstation_source = (
-            Path(__file__).parents[1] / "fleet_next/workstation.py").read_text()
+            Path(__file__).parents[1] / "agent_fleet/workstation.py").read_text()
         self.assertNotRegex(source, r"(?<![A-Za-z_])input\(")
         self.assertIn('"rofi", "-dmenu"', workstation_source)
 
@@ -521,15 +521,15 @@ class IdentityTests(unittest.TestCase):
 
     def test_refresh_routes_to_owner_and_reopens_every_matching_local_viewer(self):
         session = self.session("newton")
-        with mock.patch("fleet_next.actions.find", return_value=session), \
-             mock.patch("fleet_next.actions.viewer.slots",
+        with mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.viewer.slots",
                         return_value=[("main", session.ref.key),
                                       ("side", session.ref.key), ("other", "elsewhere")]), \
-             mock.patch("fleet_next.actions.host_command") as command, \
-             mock.patch("fleet_next.actions.viewer.request") as reopen:
+             mock.patch("agent_fleet.actions.host_command") as command, \
+             mock.patch("agent_fleet.actions.viewer.request") as reopen:
             actions.refresh(session.ref.key)
         command.assert_called_once_with(
-            "newton", "fleet-next", "refresh-local", session.ref.key,
+            "newton", "fleet", "refresh-local", session.ref.key,
             capture_output=True)
         self.assertEqual(reopen.call_args_list, [
             mock.call("main", session.ref.key), mock.call("side", session.ref.key)])
@@ -540,19 +540,19 @@ class IdentityTests(unittest.TestCase):
             "native": {"id": "session-1"},
             "attachment": {"kind": "tmux", "session": "fleet@actor-claude-1"},
         }])[0]
-        with mock.patch("fleet_next.actions.find",
+        with mock.patch("agent_fleet.actions.find",
                         side_effect=[actor, SystemExit("gone"), actor]), \
-             mock.patch("fleet_next.actions.time.sleep"), \
-             mock.patch("fleet_next.actions.viewer.slots",
+             mock.patch("agent_fleet.actions.time.sleep"), \
+             mock.patch("agent_fleet.actions.viewer.slots",
                         return_value=[("main", actor.ref.key)]), \
-             mock.patch("fleet_next.actions.host_command"), \
-             mock.patch("fleet_next.actions.viewer.request") as reopen:
+             mock.patch("agent_fleet.actions.host_command"), \
+             mock.patch("agent_fleet.actions.viewer.request") as reopen:
             actions.refresh(actor.ref.key)
         reopen.assert_called_once_with("main", actor.ref.key)
 
     def test_refresh_local_dispatches_alan_by_exact_tagged_key(self):
         host = os.uname().nodename
-        with mock.patch("fleet_next.actions.alan_refresh") as refresh:
+        with mock.patch("agent_fleet.actions.alan_refresh") as refresh:
             actions.refresh_local(f"alan:{host}:claude-1")
         refresh.assert_called_once_with("claude-1")
 
@@ -568,8 +568,8 @@ class IdentityTests(unittest.TestCase):
         server = mock.Mock(sessions=[session])
         server.cmd.return_value.stdout = [attachment["generation"]]
         with mock.patch.dict(tmux._alan_attachments, {"codex-1": attachment}, clear=True), \
-             mock.patch("fleet_next.tmux.server", return_value=server), \
-             mock.patch("fleet_next.tmux.capture_pane",
+             mock.patch("agent_fleet.tmux.server", return_value=server), \
+             mock.patch("agent_fleet.tmux.capture_pane",
                         return_value="conversation\n") as render:
             result = tmux.capture(f"alan:{host}:codex-1", 80, 20)
         self.assertEqual(result, "conversation\n")
@@ -588,19 +588,19 @@ class IdentityTests(unittest.TestCase):
         server = mock.Mock()
         server.cmd.return_value.stdout = ["old"]
         with mock.patch.dict(tmux._alan_attachments, {"codex-1": attachment}, clear=True), \
-             mock.patch("fleet_next.tmux.server", return_value=server):
+             mock.patch("agent_fleet.tmux.server", return_value=server):
             with self.assertRaisesRegex(RuntimeError, "stale Alan presentation"):
                 tmux.capture(f"alan:{host}:codex-1", 80, 20)
 
     def test_failed_refresh_reopens_a_still_usable_source_then_reports_failure(self):
         session = self.session("newton")
         failure = subprocess.CalledProcessError(1, ["ssh"])
-        with mock.patch("fleet_next.actions.find", return_value=session), \
-             mock.patch("fleet_next.actions.viewer.slots",
+        with mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.viewer.slots",
                         return_value=[("main", session.ref.key)]), \
-             mock.patch("fleet_next.actions.host_command",
+             mock.patch("agent_fleet.actions.host_command",
                         side_effect=[failure, mock.Mock()]), \
-             mock.patch("fleet_next.actions.viewer.request") as reopen:
+             mock.patch("agent_fleet.actions.viewer.request") as reopen:
             with self.assertRaises(subprocess.CalledProcessError):
                 actions.refresh(session.ref.key)
         reopen.assert_called_once_with("main", session.ref.key)
@@ -609,23 +609,23 @@ class IdentityTests(unittest.TestCase):
         session = self.session("newton")
         failure = subprocess.CalledProcessError(1, ["ssh"])
         unavailable = subprocess.CalledProcessError(1, ["ssh"])
-        with mock.patch("fleet_next.actions.find", return_value=session), \
-             mock.patch("fleet_next.actions.viewer.slots",
+        with mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.viewer.slots",
                         return_value=[("main", session.ref.key)]), \
-             mock.patch("fleet_next.actions.host_command",
+             mock.patch("agent_fleet.actions.host_command",
                         side_effect=[failure, unavailable]) as command, \
-             mock.patch("fleet_next.actions.viewer.request") as reopen:
+             mock.patch("agent_fleet.actions.viewer.request") as reopen:
             with self.assertRaises(subprocess.CalledProcessError):
                 actions.refresh(session.ref.key)
         self.assertEqual(command.call_args_list[1], mock.call(
-            "newton", "fleet-next", "refresh-check", session.ref.key, "",
+            "newton", "fleet", "refresh-check", session.ref.key, "",
             capture_output=True))
         reopen.assert_not_called()
 
     def test_refresh_report_keeps_nonzero_failure_and_displays_reason_in_muster(self):
         failure = subprocess.CalledProcessError(1, ["ssh"], stderr="actor_not_idle\n")
-        with mock.patch("fleet_next.actions.refresh", side_effect=failure), \
-             mock.patch("fleet_next.actions.subprocess.run") as run:
+        with mock.patch("agent_fleet.actions.refresh", side_effect=failure), \
+             mock.patch("agent_fleet.actions.subprocess.run") as run:
             with self.assertRaisesRegex(SystemExit, "actor_not_idle"):
                 actions.refresh_report("alan:newton:codex-1")
         run.assert_called_once_with([
@@ -644,11 +644,11 @@ class IdentityTests(unittest.TestCase):
         remote = Session(**{**self.session("boltzmann", "$4").__dict__,
                             "agent_name": "claude", "transcript_id": "session-4"})
         output = io.StringIO()
-        with mock.patch("fleet_next.actions.snapshot", return_value="snapshot"), \
-             mock.patch("fleet_next.actions.decode_message",
+        with mock.patch("agent_fleet.actions.snapshot", return_value="snapshot"), \
+             mock.patch("agent_fleet.actions.decode_message",
                         return_value=([waiting, working, unsupported, remote], {},
                                       ["boltzmann"])), \
-             mock.patch("fleet_next.actions.refresh") as refresh, \
+             mock.patch("agent_fleet.actions.refresh") as refresh, \
              contextlib.redirect_stdout(output):
             actions.refresh_all()
         refresh.assert_called_once_with(waiting.ref.key)
@@ -667,10 +667,10 @@ class IdentityTests(unittest.TestCase):
         failure = subprocess.CalledProcessError(
             1, ["ssh", "newton"], stderr="replacement\nfailed\tremotely\n")
         output = io.StringIO()
-        with mock.patch("fleet_next.actions.snapshot", return_value="snapshot"), \
-             mock.patch("fleet_next.actions.decode_message",
+        with mock.patch("agent_fleet.actions.snapshot", return_value="snapshot"), \
+             mock.patch("agent_fleet.actions.decode_message",
                         return_value=([second, first], {}, [])), \
-             mock.patch("fleet_next.actions.refresh", side_effect=[failure, None]) as refresh, \
+             mock.patch("agent_fleet.actions.refresh", side_effect=[failure, None]) as refresh, \
              contextlib.redirect_stdout(output):
             with self.assertRaisesRegex(SystemExit, "1"):
                 actions.refresh_all()
@@ -683,12 +683,12 @@ class IdentityTests(unittest.TestCase):
     def test_refresh_reopens_viewer_after_its_real_attachment_child_exits(self):
         session = self.session(os.uname().nodename)
         with tempfile.TemporaryDirectory() as runtime, \
-             mock.patch("fleet_next.viewer.RUNTIME", Path(runtime)), \
-             mock.patch("fleet_next.viewer.command",
+             mock.patch("agent_fleet.viewer.RUNTIME", Path(runtime)), \
+             mock.patch("agent_fleet.viewer.command",
                         side_effect=[["sleep", ".05"], ["sleep", ".5"]]), \
-             mock.patch("fleet_next.viewer.subprocess.run"), \
-             mock.patch("fleet_next.actions.find", return_value=session), \
-             mock.patch("fleet_next.actions.host_command",
+             mock.patch("agent_fleet.viewer.subprocess.run"), \
+             mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.host_command",
                         side_effect=lambda *_args, **_kwargs: time.sleep(.1)):
             thread = threading.Thread(target=viewer.serve, args=("refresh",), daemon=True)
             thread.start()
@@ -706,7 +706,7 @@ class IdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as runtime:
             env = {**os.environ, "XDG_RUNTIME_DIR": runtime,
                    "PYTHONPATH": str(root)}
-            process = subprocess.Popen([sys.executable, "-m", "fleet_next.cli",
+            process = subprocess.Popen([sys.executable, "-m", "agent_fleet.cli",
                                         "viewer", "--slot", "test"], env=env)
             socket = Path(runtime) / "agent-fleet/viewer-test.sock"
             try:
@@ -714,9 +714,9 @@ class IdentityTests(unittest.TestCase):
                     if socket.exists():
                         break
                     time.sleep(.01)
-                subprocess.run([sys.executable, "-m", "fleet_next.cli", "dismiss",
+                subprocess.run([sys.executable, "-m", "agent_fleet.cli", "dismiss",
                                 "--slot", "test"], env=env, check=True)
-                code = "from fleet_next.viewer import slots; print(slots())"
+                code = "from agent_fleet.viewer import slots; print(slots())"
                 result = subprocess.run([sys.executable, "-c", code], env=env,
                                         text=True, capture_output=True, check=True)
                 self.assertEqual(result.stdout.strip(), "[('test', '')]")
@@ -725,6 +725,6 @@ class IdentityTests(unittest.TestCase):
                 process.wait()
 
     def test_quota_only_events_force_an_inventory_emit(self):
-        source = (Path(__file__).parents[1] / "fleet_next/tmux.py").read_text()
+        source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()
         self.assertIn('force = "quota" in events', source)
         self.assertIn("if serial != previous or force:", source)

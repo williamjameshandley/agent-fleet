@@ -78,16 +78,16 @@ def show(key, slot=None):
     session = find(key)
     if session.attention == "done":
         host = session.ref.server.host
-        operation = (("fleet-next", "alan-attention", session.ref.session_id, "tracked")
+        operation = (("fleet", "alan-attention", session.ref.session_id, "tracked")
                      if session.ref.server.kind == "alan" else
-                     ("fleet-next", "mutate", key, "attention", "tracked"))
+                     ("fleet", "mutate", key, "attention", "tracked"))
         command = shlex.join(operation)
         argv = (list(operation)
                 if host == os.uname().nodename else
                 ["ssh", "-T", "-o", "BatchMode=yes", host, command])
         subprocess.run(argv, check=True)
-        signal = (["fleet-next", "signal"] if host == os.uname().nodename else
-                  ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet-next signal"])
+        signal = (["fleet", "signal"] if host == os.uname().nodename else
+                  ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet signal"])
         subprocess.run(signal, check=True)
     available = slots()
     for name, source in available:
@@ -117,7 +117,7 @@ def show(key, slot=None):
 def command(key):
     host = key_host(key)
     local = os.uname().nodename
-    attach = ["fleet-next", "attach", key]
+    attach = ["fleet", "attach", key]
     return attach if host == local else ["ssh", "-tt", "-o", "BatchMode=yes", host,
                                          shlex.join(attach)]
 

@@ -1,7 +1,7 @@
 import json
 
-import fleet_next.transcripts as transcripts
-from fleet_next.transcripts import (PANE_FORMAT, indexed_claude_agents, last_human_time,
+import agent_fleet.transcripts as transcripts
+from agent_fleet.transcripts import (PANE_FORMAT, indexed_claude_agents, last_human_time,
                                     preview, select_codex, transcript)
 
 

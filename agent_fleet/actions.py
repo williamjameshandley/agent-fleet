@@ -68,7 +68,7 @@ def agent_command(agent, name):
 
 
 def created_key(host, name):
-    result = host_command(host, "fleet-next", "snapshot", "--host", host,
+    result = host_command(host, "fleet", "snapshot", "--host", host,
                           capture_output=True)
     matches = [session.ref.key for session in decode(result.stdout)
                if session.name == name]
@@ -83,7 +83,7 @@ def session_name(value):
 
 def create_tab():
     subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
-                    "exec fleet-next create"], check=True)
+                    "exec fleet create"], check=True)
 
 
 def create():
@@ -100,7 +100,7 @@ def create():
                      *agent_command(agent, name))
         key = created_key(host, name)
     else:
-        result = host_command(host, "fleet-next", "alan-spawn", agent, name, cwd,
+        result = host_command(host, "fleet", "alan-spawn", agent, name, cwd,
                               capture_output=True)
         key = f"alan:{host}:{result.stdout.strip()}"
         wait_for_projection(key)
@@ -108,7 +108,7 @@ def create():
 
 
 def rename_tab(key):
-    command = shlex.join(("exec", "fleet-next", "rename", key))
+    command = shlex.join(("exec", "fleet", "rename", key))
     subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "rename",
                     command], check=True)
 
@@ -123,10 +123,10 @@ def rename(key):
             if session.ref.server.host == os.uname().nodename:
                 alan_rename(session.ref.session_id, name)
             else:
-                host_command(session.ref.server.host, "fleet-next", "alan-rename",
+                host_command(session.ref.server.host, "fleet", "alan-rename",
                              session.ref.session_id, name)
         else:
-            host_command(session.ref.server.host, "fleet-next", "mutate", key, "rename", name)
+            host_command(session.ref.server.host, "fleet", "mutate", key, "rename", name)
 
 
 def done(key):
@@ -138,15 +138,15 @@ def done(key):
         if session.ref.server.host == os.uname().nodename:
             alan_attention(session.ref.session_id, "done")
         else:
-            host_command(session.ref.server.host, "fleet-next", "alan-attention",
+            host_command(session.ref.server.host, "fleet", "alan-attention",
                          session.ref.session_id, "done")
         return
     for slot, source in viewer.slots():
         if source == key:
             viewer.request(slot, "")
-    host_command(session.ref.server.host, "fleet-next", "mutate", key,
+    host_command(session.ref.server.host, "fleet", "mutate", key,
                  "attention", "done")
-    host_command(session.ref.server.host, "fleet-next", "signal")
+    host_command(session.ref.server.host, "fleet", "signal")
 
 
 def dismiss_source(key):
@@ -199,11 +199,11 @@ def refresh(key):
     session = find(key)
     shown = [slot for slot, source in viewer.slots() if source == key]
     try:
-        host_command(session.ref.server.host, "fleet-next", "refresh-local", key,
+        host_command(session.ref.server.host, "fleet", "refresh-local", key,
                      capture_output=True)
     except subprocess.CalledProcessError as failure:
         try:
-            host_command(session.ref.server.host, "fleet-next", "refresh-check", key,
+            host_command(session.ref.server.host, "fleet", "refresh-check", key,
                          session.transcript_id, capture_output=True)
         except subprocess.CalledProcessError:
             pass
@@ -300,7 +300,7 @@ def history():
             for session in decode(snapshot()) if session.transcript_id}
     rows = []
     for host in hosts():
-        result = host_command(host, "fleet-next", "transcripts", "--limit", "100",
+        result = host_command(host, "fleet", "transcripts", "--limit", "100",
                               capture_output=True)
         for item in json.loads(result.stdout):
             if (host, item["agent"], item["session_id"]) not in live:
@@ -318,7 +318,7 @@ def resurrect(key):
     name = desktop_input("new session name")
     if not name:
         raise SystemExit("session name is required")
-    host_command(host, "fleet-next", "resume", agent, transcript, name)
+    host_command(host, "fleet", "resume", agent, transcript, name)
     viewer.request("main", created_key(host, name))
 
 
@@ -380,13 +380,13 @@ def context():
 
 
 def commander_context():
-    local = json.loads(subprocess.run(["fleet-next", "context"], text=True,
+    local = json.loads(subprocess.run(["fleet", "context"], text=True,
                                       capture_output=True, check=True).stdout)
     environment = ssh_environment()
     workstations = {}
     for host in ("boltzmann", "noether", "newton"):
         remote = json.loads(subprocess.run(
-            ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet-next context"],
+            ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet context"],
             text=True, capture_output=True, check=True, env=environment).stdout)
         workstations[host] = {key: remote[key]
                               for key in ("profile", "unavailable", "slots")}

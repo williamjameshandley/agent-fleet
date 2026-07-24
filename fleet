@@ -4,9 +4,9 @@ import sys
 if len(sys.argv) >= 2 and sys.argv[1] == "preview":
     import argparse
 
-    from fleet_next.daemon import preview
+    from agent_fleet.daemon import preview
 
-    parser = argparse.ArgumentParser(prog="fleet-next preview")
+    parser = argparse.ArgumentParser(prog="fleet preview")
     parser.add_argument("key")
     parser.add_argument("columns", type=int, nargs="?", default=0)
     parser.add_argument("lines", type=int, nargs="?", default=0)
@@ -20,6 +20,6 @@ if len(sys.argv) >= 2 and sys.argv[1] == "preview":
             raise SystemExit(str(error)) from None
         raise
 else:
-    from fleet_next.cli import main
+    from agent_fleet.cli import main
 
     main()

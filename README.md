@@ -35,7 +35,7 @@ tests.
 
 ## Architecture
 
-Lovelace alone runs `fleet-next.service`. It maintains one long-lived,
+Lovelace alone runs `fleet.service`. It maintains one long-lived,
 non-interactive SSH event stream per configured host. The host helper combines
 tmux control-mode lifecycle notifications, Alan's actor watch stream and
 transcript filesystem events, then publishes disposable snapshots. Navigation,
@@ -60,7 +60,7 @@ and expose explicit attachment descriptors; Fleet does not infer them from
 processes or names. There is no Fleet JSON state file or database.
 
 The host adapter combines tmux process discovery with the composable
-`fleet_next.transcripts` readers for Claude and Codex JSONL.
+`agent_fleet.transcripts` readers for Claude and Codex JSONL.
 
 ## Commands
 
@@ -68,15 +68,15 @@ The host adapter combines tmux process discovery with the composable
 fleet-muster                    attach the global Lovelace Muster
 fleet-viewer main               attach the global Lovelace Main
 fleet-viewer SLOT               run a workstation-local named slot
-fleet-next show SOURCE          focus/open a source
-fleet-next next-waiting         advance main to the next waiting source
-fleet-next show SOURCE --slot S explicit replacement
-fleet-next dismiss --slot S     detach a viewer only
-fleet-next create               create Alan Claude, Codex, Python, or a plain shell
-fleet-next rename SOURCE        rename the native source
-fleet-next refresh SOURCE       replace one idle Claude/Codex runtime in place
-fleet-next refresh --all        refresh every eligible waiting native session
-fleet-next done SOURCE          shelve its attention loop
+fleet show SOURCE          focus/open a source
+fleet next-waiting         advance main to the next waiting source
+fleet show SOURCE --slot S explicit replacement
+fleet dismiss --slot S     detach a viewer only
+fleet create               create Alan Claude, Codex, Python, or a plain shell
+fleet rename SOURCE        rename the native source
+fleet refresh SOURCE       replace one idle Claude/Codex runtime in place
+fleet refresh --all        refresh every eligible waiting native session
+fleet done SOURCE          shelve its attention loop
 fleet-view                      laptop 50:50 launcher
 fleet-deck                      home multi-screen launcher
 fleet-commander                 persistent Claude Commander session

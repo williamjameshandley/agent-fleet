@@ -5,7 +5,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/fleet-next serve
+ExecStart=/usr/bin/fleet serve
 Restart=on-failure
 RestartSec=2
 

@@ -3,8 +3,8 @@ import os
 import shlex
 import subprocess
 
-from fleet_next import viewer
-from fleet_next.remote import find
+from agent_fleet import viewer
+from agent_fleet.remote import find
 
 from .model import Destination
 
