@@ -101,6 +101,7 @@ def muster():
         "--layout=reverse", "--no-sort", "--no-multi", "--info=inline", "--border=none",
         f"--header={header()}",
         f"--footer={footer()}",
+        "--footer-border=bottom",
         "--bind=start:unbind(esc)",
         "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k)+rebind(esc)",
         "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k)",
@@ -132,10 +133,7 @@ def header():
 
 
 def footer():
-    hints = ("N Newton  L Lovelace  B Boltzmann  T Turing  Œ Noether  "
-             "* working  . waiting  ! needs action  C Claude Code  X Codex  "
-             "Enter show  / search  Tab history  c create  r rename  R refresh  "
-             "d done  x dismiss")
+    hints = ("Enter show  c create  r rename  R refresh  d done  x dismiss")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)

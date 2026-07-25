@@ -496,6 +496,15 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("change-prompt(Search: )", source)
         self.assertIn("c:execute-silent(fleet create-tab)", source)
         self.assertIn("r:execute-silent(fleet rename-tab {1})", source)
+        self.assertIn('"--footer-border=bottom"', source)
+
+    def test_footer_contains_only_action_hints(self):
+        from agent_fleet.ui import footer
+        with mock.patch("shutil.get_terminal_size",
+                        return_value=os.terminal_size((100, 24))):
+            self.assertEqual(
+                footer(),
+                "Enter show  c create  r rename  R refresh  d done  x dismiss")
 
     def test_create_opens_inside_the_muster(self):
         with mock.patch("subprocess.run") as run:
