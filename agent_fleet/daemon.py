@@ -86,7 +86,7 @@ class Fleet:
             return
         process = await asyncio.create_subprocess_exec(
             "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-            "-XPOST", "-d", "reload-sync(fleet items)+transform-header(fleet header)",
+            "-XPOST", "-d", "transform-header(sh -c '/usr/bin/fleet header')+reload-sync(fleet items)",
             "http://localhost",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await process.wait()
