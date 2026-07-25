@@ -3,6 +3,7 @@ import subprocess
 import time
 import shutil
 import re
+import textwrap
 
 from .config import RUNTIME, machine
 from .daemon import snapshot
@@ -12,11 +13,13 @@ from . import viewer
 
 STATE_ORDER = {"working": 0, "needs-action": 1, "waiting": 2, "finished": 3}
 RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
 STATE_COLOUR = {
-    "working": "\033[32m",
-    "needs-action": "\033[1;31m",
-    "waiting": "\033[33m",
-    "finished": "\033[90m",
+    "working": "\033[30;42m",
+    "needs-action": "\033[1;37;41m",
+    "waiting": "\033[30;43m",
+    "finished": "\033[37;100m",
 }
 HOST_COLOUR = {
     "newton": "\033[34m",
@@ -26,6 +29,8 @@ HOST_COLOUR = {
     "noether": "\033[32m",
 }
 FZF_COLOUR = "16,fg:-1,bg:-1,fg+:-1,bg+:8,hl:3,hl+:3,info:4,prompt:2,pointer:1,marker:1,spinner:6,header:4,gutter:-1,border:8"
+COLUMN_ICONS = {"machine": "", "agent": "", "time": "",
+                "status": "", "title": "", "summary": ""}
 
 
 def rows(include_header=True):
@@ -38,8 +43,8 @@ def rows(include_header=True):
     if include_header:
         print(f"Claude {claude}{offline}")
         print(f"OpenAI {codex}")
+        print(column_header())
     width = shutil.get_terminal_size((100, 24)).columns
-    placement = {source: slot for slot, source in viewer.slots() if source}
     for session in sessions:
         timestamp = recency(session)
         age = max(0, now - timestamp)
@@ -49,19 +54,19 @@ def rows(include_header=True):
                   "x" if session.attention == "done" else
                   {"needs-action": "!", "working": "*", "waiting": ".",
                    "finished": "-"}[session.state])
-        agent = {"claude": "Claude", "codex": "OpenAI", "python": "Python", "gemini": "Gemini",
-                 "multiple": "Agents", "shell": ""}[session.agent]
+        agent = {"claude": "C", "codex": "X", "python": "P", "gemini": "G",
+                 "multiple": "M", "shell": ""}[session.agent]
         summary = " ".join((session.summary or session.title).split())
         summary = re.sub(r"^[\u2800-\u28ff✳●*]+\s*", "", summary)
-        description = " ".join(x for x in (agent, summary) if x).strip()
-        place = placement.get(session.ref.key, "")
-        room = max(8, width - 2 - 1 - 20 - 8 - 4 - 8)
+        room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 20 - 1)
         host_colour = HOST_COLOUR.get(session.ref.server.host, "")
-        state_colour = ("\033[31m" if marker == "?" else "\033[90m" if marker == "x"
+        state_colour = ("\033[37;41m" if marker == "?" else "\033[30;47m" if marker == "x"
                         else STATE_COLOUR[session.state])
-        visible = (f"{host_colour}{machine(session.ref.server.host):<2}{RESET} "
-                   f"{state_colour}{marker}{RESET} {session.name:<20.20} "
-                   f"{place:<8.8} {description:<{room}.{room}} {elapsed:>4}")
+        emphasis = (DIM if marker == "x" else BOLD
+                    if session.state in {"working", "needs-action"} else "")
+        visible = (f"{emphasis}{host_colour}{machine(session.ref.server.host)}{RESET}{emphasis} "
+                   f"{agent:1} {elapsed:>4} {state_colour}{marker}{RESET}{emphasis} "
+                   f"{session.name:<20.20} {summary:<{room}.{room}}{RESET}")
         print(f"{session.ref.key}\t{visible}")
 
 
@@ -77,6 +82,12 @@ def recency(session):
     return session.human_activity or session.created
 
 
+def column_header():
+    icon = COLUMN_ICONS
+    return (f"{icon['machine']} {icon['agent']} {icon['time']:^4} {icon['status']} "
+            f"{icon['title']:<20} {icon['summary']}")
+
+
 def muster():
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     sock = RUNTIME / "muster.sock"
@@ -89,6 +100,7 @@ def muster():
         "--delimiter=\t", "--with-nth=2..", "--id-nth=1",
         "--layout=reverse", "--no-sort", "--no-multi", "--info=inline", "--border=none",
         f"--header={header()}",
+        f"--footer={footer()}",
         "--bind=start:unbind(esc)",
         "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k)+rebind(esc)",
         "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k)",
@@ -116,7 +128,17 @@ def header():
     offline = f"  |  offline {' '.join(unavailable)}" if unavailable else ""
     return (f"Claude {usage.get('claude', empty)}{offline}\n"
             f"OpenAI {usage.get('codex', empty)}\n"
-            "N/L/B/T/OE  * working  ! needs action  Enter show  / search  Tab history  c create  r rename  R refresh  d done  x dismiss")
+            f"{column_header()}")
+
+
+def footer():
+    hints = ("N Newton  L Lovelace  B Boltzmann  T Turing  Œ Noether  "
+             "* working  . waiting  ! needs action  C Claude Code  X Codex  "
+             "Enter show  / search  Tab history  c create  r rename  R refresh  "
+             "d done  x dismiss")
+    width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
+    return textwrap.fill(hints, width=width, break_long_words=False,
+                         break_on_hyphens=False)
 
 
 def cursor():

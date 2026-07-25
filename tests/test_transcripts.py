@@ -2,7 +2,9 @@ import json
 
 import agent_fleet.transcripts as transcripts
 from agent_fleet.transcripts import (PANE_FORMAT, indexed_claude_agents, last_human_time,
-                                    preview, select_codex, transcript)
+                                    latest_assistant_text, native_transcript, preview,
+                                    select_codex, transcript)
+from agent_fleet.model import ServerRef, Session, SessionRef
 
 
 def rollout(path, identity, source="cli"):
@@ -67,6 +69,30 @@ def test_codex_human_activity_uses_latest_user_message(tmp_path):
     ]
     path.write_text("".join(json.dumps(event) + "\n" for event in events))
     assert last_human_time(transcript("codex", path)) == 1784541600
+
+
+def test_latest_assistant_text_reads_backwards_from_native_transcript(tmp_path):
+    path = tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
+    path.write_text("".join(json.dumps(event) + "\n" for event in [
+        {"type": "event_msg", "payload": {
+            "type": "agent_message", "message": "older reply"}},
+        {"type": "event_msg", "payload": {
+            "type": "agent_message", "message": "latest\nreply"}},
+    ]))
+    assert latest_assistant_text(transcript("codex", path)) == "latest reply"
+
+
+def test_alan_claude_transcript_uses_native_identity_and_cwd(tmp_path, monkeypatch):
+    identity = "00000000-0000-0000-0000-000000000001"
+    path = tmp_path / "-work" / f"{identity}.jsonl"
+    path.parent.mkdir()
+    path.write_text("{}\n")
+    monkeypatch.setattr(transcripts, "CLAUDE", tmp_path)
+    source = ServerRef("newton", "", 0, 0, "alan")
+    session = Session(SessionRef(source, "claude-1"), "work", 1, 0, 0, 1,
+                      "tmux", "work", "/work", "tracked", "claude", "waiting",
+                      transcript_id=identity)
+    assert native_transcript(session).path == path
 
 
 def test_preview_renders_recent_native_conversation(tmp_path, monkeypatch):

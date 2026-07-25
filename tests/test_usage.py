@@ -16,7 +16,7 @@ class UsageTests(unittest.TestCase):
         five = usage.field("5h", 0)
         week = usage.field("7d", 4, 1784493419)
         line = f"{five}  {week}"
-        self.assertEqual(line.index("7d"), 30)
+        self.assertEqual(line.index("7d"), 38)
         self.assertRegex(week, r"@[A-Z][a-z]{2} \d\d \d\d:\d\d$")
 
     def test_codex_falls_back_to_cached_proxy_quota(self):
@@ -29,8 +29,8 @@ class UsageTests(unittest.TestCase):
              patch.object(usage.urllib.request, "urlopen",
                           return_value=io.StringIO(json.dumps(body))):
             text = usage.codex()
-        self.assertIn("5h [--------]   0%/0h", text)
-        self.assertIn("7d [--------]   4%", text)
+        self.assertIn("5h [----------------]   0%/0h", text)
+        self.assertIn("7d [#---------------]   4%", text)
 
     def test_codex_prefers_latest_local_rate_limit(self):
         event = {"payload": {"type": "token_count", "rate_limits": {
@@ -45,7 +45,7 @@ class UsageTests(unittest.TestCase):
             with patch.object(usage.Path, "home", return_value=Path(home)), \
                  patch.object(usage.urllib.request, "urlopen") as urlopen:
                 text = usage.codex()
-        self.assertIn("7d [#-------]  14%", text)
+        self.assertIn("7d [##--------------]  14%", text)
         urlopen.assert_not_called()
 
     def test_claude_keeps_usage_when_reset_is_unavailable(self):
@@ -59,8 +59,8 @@ class UsageTests(unittest.TestCase):
              patch.object(usage.urllib.request, "urlopen",
                           return_value=io.StringIO(json.dumps(body))):
             text = usage.claude()
-        self.assertIn("5h [########]  99%/0h", text)
-        self.assertIn("7d [########]  95%", text)
+        self.assertIn("5h [################]  99%/0h", text)
+        self.assertIn("7d [###############-]  95%", text)
 
     def test_unknown_codex_window_is_drift(self):
         body = {"accounts": [{"status": "active", "quota": {

@@ -21,5 +21,5 @@ def hosts():
 
 def machine(host):
     names = {"newton": "N", "lovelace": "L", "boltzmann": "B",
-             "turing": "T", "noether": "OE"}
-    return names.get(host.lower(), host[:2].upper())
+             "turing": "T", "noether": "Œ"}
+    return names.get(host.lower(), host[:1].upper())

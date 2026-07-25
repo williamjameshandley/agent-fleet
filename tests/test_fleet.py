@@ -20,7 +20,7 @@ from agent_fleet.ui import STATE_ORDER, recency
 from agent_fleet.tmux import split_key
 from agent_fleet.actions import agent_command, next_waiting_key, session_name
 from agent_fleet import actions
-from agent_fleet.config import ssh_environment
+from agent_fleet.config import machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
 from agent_fleet.alan import socket_path as alan_socket_path
 from agent_fleet.alan import Watcher as AlanWatcher
@@ -39,6 +39,11 @@ class IdentityTests(unittest.TestCase):
 
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
+
+    def test_machine_labels_are_single_cell_and_noether_uses_ligature(self):
+        self.assertEqual([machine(host) for host in
+                          ("newton", "lovelace", "boltzmann", "turing", "noether")],
+                         ["N", "L", "B", "T", "Œ"])
 
     def test_viewer_force_reaps_a_signal_ignoring_process_group(self):
         child = subprocess.Popen(
@@ -303,13 +308,25 @@ class IdentityTests(unittest.TestCase):
             "attachment": {"kind": "tmux", "session": "fleet@codex-review-1",
                            "generation": "thread-1"},
         }])[0]
-        with mock.patch("agent_fleet.viewer.find", return_value=actor), \
+        with mock.patch("agent_fleet.viewer.alan.request",
+                        return_value={"actors": [{
+                            "addr": "codex-1", "type": "codex", "state": "live",
+                            "label": "review", "cwd": "/work", "native": {"id": "thread-1"},
+                            "attachment": actor.attachment}]}), \
              mock.patch("agent_fleet.viewer.subprocess.run",
                         return_value=mock.Mock(stdout="thread-1\n")), \
              mock.patch("os.execvp") as execute:
             viewer.attach(actor.ref.key)
         execute.assert_called_once_with(
             "tmux", ["tmux", "attach-session", "-t", "fleet@codex-review-1"])
+
+    def test_show_still_resolves_the_global_source_before_requesting_a_viewer(self):
+        session = self.session("newton")
+        with mock.patch("agent_fleet.viewer.find", return_value=session) as find, \
+             mock.patch("agent_fleet.viewer.request") as request:
+            viewer.show(session.ref.key, "main")
+        find.assert_called_once_with(session.ref.key)
+        request.assert_called_once_with("main", session.ref.key)
 
     def test_alan_attach_execs_the_declared_claude_tmux_session(self):
         actor = alan_inventory("lovelace", [{
@@ -318,7 +335,11 @@ class IdentityTests(unittest.TestCase):
             "attachment": {"kind": "tmux", "session": "fleet@claude-review-1",
                            "generation": "session-1"},
         }])[0]
-        with mock.patch("agent_fleet.viewer.find", return_value=actor), \
+        with mock.patch("agent_fleet.viewer.alan.request",
+                        return_value={"actors": [{
+                            "addr": "claude-1", "type": "claude", "state": "waiting",
+                            "label": "review", "cwd": "/work", "native": {"id": "session-1"},
+                            "attachment": actor.attachment}]}), \
              mock.patch("agent_fleet.viewer.subprocess.run",
                         return_value=mock.Mock(stdout="session-1\n")), \
              mock.patch("os.execvp") as execute:
@@ -328,8 +349,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_codex_tmux_attach_enables_native_nested_mouse_routing(self):
         session = self.session(os.uname().nodename)
-        with mock.patch("agent_fleet.viewer.find", return_value=session), \
-             mock.patch("agent_fleet.viewer.inventory", return_value=[session]), \
+        with mock.patch("agent_fleet.viewer.inventory", return_value=[session]), \
              mock.patch("subprocess.run") as run, \
              mock.patch("os.execvp") as execute:
             viewer.attach(session.ref.key)

@@ -14,7 +14,7 @@ from pathlib import Path
 PROXY = os.environ.get("CODEX_PROXY_URL", "http://127.0.0.1:8080")
 
 
-def progress(percent, width=8):
+def progress(percent, width=16):
     full = round(percent * width / 100)
     return "#" * full + "-" * (width - full)
 

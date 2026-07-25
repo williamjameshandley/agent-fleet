@@ -179,6 +179,32 @@ def last_human_time(item):
     return 0
 
 
+def latest_assistant_text(item):
+    for event in reverse_events(item.path):
+        if text := event_text(item.agent, event, "assistant"):
+            return " ".join(text.split())
+    return ""
+
+
+def native_transcript(session):
+    if session.ref.server.kind != "alan" or not session.transcript_id:
+        return None
+    if session.agent == "claude":
+        path = (CLAUDE / session.cwd.replace("/", "-").replace(".", "-") /
+                f"{session.transcript_id}.jsonl")
+        return transcript("claude", path) if path.exists() else None
+    if session.agent == "codex":
+        matches = list(CODEX.glob(f"*/*/*/rollout-*{session.transcript_id}.jsonl"))
+        if matches:
+            return transcript("codex", max(matches, key=lambda path: path.stat().st_mtime))
+    return None
+
+
+def native_summary(session):
+    item = native_transcript(session)
+    return replace(session, summary=latest_assistant_text(item)) if item else session
+
+
 def codex_state(item):
     boundary, summary, updated = "task_complete", "", 0
     for event in item.events():
@@ -308,7 +334,7 @@ def observe(sessions):
     for session in sessions:
         row = by_session.get(session.ref.session_id)
         if not row:
-            result.append(session)
+            result.append(native_summary(session))
         elif counts[session.ref.session_id] > 1:
             count = counts[session.ref.session_id]
             result.append(replace(session, agent_name="multiple",
