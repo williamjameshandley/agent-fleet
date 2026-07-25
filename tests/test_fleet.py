@@ -16,7 +16,7 @@ from pathlib import Path
 
 from agent_fleet.model import ServerRef, Session, SessionRef
 from agent_fleet.protocol import decode, encode
-from agent_fleet.ui import STATE_ORDER, recency
+from agent_fleet.ui import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.tmux import split_key
 from agent_fleet.actions import agent_command, next_waiting_key, session_name
 from agent_fleet import actions
@@ -505,6 +505,9 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(
                 footer(),
                 "Enter show  c create  r rename  R refresh  d done  x dismiss")
+
+    def test_claude_and_codex_use_distinct_provider_colours(self):
+        self.assertNotEqual(AGENT_COLOUR["claude"], AGENT_COLOUR["codex"])
 
     def test_create_opens_inside_the_muster(self):
         with mock.patch("subprocess.run") as run:

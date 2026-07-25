@@ -28,6 +28,7 @@ HOST_COLOUR = {
     "turing": "\033[36m",
     "noether": "\033[32m",
 }
+AGENT_COLOUR = {"claude": "\033[38;5;173m", "codex": "\033[38;5;75m"}
 FZF_COLOUR = "16,fg:-1,bg:-1,fg+:-1,bg+:8,hl:3,hl+:3,info:4,prompt:2,pointer:1,marker:1,spinner:6,header:4,gutter:-1,border:8"
 COLUMN_ICONS = {"machine": "", "agent": "", "time": "",
                 "status": "", "title": "", "summary": ""}
@@ -60,12 +61,14 @@ def rows(include_header=True):
         summary = re.sub(r"^[\u2800-\u28ff✳●*]+\s*", "", summary)
         room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 20 - 1)
         host_colour = HOST_COLOUR.get(session.ref.server.host, "")
+        agent_colour = AGENT_COLOUR.get(session.agent, "")
         state_colour = ("\033[37;41m" if marker == "?" else "\033[30;47m" if marker == "x"
                         else STATE_COLOUR[session.state])
         emphasis = (DIM if marker == "x" else BOLD
                     if session.state in {"working", "needs-action"} else "")
         visible = (f"{emphasis}{host_colour}{machine(session.ref.server.host)}{RESET}{emphasis} "
-                   f"{agent:1} {elapsed:>4} {state_colour}{marker}{RESET}{emphasis} "
+                   f"{agent_colour}{agent:1}{RESET}{emphasis} {elapsed:>4} "
+                   f"{state_colour}{marker}{RESET}{emphasis} "
                    f"{session.name:<20.20} {summary:<{room}.{room}}{RESET}")
         print(f"{session.ref.key}\t{visible}")
 
