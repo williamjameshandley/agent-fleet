@@ -3,6 +3,8 @@
 
 import json
 import os
+import select
+import subprocess
 import sys
 import time
 import urllib.request
@@ -11,7 +13,7 @@ from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
-PROXY = os.environ.get("CODEX_PROXY_URL", "http://127.0.0.1:8080")
+CODEX_APP_SERVER = ("codex", "app-server", "--stdio")
 
 
 def progress(percent, width=16):
@@ -53,59 +55,76 @@ def claude():
     return "  ".join(fields[name] for name in ("5h", "7d"))
 
 
-def codex_local():
-    root = Path.home() / ".codex/sessions"
-    paths = sorted(root.rglob("*.jsonl"), key=lambda path: path.stat().st_mtime,
-                   reverse=True) if root.exists() else []
-    for path in paths:
-        lines = path.read_text(errors="replace").splitlines()
-        for line in reversed(lines):
-            try:
-                event = json.loads(line)
-                limits = event["payload"]["rate_limits"]
-                if event["payload"]["type"] != "token_count" or not limits:
-                    continue
-                windows = {"5h": field("5h"), "7d": field("7d")}
-                for quota in (limits.get("primary"), limits.get("secondary")):
-                    if quota is None:
-                        continue
-                    minutes = quota["window_minutes"]
-                    if minutes == 300:
-                        name = "5h"
-                    elif minutes == 10080:
-                        name = "7d"
-                    else:
-                        raise ValueError(f"unknown Codex limit window {minutes}m")
-                    windows[name] = field(name, quota["used_percent"], quota["resets_at"])
-                return "  ".join(windows[name] for name in ("5h", "7d"))
-            except (json.JSONDecodeError, KeyError, TypeError):
-                continue
-    return None
+def response(process, request_id, deadline, buffer):
+    while True:
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            message = json.loads(line)
+            if message.get("id") == request_id:
+                if "error" in message:
+                    raise ValueError(f"Codex app server: {message['error']}")
+                return message["result"], buffer
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
+            raise TimeoutError("Codex app server did not respond")
+        chunk = os.read(process.stdout.fileno(), 65536)
+        if not chunk:
+            raise ValueError("Codex app server closed without a response")
+        buffer += chunk
 
 
-def codex_proxy():
-    accounts = json.load(urllib.request.urlopen(f"{PROXY}/auth/accounts", timeout=10))["accounts"]
-    accounts = [a for a in accounts if a["status"] == "active" and a.get("quota")]
-    if len(accounts) != 1:
-        raise ValueError(f"expected one active cached Codex quota, got {len(accounts)}")
+def send(process, message):
+    process.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
+    process.stdin.flush()
+
+
+def reap(process, timeout):
+    if not process.stdin.closed:
+        try:
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=min(1, max(0.1, timeout)))
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def codex(command=CODEX_APP_SERVER, timeout=10):
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    deadline = time.monotonic() + timeout
+    buffer = b""
+    try:
+        send(process, {"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "fleet", "title": "Fleet", "version": "0.3"}}})
+        _, buffer = response(process, 1, deadline, buffer)
+        send(process, {"method": "initialized"})
+        send(process, {"id": 2, "method": "account/rateLimits/read", "params": {}})
+        result, buffer = response(process, 2, deadline, buffer)
+        limits = result["rateLimits"]
+        process.stdin.close()
+        try:
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise TimeoutError("Codex app server did not exit") from None
+    finally:
+        reap(process, timeout)
     windows = {"5h": field("5h"), "7d": field("7d")}
-    for quota in (accounts[0]["quota"]["rate_limit"],
-                  accounts[0]["quota"]["secondary_rate_limit"]):
+    for quota in (limits.get("primary"), limits.get("secondary")):
         if quota is None:
             continue
-        seconds = quota["limit_window_seconds"]
-        if seconds == 18000:
+        minutes = quota["windowDurationMins"]
+        if minutes == 300:
             name = "5h"
-        elif seconds == 604800:
+        elif minutes == 10080:
             name = "7d"
         else:
-            raise ValueError(f"unknown Codex limit window {seconds!r}s")
-        windows[name] = field(name, quota["used_percent"], quota["reset_at"])
+            raise ValueError(f"unknown Codex limit window {minutes}m")
+        windows[name] = field(name, quota["usedPercent"], quota["resetsAt"])
     return "  ".join(windows[name] for name in ("5h", "7d"))
-
-
-def codex():
-    return codex_local() or codex_proxy()
 
 
 def main():
