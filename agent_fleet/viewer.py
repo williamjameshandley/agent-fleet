@@ -76,19 +76,6 @@ def open_main(key):
 
 def show(key, slot=None):
     session = find(key)
-    if session.attention == "done":
-        host = session.ref.server.host
-        operation = (("fleet", "alan-attention", session.ref.session_id, "tracked")
-                     if session.ref.server.kind == "alan" else
-                     ("fleet", "mutate", key, "attention", "tracked"))
-        command = shlex.join(operation)
-        argv = (list(operation)
-                if host == os.uname().nodename else
-                ["ssh", "-T", "-o", "BatchMode=yes", host, command])
-        subprocess.run(argv, check=True)
-        signal = (["fleet", "signal"] if host == os.uname().nodename else
-                  ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet signal"])
-        subprocess.run(signal, check=True)
     available = slots()
     for name, source in available:
         if source == key:

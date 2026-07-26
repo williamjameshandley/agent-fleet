@@ -11,7 +11,8 @@ from .quota import read as quota_read, update as quota_update
 from .tmux import capture, event_stream, inventory, mutate
 from .config import RUNTIME, hosts
 from .transcripts import history as transcript_history, resume
-from .alan import (spawn_claude, spawn_codex,
+from .alan import (spawn_claude, spawn_codex, actors as alan_actors,
+                   retire as alan_retire, resume as alan_resume,
                    rename as alan_rename, set_attention as alan_attention)
 
 
@@ -74,7 +75,7 @@ def main():
     item.add_argument("agent", choices=("claude", "codex"))
     item.add_argument("session")
     item.add_argument("name")
-    item = command("resurrect", lambda a: actions.resurrect(a.key))
+    item = command("resurrect", lambda a: actions.resurrect_report(a.key))
     item.add_argument("key")
     item = command("refresh", lambda a: actions.refresh_command(a.key, a.all_sessions))
     target = item.add_mutually_exclusive_group(required=True)
@@ -122,11 +123,17 @@ def main():
     item = command("alan-rename", lambda a: alan_rename(a.addr, a.label))
     item.add_argument("addr")
     item.add_argument("label")
+    command("alan-actors", lambda _: print(json.dumps(alan_actors())))
+    item = command("alan-retire", lambda a: alan_retire(a.addr))
+    item.add_argument("addr")
+    item = command("alan-resume", lambda a: print(alan_resume(a.addr)))
+    item.add_argument("addr")
     item = command("alan-attention", lambda a: alan_attention(a.addr, a.attention))
     item.add_argument("addr")
     item.add_argument("attention", choices=("tracked", "done"))
     command("next-waiting", lambda _: actions.next_waiting())
-    for name, fn in (("rename", actions.rename), ("done", actions.done),
+    for name, fn in (("rename", actions.rename), ("archive", actions.archive_report),
+                     ("done", actions.done),
                      ("dismiss-source", actions.dismiss_source)):
         item = command(name, lambda a, fn=fn: fn(a.key))
         item.add_argument("key")

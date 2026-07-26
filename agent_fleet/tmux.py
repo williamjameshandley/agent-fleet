@@ -168,8 +168,7 @@ def event_stream(host, consumer=None):
             _alan_attachments = {
                 actor["addr"]: actor.get("attachment") or {"kind": "none"}
                 for actor in alan.actors if actor.get("type") in {"claude", "codex"}}
-            current = inventory(host) + alan_inventory(
-                host, alan.actors, alan.attention, alan.activity_baseline)
+            current = inventory(host) + alan_inventory(host, alan.actors)
             try:
                 current = observe(current)
                 agent_cache = {session.ref: session for session in current}

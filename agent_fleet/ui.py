@@ -15,7 +15,6 @@ from . import viewer
 STATE_ORDER = {"working": 0, "needs-action": 1, "waiting": 2, "finished": 3}
 RESET = "\033[0m"
 BOLD = "\033[1m"
-DIM = "\033[2m"
 STATE_COLOUR = {
     "working": "\033[30;42m",
     "needs-action": "\033[1;37;41m",
@@ -53,7 +52,6 @@ def rows(include_header=True):
         elapsed = ("?" if not timestamp else
                    f"{age // 60}m" if age < 3600 else f"{age // 3600}h")
         marker = ("?" if session.ref.server.host in unavailable else
-                  "x" if session.attention == "done" else
                   {"needs-action": "!", "working": "*", "waiting": ".",
                    "finished": "-"}[session.state])
         agent = {"claude": "C", "codex": "X", "python": "P", "gemini": "G",
@@ -63,10 +61,8 @@ def rows(include_header=True):
         room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 20 - 1)
         host_colour = HOST_COLOUR.get(session.ref.server.host, "")
         agent_colour = AGENT_COLOUR.get(session.agent, "")
-        state_colour = ("\033[37;41m" if marker == "?" else "\033[30;47m" if marker == "x"
-                        else STATE_COLOUR[session.state])
-        emphasis = (DIM if marker == "x" else BOLD
-                    if session.state in {"working", "needs-action"} else "")
+        state_colour = ("\033[37;41m" if marker == "?" else STATE_COLOUR[session.state])
+        emphasis = BOLD if session.state in {"working", "needs-action"} else ""
         visible = (f"{emphasis}{host_colour}{machine(session.ref.server.host)}{RESET}{emphasis} "
                    f"{agent_colour}{agent:1}{RESET}{emphasis} {elapsed:>4} "
                    f"{state_colour}{marker}{RESET}{emphasis} "
@@ -77,7 +73,7 @@ def rows(include_header=True):
 def ordered():
     sessions, usage, unavailable = decode_message(snapshot())
     sessions.sort(key=lambda s: (s.ref.server.host in unavailable,
-                                 s.attention == "done", STATE_ORDER.get(s.state, 2),
+                                 STATE_ORDER.get(s.state, 2),
                                  -recency(s), s.ref.key))
     return sessions, usage, unavailable
 
@@ -117,8 +113,7 @@ def muster():
         "--bind=c:execute-silent(fleet create-tab)",
         "--bind=r:execute-silent(fleet rename-tab {1})",
         "--bind=R:execute-silent(fleet refresh {1})+reload-sync(fleet items)",
-        "--bind=d:execute-silent(fleet done {1})+reload(fleet items)",
-        "--bind=x:execute-silent(fleet dismiss-source {1})+reload-sync(fleet items)",
+        "--bind=x:execute-silent(fleet archive {1})+reload-sync(fleet items)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--preview=fleet preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
@@ -137,7 +132,7 @@ def header():
 
 
 def footer():
-    hints = ("Enter show  c create  r rename  R refresh  d done  x dismiss")
+    hints = ("Enter open  c create  r rename  R refresh  x archive")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)
@@ -152,7 +147,7 @@ def cursor():
         if position:
             return position
     return next((i for i, session in enumerate(sessions, 1)
-                 if session.attention != "done" and session.state == "waiting"), 1)
+                 if session.state == "waiting"), 1)
 
 
 def select(key):
@@ -180,7 +175,7 @@ def history():
         "fzf", "--track", "--delimiter=\t", "--with-nth=2..",
         f"--color={FZF_COLOUR}",
         "--id-nth=1", "--layout=reverse", "--no-sort", "--no-multi",
-        "--header=History  Enter resurrect  Tab live",
+        "--header=History  Enter open  Tab live",
         "--bind=enter:execute-silent(fleet resurrect {1})+reload-sync(fleet history-rows)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:live)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:live)",
