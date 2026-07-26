@@ -36,7 +36,7 @@ from agent_fleet.daemon import Fleet
 class IdentityTests(unittest.TestCase):
     def session(self, host, sid="$1"):
         return Session(SessionRef(ServerRef(host, "/tmp/tmux/default", 12, 10), sid),
-                       "work", 1, 2, 0, 1, "codex", "waiting", "/work", "tracked")
+                       "work", 1, 2, 0, 1, "codex", "waiting", "/work")
 
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
@@ -179,14 +179,13 @@ class IdentityTests(unittest.TestCase):
             mock.call({"op": "list"}),
         ])
 
-    def test_alan_inventory_has_no_attention_projection(self):
+    def test_alan_inventory_uses_native_human_activity(self):
         actor = alan_inventory("lovelace", [{
             "addr": "codex-1", "type": "codex", "state": "waiting",
             "human_activity": 123,
             "attachment": {"kind": "tmux", "session": "fleet@codex-work-1",
                            "generation": "thread-1"},
         }])[0]
-        self.assertEqual(actor.attention, "tracked")
         self.assertEqual(actor.human_activity, 123)
 
     def test_non_attachable_alan_actors_are_not_fleet_rows(self):
@@ -357,7 +356,7 @@ class IdentityTests(unittest.TestCase):
         host = os.uname().nodename
         session = Session(
             SessionRef(ServerRef(host, "", 0, 0, "alan"), "codex-1"),
-            "work", 1, 0, 0, 1, "tmux", "", "/work", "tracked",
+            "work", 1, 0, 0, 1, "tmux", "", "/work",
             "codex", "waiting", "", 0, "thread-1", {"kind": "tmux"}, 1)
         with mock.patch("agent_fleet.actions.find", return_value=session), \
              mock.patch("agent_fleet.actions.host_command") as command, \
@@ -374,7 +373,7 @@ class IdentityTests(unittest.TestCase):
         host = os.uname().nodename
         session = Session(
             SessionRef(ServerRef(host, "", 0, 0, "alan"), "codex-1"),
-            "work", 1, 0, 0, 1, "tmux", "", "/work", "tracked",
+            "work", 1, 0, 0, 1, "tmux", "", "/work",
             "codex", "waiting")
         with mock.patch("agent_fleet.actions.find", return_value=session), \
              mock.patch("agent_fleet.actions.host_command") as command:
@@ -458,7 +457,7 @@ class IdentityTests(unittest.TestCase):
         with mock.patch("agent_fleet.actions.host_command") as command, \
              mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
-            actions.resurrect(key)
+            actions.open_history(key)
         command.assert_called_once_with("lovelace", "fleet", "alan-resume", "codex-1",
                                         capture_output=True)
         wait.assert_called_once_with(key)
@@ -472,7 +471,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.host_command") as command, \
              mock.patch("agent_fleet.actions.created_key", return_value="new-key"), \
              mock.patch("agent_fleet.actions.viewer.request"):
-            actions.resurrect(key)
+            actions.open_history(key)
         command.assert_called_once_with(
             "lovelace", "fleet", "resume", "codex", "full-thread-id", "work",
             capture_output=True)
@@ -488,11 +487,11 @@ class IdentityTests(unittest.TestCase):
             "Archive failed: retire refused"])
 
     def test_history_open_failure_is_visible_in_muster(self):
-        with mock.patch("agent_fleet.actions.resurrect",
+        with mock.patch("agent_fleet.actions.open_history",
                         side_effect=RuntimeError("native identity changed")), \
              mock.patch("agent_fleet.actions.subprocess.run") as run:
             with self.assertRaisesRegex(SystemExit, "native identity changed"):
-                actions.resurrect_report("alan:lovelace:codex-1")
+                actions.open_history_report("alan:lovelace:codex-1")
         run.assert_called_once_with([
             "tmux", "display-message", "-t", "fleet@muster",
             "Open failed: native identity changed"])
@@ -812,7 +811,7 @@ class IdentityTests(unittest.TestCase):
             actions.refresh(session.ref.key)
             self.assertEqual(viewer.exchange("refresh", "STATUS"), session.ref.key)
 
-    def test_viewer_dismiss_is_an_explicit_clear(self):
+    def test_viewer_clear_remains_an_internal_primitive(self):
         root = Path(__file__).parents[1]
         with tempfile.TemporaryDirectory() as runtime:
             env = {**os.environ, "XDG_RUNTIME_DIR": runtime,
@@ -825,8 +824,8 @@ class IdentityTests(unittest.TestCase):
                     if socket.exists():
                         break
                     time.sleep(.01)
-                subprocess.run([sys.executable, "-m", "agent_fleet.cli", "dismiss",
-                                "--slot", "test"], env=env, check=True)
+                code = "from agent_fleet.viewer import request; request('test', '')"
+                subprocess.run([sys.executable, "-c", code], env=env, check=True)
                 code = "from agent_fleet.viewer import slots; print(slots())"
                 result = subprocess.run([sys.executable, "-c", code], env=env,
                                         text=True, capture_output=True, check=True)

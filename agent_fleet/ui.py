@@ -176,7 +176,7 @@ def history():
         f"--color={FZF_COLOUR}",
         "--id-nth=1", "--layout=reverse", "--no-sort", "--no-multi",
         "--header=History  Enter open  Tab live",
-        "--bind=enter:execute-silent(fleet resurrect {1})+reload-sync(fleet history-rows)",
+        "--bind=enter:execute-silent(fleet open-history {1})+reload-sync(fleet history-rows)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:live)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:live)",
     ]

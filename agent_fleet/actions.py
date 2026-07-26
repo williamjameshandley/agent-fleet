@@ -12,7 +12,7 @@ from .protocol import decode
 from .protocol import decode_message
 from . import viewer
 from . import workstation
-from .alan import rename as alan_rename, set_attention as alan_attention
+from .alan import rename as alan_rename
 from .alan import refresh as alan_refresh
 from .alan import attachment_usable as alan_attachment_usable
 
@@ -129,26 +129,6 @@ def rename(key):
             host_command(session.ref.server.host, "fleet", "mutate", key, "rename", name)
 
 
-def done(key):
-    session = find(key)
-    if session.ref.server.kind == "alan":
-        for slot, source in viewer.slots():
-            if source == key:
-                viewer.request(slot, "")
-        if session.ref.server.host == os.uname().nodename:
-            alan_attention(session.ref.session_id, "done")
-        else:
-            host_command(session.ref.server.host, "fleet", "alan-attention",
-                         session.ref.session_id, "done")
-        return
-    for slot, source in viewer.slots():
-        if source == key:
-            viewer.request(slot, "")
-    host_command(session.ref.server.host, "fleet", "mutate", key,
-                 "attention", "done")
-    host_command(session.ref.server.host, "fleet", "signal")
-
-
 def wait_for_absence(key):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -187,16 +167,6 @@ def archive_report(key):
         subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
                         f"Archive failed: {reason}"])
         raise SystemExit(reason)
-
-
-def dismiss_source(key):
-    shown = [slot for slot, source in viewer.slots() if source == key]
-    if not shown:
-        raise SystemExit("that source is not shown locally")
-    for slot in shown:
-        viewer.request(slot, "")
-    subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
-                    "Viewer dismissed; source session is still running"])
 
 
 def refresh_local(key):
@@ -362,7 +332,7 @@ def history():
         print("\t".join((key, host, agent, name, cwd)))
 
 
-def resurrect(key):
+def open_history(key):
     if key.startswith("alan:"):
         _, host, addr = key.split(":", 2)
         host_command(host, "fleet", "alan-resume", addr, capture_output=True)
@@ -381,9 +351,9 @@ def resurrect(key):
     viewer.request("main", created_key(host, name))
 
 
-def resurrect_report(key):
+def open_history_report(key):
     try:
-        resurrect(key)
+        open_history(key)
     except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
         reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
                   and error.stderr else str(error))
@@ -442,7 +412,7 @@ def context():
         "unavailable": unavailable,
         "slots": [{"slot": slot, "source": source} for slot, source in viewer.slots()],
         "sessions": [{"source": s.ref.key, "host": s.ref.server.host, "name": s.name,
-                      "agent": s.agent, "state": s.state, "attention": s.attention,
+                      "agent": s.agent, "state": s.state,
                       "summary": s.summary, "recency": s.human_activity}
                      for s in sessions],
     }

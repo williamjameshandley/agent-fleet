@@ -10,13 +10,12 @@ a row drops into the real session for keyboard, mouse or voice input.
 ## Cognitive model
 
 - Spatial stability is valuable during a working period. Once shown, a source
-  remains in its slot until the user dismisses or explicitly replaces it.
+  remains in its slot until explicitly replaced.
 - Active, needs-action, recent and intentionally unfinished work is most
   salient. An explicitly open loop should resurface after a move or next day.
 - Failure to resurface important work is worse than showing too much.
-- Visibility is evidence of an open loop, not a separate truth. `done` shelves
-  attention without destroying the source. Displacement lowers salience but
-  does not close a loop.
+- Visibility is evidence of a live source. For LLM sources, archive ends current
+  computation while retaining the exact recoverable conversation.
 - User-facing deletion means archiving a conversation: preserve its vendor
   conversation identity in History, close its live agent/tmux session, and
   remove it from Muster. Archive is recoverable, but does not keep thousands of
@@ -40,14 +39,12 @@ a row drops into the real session for keyboard, mouse or voice input.
 - Muster supports keyboard and mouse selection, filtering, aligned compact
   status, usage, management and history. Working work is at the top; initial
   focus is the first waiting row.
-- Create and rename mutate real tmux sessions. Dismiss mutates only a viewer.
-  Mark done mutates only attention. Archive records the source and vendor
-  transcript identity in History, then closes the live tmux session.
-  Resurrection uses that identity to create a new source session which resumes
-  the conversation. Split was a one-off migration, not a command.
+- Create and rename mutate real sessions. Archive records the source and vendor
+  transcript identity in History, then closes the live session. Open uses that
+  identity to resume the same Alan actor or standalone vendor conversation.
 - An explicit archive instruction is sufficient authorization; no second
   confirmation is required. Before closing, Fleet must prove that it has a
-  usable vendor resurrection identity and refuse the archive if it cannot.
+  usable vendor recovery identity and refuse the archive if it cannot.
   Restore requests the full conversation history rather than deliberately
   selecting a compressed resume path.
 - Creation always exposes the proposed source machine and waits for explicit
@@ -76,11 +73,11 @@ a row drops into the real session for keyboard, mouse or voice input.
   generation and tmux object ID. Row positions, window indices and names are
   never joins.
 - Agent state, summary, transcript recency and quota are derived and rebuildable.
-  Agent state, attention state and viewer placement are separate domains.
+  Agent state and viewer placement are separate domains.
 - Fleet has no persistent JSON state or independently mutable catalogue.
-  Disposable projections live in memory; attention markers live with source
-  tmux sessions, while workstation profile markers live in that workstation's
-  tmux global options. Placement comes from i3 and viewer registrations.
+  Disposable projections live in memory, while workstation profile markers live
+  in that workstation's tmux global options. Placement comes from i3 and viewer
+  registrations.
 
 ## Performance and transport
 

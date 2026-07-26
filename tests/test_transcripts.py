@@ -129,7 +129,7 @@ def test_alan_claude_transcript_uses_native_identity_and_cwd(tmp_path, monkeypat
     monkeypatch.setattr(transcripts, "CLAUDE", tmp_path)
     source = ServerRef("newton", "", 0, 0, "alan")
     session = Session(SessionRef(source, "claude-1"), "work", 1, 0, 0, 1,
-                      "tmux", "work", "/work", "tracked", "claude", "waiting",
+                      "tmux", "work", "/work", "claude", "waiting",
                       transcript_id=identity)
     assert native_transcript(session).path == path
 

@@ -104,7 +104,7 @@ def inventory(host, actors):
             SessionRef(source, actor["addr"]), actor.get("label") or actor["addr"],
             actor.get("created", 0), 0, 0, 1, attachment.get("kind", "alan"),
             actor.get("label", ""),
-            actor.get("cwd") or "", "tracked",
+            actor.get("cwd") or "",
             actor.get("type", "alan"), reported_state,
             "", 0, (actor.get("native") or {}).get("id", ""), attachment,
             actor.get("human_activity", 0)))
@@ -151,13 +151,6 @@ def resume(addr):
 
 def rename(addr, label):
     request({"op": "rename", "addr": addr, "label": label})
-
-
-def set_attention(addr, attention):
-    if attention not in {"tracked", "done"}:
-        raise ValueError(f"invalid Fleet attention {attention!r}")
-    request({"op": "send", "to": "fleet", "payload": {
-        "kind": "fleet_attention", "actor": addr, "attention": attention}})
 
 
 def refresh(addr):

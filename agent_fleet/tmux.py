@@ -36,8 +36,6 @@ def mutate(key, operation, arguments):
         raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
     if operation == "rename":
         command = ["rename-session", "-t", session_id, arguments[0]]
-    elif operation == "attention":
-        command = ["set-option", "-t", session_id, "@fleet_attention", arguments[0]]
     elif operation == "archive":
         command = ["kill-session", "-t", session_id]
     else:
@@ -98,10 +96,10 @@ def capture_pane(session, columns=0, lines=0):
 
 def inventory(host):
     tmux = server()
-    metadata = {sid: (attention, int(activity or 0))
-                for sid, attention, activity in (line.split("\t") for line in tmux.cmd(
+    metadata = {sid: int(activity or 0)
+                for sid, activity in (line.split("\t") for line in tmux.cmd(
                     "list-sessions", "-F",
-                    "#{session_id}\t#{@fleet_attention}\t#{@fleet_human_activity}").stdout)}
+                    "#{session_id}\t#{@fleet_human_activity}").stdout)}
     sessions = []
     for item in tmux.sessions:
         if item.session_name.startswith("fleet@"):
@@ -112,8 +110,7 @@ def inventory(host):
             int(item.session_created), int(item.session_activity),
             int(item.session_attached), int(item.session_windows),
             item.pane_current_command, item.pane_title, item.pane_current_path,
-            metadata[item.session_id][0] or "tracked",
-            human_activity=metadata[item.session_id][1]))
+            human_activity=metadata[item.session_id]))
     return sessions
 
 
