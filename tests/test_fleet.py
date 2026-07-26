@@ -29,6 +29,7 @@ from agent_fleet.alan import refresh as alan_refresh
 from agent_fleet import viewer
 from agent_fleet import workstation
 from agent_fleet import tmux
+from agent_fleet import ui
 from agent_fleet.daemon import Fleet
 
 
@@ -39,6 +40,23 @@ class IdentityTests(unittest.TestCase):
 
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
+
+    def test_cursor_position_comes_from_musters_loaded_identities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "muster.sock"
+            socket_path.touch()
+            state = json.dumps({"matches": [
+                {"text": "actor:first\tfirst"},
+                {"text": "actor:focused\tfocused"},
+            ]})
+            query = subprocess.CompletedProcess([], 0, stdout=state)
+            post = subprocess.CompletedProcess([], 0)
+            with mock.patch.object(ui, "RUNTIME", Path(directory)), \
+                    mock.patch("agent_fleet.ui.subprocess.run",
+                               side_effect=[query, post]) as run:
+                ui.select("actor:focused")
+
+        self.assertIn("pos(2)+track-current", run.call_args_list[1].args[0])
 
     def test_machine_labels_are_single_cell_and_noether_uses_ligature(self):
         self.assertEqual([machine(host) for host in

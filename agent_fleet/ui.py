@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 import time
 import shutil
@@ -155,16 +156,23 @@ def cursor():
 
 
 def select(key):
-    sessions, _, _ = ordered()
-    position = next((i for i, session in enumerate(sessions, 1)
-                     if session.ref.key == key), None)
-    if position is None:
-        return
     path = RUNTIME / "muster.sock"
     if path.exists():
-        subprocess.run(["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-                        "-XPOST", "-d", f"pos({position})", "http://localhost"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(
+            ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
+             "http://localhost"], capture_output=True, text=True
+        )
+        if result.returncode:
+            return
+        matches = json.loads(result.stdout)["matches"]
+        position = next((i for i, match in enumerate(matches, 1)
+                         if match["text"].partition("\t")[0] == key), None)
+        if position:
+            subprocess.run(
+                ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
+                 "-XPOST", "-d", f"pos({position})+track-current", "http://localhost"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
 
 
 def history():
