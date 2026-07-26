@@ -34,18 +34,20 @@ def mutate(key, operation, arguments):
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:
         raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
-    commands = {
-        "rename": ["rename-session", "-t", session_id, arguments[0]],
-        "attention": ["set-option", "-t", session_id, "@fleet_attention", arguments[0]],
-    }
-    if operation not in commands:
+    if operation == "rename":
+        command = ["rename-session", "-t", session_id, arguments[0]]
+    elif operation == "attention":
+        command = ["set-option", "-t", session_id, "@fleet_attention", arguments[0]]
+    elif operation == "archive":
+        command = ["kill-session", "-t", session_id]
+    else:
         raise SystemExit(f"unknown mutation {operation!r}")
     condition = (f"#{{&&:#{{==:#{{socket_path}},{socket}}},"
                  f"#{{&&:#{{==:#{{pid}},{pid}}},"
                  f"#{{&&:#{{==:#{{start_time}},{started}}},"
                  f"#{{==:#{{session_id}},{session_id}}}}}}}}}")
     result = server().cmd("if-shell", "-t", session_id, "-F", condition,
-                          shlex.join(commands[operation]),
+                          shlex.join(command),
                           "display-message -p FLEET_STALE")
     if result.stdout and result.stdout[0] == "FLEET_STALE":
         raise SystemExit(f"stale source identity: {key}")

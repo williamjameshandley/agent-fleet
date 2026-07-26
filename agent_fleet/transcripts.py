@@ -75,6 +75,13 @@ def find(session_id, agent=None):
     return matches[0]
 
 
+def verify(agent, session_id):
+    item = find(session_id, agent)
+    if item.session_id != session_id:
+        raise SystemExit(f"transcript identity changed: {session_id}")
+    return item
+
+
 def history(limit=100):
     rows = []
     seen = set()
@@ -94,7 +101,7 @@ def history(limit=100):
 
 
 def resume(agent, session_id, name):
-    item = find(session_id, agent)
+    item = verify(agent, session_id)
     command = (["claude", "--resume", item.session_id] if agent == "claude"
                else ["codex", "resume", item.session_id])
     subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c",

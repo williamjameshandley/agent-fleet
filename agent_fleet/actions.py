@@ -162,12 +162,16 @@ def wait_for_absence(key):
 
 def archive(key):
     session = find(key)
-    if session.ref.server.kind != "alan":
-        raise SystemExit("archive requires an Alan-owned session")
     if session.agent not in {"claude", "codex"} or not session.transcript_id:
         raise SystemExit("archive requires a durable Claude or Codex identity")
-    host_command(session.ref.server.host, "fleet", "alan-retire",
-                 session.ref.session_id, capture_output=True)
+    if session.ref.server.kind == "alan":
+        host_command(session.ref.server.host, "fleet", "alan-retire",
+                     session.ref.session_id, capture_output=True)
+    else:
+        host_command(session.ref.server.host, "fleet", "transcript-check",
+                     session.agent, session.transcript_id, capture_output=True)
+        host_command(session.ref.server.host, "fleet", "mutate", key, "archive",
+                     capture_output=True)
     wait_for_absence(key)
     for slot, source in viewer.slots():
         if source == key:
@@ -372,7 +376,8 @@ def resurrect(key):
     name = desktop_input("new session name")
     if not name:
         raise SystemExit("session name is required")
-    host_command(host, "fleet", "resume", agent, transcript, name)
+    host_command(host, "fleet", "resume", agent, transcript, name,
+                 capture_output=True)
     viewer.request("main", created_key(host, name))
 
 

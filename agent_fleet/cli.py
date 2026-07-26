@@ -10,7 +10,7 @@ from .protocol import encode
 from .quota import read as quota_read, update as quota_update
 from .tmux import capture, event_stream, inventory, mutate
 from .config import RUNTIME, hosts
-from .transcripts import history as transcript_history, resume
+from .transcripts import history as transcript_history, resume, verify as transcript_verify
 from .alan import (spawn_claude, spawn_codex, actors as alan_actors,
                    retire as alan_retire, resume as alan_resume,
                    rename as alan_rename, set_attention as alan_attention)
@@ -71,6 +71,9 @@ def main():
     command("history-rows", lambda _: actions.history())
     item = command("transcripts", lambda a: print(json.dumps(transcript_history(a.limit))))
     item.add_argument("--limit", type=int, default=100)
+    item = command("transcript-check", lambda a: transcript_verify(a.agent, a.session))
+    item.add_argument("agent", choices=("claude", "codex"))
+    item.add_argument("session")
     item = command("resume", lambda a: resume(a.agent, a.session, a.name))
     item.add_argument("agent", choices=("claude", "codex"))
     item.add_argument("session")

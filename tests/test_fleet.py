@@ -382,6 +382,36 @@ class IdentityTests(unittest.TestCase):
                 actions.archive(session.ref.key)
         command.assert_not_called()
 
+    def test_archive_verifies_transcript_then_closes_exact_tmux_identity(self):
+        session = self.session("lovelace")
+        session = Session(**{**session.__dict__, "transcript_id": "thread-1"})
+        with mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.host_command") as command, \
+             mock.patch("agent_fleet.actions.wait_for_absence") as absent, \
+             mock.patch("agent_fleet.actions.viewer.slots", return_value=[]):
+            actions.archive(session.ref.key)
+        self.assertEqual(command.call_args_list, [
+            mock.call("lovelace", "fleet", "transcript-check", "codex", "thread-1",
+                      capture_output=True),
+            mock.call("lovelace", "fleet", "mutate", session.ref.key, "archive",
+                      capture_output=True),
+        ])
+        absent.assert_called_once_with(session.ref.key)
+
+    def test_tmux_archive_revalidates_full_source_before_kill(self):
+        key = "lovelace:/tmp/tmux:12:10:$1"
+        result = mock.Mock(stdout=[])
+        server = mock.Mock()
+        server.cmd.return_value = result
+        with mock.patch("agent_fleet.tmux.server", return_value=server):
+            tmux.mutate(key, "archive", [])
+        command = server.cmd.call_args.args
+        self.assertEqual(command[:4], ("if-shell", "-t", "$1", "-F"))
+        self.assertIn("kill-session -t '$1'", command[5])
+        self.assertIn("/tmp/tmux", command[4])
+        self.assertIn("12", command[4])
+        self.assertIn("10", command[4])
+
     def test_history_keeps_failed_alan_actor_and_suppresses_transcript_fallback(self):
         actor = {"addr": "codex-1", "type": "codex", "state": "failed",
                  "label": "work", "cwd": "/work", "created": 10,
@@ -433,6 +463,19 @@ class IdentityTests(unittest.TestCase):
                                         capture_output=True)
         wait.assert_called_once_with(key)
         show.assert_called_once_with(key)
+
+    def test_transcript_history_open_captures_remote_resume_failure(self):
+        key = "lovelace:codex:full-thread-id"
+        with mock.patch("agent_fleet.actions.snapshot",
+                        return_value='{"sessions":[],"usage":{},"unavailable":[]}'), \
+             mock.patch("agent_fleet.actions.desktop_input", return_value="work"), \
+             mock.patch("agent_fleet.actions.host_command") as command, \
+             mock.patch("agent_fleet.actions.created_key", return_value="new-key"), \
+             mock.patch("agent_fleet.actions.viewer.request"):
+            actions.resurrect(key)
+        command.assert_called_once_with(
+            "lovelace", "fleet", "resume", "codex", "full-thread-id", "work",
+            capture_output=True)
 
     def test_archive_failure_is_visible_in_muster(self):
         failure = subprocess.CalledProcessError(1, ["fleet"], stderr="retire refused")
@@ -490,11 +533,12 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(split_key(session.ref.key),
                          ("newton", "/tmp/tmux/default", 12, 10, "$1"))
 
-    def test_new_cli_has_no_destructive_surface(self):
+    def test_archive_is_the_only_destructive_surface(self):
         root = Path(__file__).parents[1]
         paths = [root / "fleet", *(root / "agent_fleet").glob("*.py")]
         source = "\n".join(path.read_text() for path in paths)
-        for command in ("kill-session", "kill-window", "unlink-window"):
+        self.assertEqual(source.count('"kill-session"'), 1)
+        for command in ("kill-window", "unlink-window"):
             self.assertNotIn(command, source)
 
     def test_commander_uses_native_codex(self):
