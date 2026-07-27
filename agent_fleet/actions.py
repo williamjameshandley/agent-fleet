@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import hosts, ssh_environment
 from .remote import find
-from .daemon import preview as pane_preview, snapshot
+from .daemon import commander_context as commander_projection, preview as pane_preview, snapshot
 from .protocol import decode
 from .protocol import decode_message
 from . import viewer
@@ -420,16 +420,4 @@ def context():
 
 
 def commander_context():
-    local = json.loads(subprocess.run(["fleet", "context"], text=True,
-                                      capture_output=True, check=True).stdout)
-    environment = ssh_environment()
-    workstations = {}
-    for host in ("boltzmann", "noether", "newton"):
-        remote = json.loads(subprocess.run(
-            ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet context"],
-            text=True, capture_output=True, check=True, env=environment).stdout)
-        workstations[host] = {key: remote[key]
-                              for key in ("profile", "unavailable", "slots")}
-    print(json.dumps({"sessions": local["sessions"],
-                      "unavailable": local["unavailable"],
-                      "workstations": workstations}, indent=2))
+    print(json.dumps(json.loads(commander_projection()), indent=2))

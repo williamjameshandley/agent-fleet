@@ -5,8 +5,9 @@ import sys
 import shlex
 import json
 import subprocess
+import hashlib
 
-from .config import HUB, RUNTIME, hosts
+from .config import HUB, RUNTIME, hosts, ssh_environment
 from .protocol import decode_message, encode
 from .model import key_host
 
@@ -99,12 +100,84 @@ class Fleet:
         elif request.startswith("preview "):
             key, columns, lines = request.removeprefix("preview ").rsplit(" ", 2)
             payload = await self.preview(key, int(columns), int(lines))
+        elif request == "commander-context":
+            payload = json.dumps(await self.commander_context(), sort_keys=True,
+                                 separators=(",", ":"))
         else:
             raise ValueError(f"unknown daemon request {request!r}")
         payload += "\n"
         writer.write(payload.encode())
         await writer.drain()
         writer.close()
+
+    async def commander_context(self):
+        sessions = sorted(
+            ({"source": session.ref.key, "host": session.ref.server.host,
+              "name": session.name, "agent": session.agent, "state": session.state,
+              "summary": session.summary, "recency": session.human_activity,
+              "transcript_id": session.transcript_id}
+             for group in self.sessions.values() for session in group),
+            key=lambda item: item["source"])
+        source_hosts = sorted(hosts())
+        observations = await asyncio.gather(
+            *(self.remote_json(host, "fleet", "context")
+              for host in ("boltzmann", "noether", "newton")),
+            *(self.history_observation(host) for host in source_hosts))
+        workstations = {
+            host: {key: observation[key] for key in ("profile", "unavailable", "slots")}
+            for host, observation in zip(("boltzmann", "noether", "newton"), observations[:3])
+        }
+        history = self.history_entries(sessions, source_hosts, observations[3:])
+        body = {"version": 1, "sessions": sessions, "hosts": source_hosts,
+                "unavailable": sorted(self.unavailable), "history": history,
+                "workstations": workstations}
+        canonical = json.dumps(body, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False).encode()
+        return {**body, "revision": hashlib.sha256(canonical).hexdigest()}
+
+    async def remote_json(self, host, *command):
+        argv = list(command) if host == os.uname().nodename.split(".", 1)[0] else [
+            "ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(command)]
+        process = await asyncio.create_subprocess_exec(
+            *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=ssh_environment())
+        stdout, stderr = await process.communicate()
+        if process.returncode:
+            raise RuntimeError(stderr.decode().strip() or f"{host}: {' '.join(command)} failed")
+        return json.loads(stdout)
+
+    async def history_observation(self, host):
+        actors, transcripts = await asyncio.gather(
+            self.remote_json(host, "fleet", "alan-actors"),
+            self.remote_json(host, "fleet", "transcripts", "--limit", "100"))
+        return {"host": host, "actors": actors, "transcripts": transcripts}
+
+    @staticmethod
+    def history_entries(sessions, source_hosts, observations):
+        live = {(item["host"], item["agent"], item.get("transcript_id"))
+                for item in sessions if item.get("transcript_id")}
+        authorities = set(live)
+        entries = []
+        for host, observation in zip(source_hosts, observations):
+            for actor in observation["actors"]:
+                native_id = (actor.get("native") or {}).get("id")
+                identity = host, actor.get("type"), native_id
+                if (actor.get("type") in {"claude", "codex"} and native_id and
+                        actor.get("state") in {"retired", "failed"}):
+                    authorities.add(identity)
+                    entries.append({"key": f'alan:{host}:{actor["addr"]}', "host": host,
+                                    "agent": actor["type"],
+                                    "name": actor.get("label") or actor["addr"],
+                                    "cwd": actor.get("cwd") or "",
+                                    "mtime": max(actor.get("human_activity", 0),
+                                                 actor.get("created", 0))})
+            for item in observation["transcripts"]:
+                if (host, item["agent"], item["session_id"]) not in authorities:
+                    entries.append({"key": f'{host}:{item["agent"]}:{item["session_id"]}',
+                                    "host": host, "agent": item["agent"],
+                                    "name": item["name"], "cwd": item["cwd"],
+                                    "mtime": item["mtime"]})
+        return sorted(entries, key=lambda item: item["key"])
 
     async def serve(self):
         RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -163,3 +236,7 @@ def preview(key, columns=0, lines=0):
     if os.uname().nodename.split(".", 1)[0] != HUB:
         raise RuntimeError("pane previews are served by the Lovelace Muster")
     return request(f"preview {key} {columns} {lines}")
+
+
+def commander_context():
+    return request("commander-context")
