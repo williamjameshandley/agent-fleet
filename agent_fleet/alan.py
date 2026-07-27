@@ -4,12 +4,12 @@ import threading
 import time
 from pathlib import Path
 
+from .config import CONFIG
 from .model import ServerRef, Session, SessionRef
 
 
 def socket_path():
-    for path in (Path.home() / ".config/agent-fleet/alan-socket",
-                 Path("/etc/agent-fleet/alan-socket")):
+    for path in (CONFIG / "alan-socket", Path("/etc/agent-fleet/alan-socket")):
         if path.exists():
             configured_path = Path(path.read_text().strip())
             if configured_path.is_absolute():

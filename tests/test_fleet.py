@@ -194,13 +194,13 @@ class IdentityTests(unittest.TestCase):
             "attachment": {"kind": "none"},
         }]), [])
 
-    def test_noninteractive_cli_uses_the_user_owned_alan_socket(self):
+    def test_noninteractive_cli_uses_the_fleet_configured_alan_socket(self):
         root = Path(__file__).parents[1]
         self.assertNotIn("/etc/agent-fleet/alan-socket",
                          (root / "PKGBUILD").read_text())
         self.assertNotIn("LOOP_SOCKET=", (root / "fleet.service").read_text())
         with mock.patch.dict(os.environ, {"LOOP_SOCKET": "/run/alan-loop/loop.sock"}), \
-             mock.patch("agent_fleet.alan.Path.home", return_value=Path("/home/will")), \
+             mock.patch("agent_fleet.alan.CONFIG", Path("/home/will/.config/agent-fleet")), \
              mock.patch("agent_fleet.alan.Path.exists", return_value=True), \
              mock.patch("agent_fleet.alan.Path.read_text",
                         return_value="/home/will/.local/state/alan/loop.sock\n"):
@@ -540,12 +540,12 @@ class IdentityTests(unittest.TestCase):
         for command in ("kill-window", "unlink-window"):
             self.assertNotIn(command, source)
 
-    def test_commander_uses_native_codex(self):
+    def test_commander_routes_to_the_lovelace_alan_client(self):
         launcher = (Path(__file__).parents[1] / "fleet-commander").read_text()
-        self.assertIn('.thread_name == "commander"', launcher)
-        self.assertIn("codex --sandbox danger-full-access resume $id", launcher)
-        self.assertIn('"$1" = restart', launcher)
-        self.assertNotIn("fleet commander\"", launcher)
+        self.assertIn("ssh -tt -o BatchMode=yes lovelace fleet-commander", launcher)
+        self.assertIn('exec fleet commander "$@"', launcher)
+        self.assertNotIn("session_index.jsonl", launcher)
+        self.assertNotIn("codex", launcher)
 
     def test_muster_and_main_route_to_the_lovelace_hub(self):
         root = Path(__file__).parents[1]

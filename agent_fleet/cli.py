@@ -5,6 +5,7 @@ import sys
 import threading
 
 from . import actions, ui, viewer, workstation
+from .commander_client import run as commander
 from .daemon import Fleet, projection
 from .protocol import encode
 from .quota import read as quota_read, update as quota_update
@@ -94,6 +95,7 @@ def main():
     item.add_argument("--available", action="store_true")
     command("context", lambda _: actions.context())
     command("commander-context", lambda _: actions.commander_context())
+    command("commander", lambda _: commander())
     item = command("mutate", lambda a: mutate(a.key, a.operation, a.arguments))
     item.add_argument("key")
     item.add_argument("operation")
