@@ -3,17 +3,16 @@
 ## Purpose
 
 Alan is a hands-free prompt composer for the tmux pane visible when dictation
-starts. Speech builds an editable draft in a fixed-height bar; only an explicit
+starts. Speech builds an editable draft in a growing top tiling window; only an explicit
 `Alan, send` copies the visible draft to the selected pane and presses Enter.
 The screen is the commit boundary.
 
 ## Interaction
 
-- `Alan` opens the composer immediately on the focused screen. Speech may
-  continue in the same utterance; audio pre-roll prevents clipped opening text.
-- The composer is a full-width, fixed-height top bar matching Boltzmann's Rofi:
-  Source Code Pro Light 10 at 144 DPI, Gruvbox, a 2 px border and 2 px padding.
-  It is slightly transparent and never expands.
+- Alan Home opens the composer after deciding that speech is addressed and
+  ready. Speech may continue in the same utterance.
+- The composer is a full-width top tiling window matching Boltzmann's Gruvbox
+  desktop. It grows with the visible paragraph up to one third of the screen.
 - The draft occupies most of the bar. Its viewport follows the newest text.
   A compact scrolling activity log shows decisions, context sources and errors.
 - The bar always distinguishes recording, paused, transcribing, editing and
@@ -24,17 +23,18 @@ The screen is the commit boundary.
   The first cleanup pass may be strong; settled text has a bias toward stability.
 - High-confidence technical corrections and path resolutions may enter the
   draft. Ambiguous alternatives remain unchanged and appear in the log.
-- An `Alan ...` utterance inside the composer is an editing or destination
-  instruction. After it completes, ordinary speech is literal dictation again.
-  The agent is responsive, not proactive about choosing a destination.
+- Alan Home distinguishes dictation, editing and control from conversation
+  context and the composer mode. Fleet applies those typed actions and never
+  classifies transcript strings. The agent is responsive, not proactive about
+  choosing a destination.
 - Keyboard and mouse editing remain available.
 
 ## Local controls
 
-The following commands are recognized locally and never depend on an agent:
+Alan Home emits the following explicit controls:
 
-- `Alan, pause` stops dictation but leaves the composer open. Ambient audio is
-  still retained and the wake detector still accepts controls.
+- `Alan, pause` stops draft updates but leaves the composer open. Audio capture
+  and transcription continue on Lovelace.
 - `Alan, resume` resumes literal dictation.
 - `Alan, cancel` closes and archives a recoverable composition.
 - `Alan, send` snapshots the currently visible text, sends exactly that text to
@@ -57,12 +57,12 @@ and focus restoration, not for simulating typed text.
 
 ## Transcription and editing
 
-The composer streams PCM through Alan Home's authenticated full-duplex audio
-ingress. Lovelace's Nemotron renderer owns speech endpointing and returns committed
-transcript events; Agent Fleet owns no VAD or recognition model. Network failure
-does not stop recording: utterances queue locally in order and the bar shows a
-persistent urgent status such as `TRANSCRIPTION UNAVAILABLE · 3 QUEUED`. Late results may
-update an open composition but never reopen or alter a sent or cancelled one.
+The shared Alan Home satellite streams PCM through its authenticated full-duplex
+audio ingress and forwards typed events through Fleet's local socket. Lovelace
+owns endpointing, transcription, archive and semantic decisions. Agent Fleet
+owns no microphone, VAD, wake or recognition model. Replaceable revisions may
+coalesce; accepted actions remain ordered. Network state appears in the activity
+log. Late results never reopen or alter a sent or cancelled composition.
 
 The editing agent prioritizes contextual strength and tool use over minimum
 latency. It receives the draft, raw segment, destination, recent revisions and
@@ -73,23 +73,16 @@ sources and concise decisions, not private reasoning.
 
 ## Archive
 
-During the initial study, all microphone audio on Boltzmann is retained locally,
-including closed, recording, paused and unavailable periods. Raw household audio
-is retained on Boltzmann and streamed only while the composer is listening.
-
-Each composition records time-aligned audio references, raw transcripts, wake
-boundaries, control classifications, draft revisions, agent instructions,
-context reads, destinations and send/cancel outcomes in append-only JSONL. Sent
-and cancelled drafts remain recoverable. Recovery opens a copy and never sends
-silently. The archive supports later comparison with local transcription and a
-counterfactual test of whether an agent could distinguish commands without the
-spoken `Alan` boundary.
+Lovelace owns selected utterance audio and transcript evidence. Fleet's
+append-only JSONL contains composition revisions, agent instructions, context
+reads, destinations and send/cancel outcomes. Sent and cancelled drafts remain
+recoverable. Recovery opens a copy and never sends silently.
 
 ## Initial scope
 
 - Develop and debug on Boltzmann before installing elsewhere.
 - Compose prompts for known tmux-backed agent sessions; this is not general
   terminal voice control.
-- Use a single microphone owner and one continuous capture pipeline.
+- Use Alan Home's single continuous capture and inference pipeline.
 - Start with a visible, testable prototype. Proactive destination selection,
   GTD context, local language models and whole-house audio policy are later work.

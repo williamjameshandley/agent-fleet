@@ -23,6 +23,8 @@ def edit(draft, raw, instruction=None, context=None):
         "and repetition. Correct technical names confidently. Treat settled earlier text "
         "as stable unless later words make a change clearly superior. If a path or term is "
         "ambiguous, leave the draft unchanged and mention alternatives only in the log. "
+        "Use Markdown paragraphs, headings, lists, quotations and code fences when they "
+        "materially clarify the text; leave short ordinary prompts unformatted. "
         "You may inspect the filesystem and supplied conversation JSONL read-only when it "
         "materially resolves a reference.\n\n"
         "The current draft already includes the raw new transcript; do not append it a "
