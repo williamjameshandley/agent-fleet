@@ -117,6 +117,32 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("usage: fleet preview", result.stderr)
 
+    def test_muster_refresh_waits_for_three_seconds_of_client_inactivity(self):
+        class Process:
+            returncode = 0
+
+            def __init__(self, output):
+                self.output = output
+
+            async def communicate(self):
+                return self.output, b""
+
+        processes = [Process(b"98\n99\n"), Process(b"98\n99\n")]
+
+        async def create(*_args, **_kwargs):
+            return processes.pop(0)
+
+        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
+                        side_effect=create) as execute, \
+             mock.patch("agent_fleet.daemon.asyncio.sleep",
+                        new_callable=mock.AsyncMock) as sleep, \
+             mock.patch("agent_fleet.daemon.time.time",
+                        side_effect=[100, 102]):
+            asyncio.run(Fleet().wait_for_muster_idle())
+
+        sleep.assert_awaited_once_with(2)
+        self.assertEqual(execute.call_count, 2)
+
     def test_alan_inventory_excludes_python(self):
         actors = alan_inventory("newton", [{
             "addr": "python-deadbeef", "type": "python", "state": "live",

@@ -6,6 +6,7 @@ import shlex
 import json
 import subprocess
 import hashlib
+import time
 
 from .config import HUB, RUNTIME, hosts, ssh_environment
 from .protocol import decode_message, encode
@@ -81,16 +82,33 @@ class Fleet:
 
     async def refresh_muster(self):
         await asyncio.sleep(.03)
-        self.refresh_pending = False
         path = RUNTIME / "muster.sock"
         if not path.exists():
+            self.refresh_pending = False
             return
+        await self.wait_for_muster_idle()
+        self.refresh_pending = False
         process = await asyncio.create_subprocess_exec(
             "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
             "-XPOST", "-d", "transform-header(sh -c '/usr/bin/fleet header')+reload-sync(fleet items)",
             "http://localhost",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await process.wait()
+
+    async def wait_for_muster_idle(self):
+        while True:
+            process = await asyncio.create_subprocess_exec(
+                "tmux", "list-clients", "-t", "=fleet@muster",
+                "-F", "#{client_activity}",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await process.communicate()
+            if process.returncode:
+                raise RuntimeError(stderr.decode().strip())
+            activity = max(map(int, stdout.split()), default=0)
+            delay = activity + 3 - time.time()
+            if delay <= 0:
+                return
+            await asyncio.sleep(delay)
 
     async def reply(self, reader, writer):
         request = (await reader.readline()).decode().rstrip()
