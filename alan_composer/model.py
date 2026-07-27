@@ -41,17 +41,3 @@ class Composition:
 
     def close(self):
         return replace(self, mode=Mode.CLOSED)
-
-
-CONTROLS = {"pause", "resume", "send", "cancel"}
-
-
-def classify(text, opening=False):
-    words = text.strip().lower().replace(",", "").rstrip(".!?").split()
-    if not words or words[0] != "alan":
-        return "dictation", text.strip()
-    rest = " ".join(words[1:])
-    if rest in CONTROLS:
-        return "control", rest
-    value = text.strip()[len(words[0]):].lstrip(" ,")
-    return ("dictation", value) if opening else ("instruction", value)

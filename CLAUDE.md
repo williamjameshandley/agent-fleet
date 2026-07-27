@@ -5,17 +5,15 @@ across machines, operable with one hand and eventually none.
 
 ## The source is the view
 
-- A viewer attaches to the requested native session: tmux for terminal agents
-  and Alan Claude, Jupyter Console for Alan Python, and Codex remote attach for
-  Alan Codex. There is no Main
+- A viewer attaches to the requested tmux terminal session, including standalone
+  vendor terminals, or Alan Claude/Codex actor. There is no Main
   mirror, linked observer, copied window, numbered join or parallel ordering.
 - tmux owns terminal sessions, windows, panes and focus. Alan owns actor
   lifecycle, mailboxes and native attachment descriptors. Fleet has no topology DB.
 - Canonical identity is a tagged source reference: host, socket, server PID,
   server start time and tmux object ID; or Alan host and actor address. Names,
   indices and rows are never identity.
-- Agent status and summaries are derived, disposable projections. Attention is
-  separate from agent state; `done` never means the tmux session was killed.
+- Agent status and summaries are derived, disposable projections.
 - fzf renders and selects stable IDs. It is not authoritative state.
 
 ## Safety and spatial behavior
@@ -23,11 +21,10 @@ across machines, operable with one hand and eventually none.
 - Fleet never invokes `kill-window` or `unlink-window`, and never destroys a
   session implicitly. Explicit user-approved archive records the vendor
   conversation identity in recoverable History before closing the live tmux
-  session, and refuses to close if resurrection cannot be established. Restore
+  session, and refuses to close if recovery cannot be established. Restore
   resumes the full vendor conversation rather than requesting compression.
   There is no permanent purge.
-- Dismiss affects only a viewer. Rename and create target revalidated source
-  identities. Transcript resurrection creates a new source session.
+- Rename, create, open and archive target revalidated source identities.
 - Existing occupied deck slots do not move or get reclaimed automatically.
   An empty slot may be filled; replacement is explicit. Failure to resurface an
   important open loop is worse than showing too much.

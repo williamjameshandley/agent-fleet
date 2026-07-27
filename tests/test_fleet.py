@@ -16,29 +16,52 @@ from pathlib import Path
 
 from agent_fleet.model import ServerRef, Session, SessionRef
 from agent_fleet.protocol import decode, encode
-from agent_fleet.ui import STATE_ORDER, recency
+from agent_fleet.ui import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.tmux import split_key
 from agent_fleet.actions import agent_command, next_waiting_key, session_name
 from agent_fleet import actions
-from agent_fleet.config import ssh_environment
+from agent_fleet.config import machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
 from agent_fleet.alan import socket_path as alan_socket_path
 from agent_fleet.alan import Watcher as AlanWatcher
-from agent_fleet.alan import set_attention as alan_set_attention
 from agent_fleet.alan import refresh as alan_refresh
+from agent_fleet.alan import resume as alan_resume
 from agent_fleet import viewer
 from agent_fleet import workstation
 from agent_fleet import tmux
+from agent_fleet import ui
 from agent_fleet.daemon import Fleet
 
 
 class IdentityTests(unittest.TestCase):
     def session(self, host, sid="$1"):
         return Session(SessionRef(ServerRef(host, "/tmp/tmux/default", 12, 10), sid),
-                       "work", 1, 2, 0, 1, "codex", "waiting", "/work", "tracked")
+                       "work", 1, 2, 0, 1, "codex", "waiting", "/work")
 
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
+
+    def test_cursor_position_comes_from_musters_loaded_identities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "muster.sock"
+            socket_path.touch()
+            state = json.dumps({"matches": [
+                {"text": "actor:first\tfirst"},
+                {"text": "actor:focused\tfocused"},
+            ]})
+            query = subprocess.CompletedProcess([], 0, stdout=state)
+            post = subprocess.CompletedProcess([], 0)
+            with mock.patch.object(ui, "RUNTIME", Path(directory)), \
+                    mock.patch("agent_fleet.ui.subprocess.run",
+                               side_effect=[query, post]) as run:
+                ui.select("actor:focused")
+
+        self.assertIn("pos(2)+track-current", run.call_args_list[1].args[0])
+
+    def test_machine_labels_are_single_cell_and_noether_uses_ligature(self):
+        self.assertEqual([machine(host) for host in
+                          ("newton", "lovelace", "boltzmann", "turing", "noether")],
+                         ["N", "L", "B", "T", "Œ"])
 
     def test_viewer_force_reaps_a_signal_ignoring_process_group(self):
         child = subprocess.Popen(
@@ -105,18 +128,6 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(actor.state, "needs-action")
         self.assertEqual(actor.human_activity, 123)
 
-    def test_alan_inventory_keeps_migration_activity_until_later_human_input(self):
-        actor = {"addr": "codex-1", "type": "codex", "state": "waiting",
-                 "human_activity": 123, "native": {"id": "thread-1"},
-                 "attachment": {"kind": "codex", "socket": "/run/codex.sock"}}
-        baseline = {"codex-1": {"last_touch": 456, "provider": "codex",
-                                "native_id": "thread-1"}}
-        migrated = alan_inventory("lovelace", [actor], activity_baseline=baseline)[0]
-        advanced = alan_inventory("lovelace", [{**actor, "human_activity": 789}],
-                                   activity_baseline=baseline)[0]
-        self.assertEqual(migrated.human_activity, 456)
-        self.assertEqual(advanced.human_activity, 789)
-
     def test_alan_inventory_preserves_creation_time_as_recency_fallback(self):
         actor = alan_inventory("lovelace", [{
             "addr": "codex-1", "type": "codex", "state": "waiting",
@@ -147,100 +158,35 @@ class IdentityTests(unittest.TestCase):
             mock.call({"op": "list"}),
         ])
 
-    def test_alan_inventory_applies_reconstructed_attention(self):
+    def test_alan_open_waits_for_same_native_identity_and_attachment(self):
+        archived = {"addr": "codex-1", "type": "codex", "state": "retired",
+                    "native": {"id": "thread-1"}, "attachment": {"kind": "none"}}
+        wrong = {**archived, "state": "waiting", "native": {"id": "thread-2"},
+                 "attachment": {"kind": "tmux"}}
+        ready = {**archived, "state": "waiting", "attachment": {"kind": "tmux"}}
+        responses = [
+            {"actors": [archived]}, {"addr": "codex-1"},
+            {"actors": [wrong]}, {"actors": [ready]},
+        ]
+        with mock.patch("agent_fleet.alan.request", side_effect=responses) as request, \
+             mock.patch("agent_fleet.alan.configured", return_value=True), \
+             mock.patch("agent_fleet.alan.time.sleep"):
+            self.assertEqual(alan_resume("codex-1"), "codex-1")
+        self.assertEqual(request.call_args_list, [
+            mock.call({"op": "list"}),
+            mock.call({"op": "spawn", "source": "codex-1"}),
+            mock.call({"op": "list"}),
+            mock.call({"op": "list"}),
+        ])
+
+    def test_alan_inventory_uses_native_human_activity(self):
         actor = alan_inventory("lovelace", [{
             "addr": "codex-1", "type": "codex", "state": "waiting",
+            "human_activity": 123,
             "attachment": {"kind": "tmux", "session": "fleet@codex-work-1",
                            "generation": "thread-1"},
-        }], {"codex-1": "done"})[0]
-        self.assertEqual(actor.attention, "done")
-
-    def test_alan_attention_appends_a_fleet_mailbox_event(self):
-        with mock.patch("agent_fleet.alan.request") as request:
-            alan_set_attention("claude-1", "done")
-        request.assert_called_once_with({
-            "op": "send", "to": "fleet", "payload": {
-                "kind": "fleet_attention", "actor": "claude-1",
-                "attention": "done"}})
-
-    def test_attention_replay_paginates_before_publishing(self):
-        watcher = object.__new__(AlanWatcher)
-        watcher.attention = {}
-        watcher.activity_baseline = {}
-        watcher._changed = queue.Queue()
-        watcher._consumer = threading.Event()
-        first = [{"idx": index, "payload": {"kind": "fleet_attention",
-                  "actor": f"python-{index}", "attention": "done"}}
-                 for index in range(100)]
-        second = [{"idx": 100, "payload": {"kind": "fleet_attention",
-                   "actor": "python-0", "attention": "tracked"}}]
-
-        def response(_payload):
-            if response.calls == 0:
-                response.calls += 1
-                return {"messages": first}
-            watcher._consumer.set()
-            return {"messages": second}
-
-        response.calls = 0
-        with mock.patch("agent_fleet.alan.configured", return_value=True), \
-             mock.patch("agent_fleet.alan.request", side_effect=response):
-            watcher._run_attention()
-        self.assertEqual(watcher.attention["python-0"], "tracked")
-        self.assertEqual(len(watcher.attention), 100)
-        self.assertEqual(watcher._changed.qsize(), 1)
-
-    def test_attention_replay_retains_migration_activity_across_later_attention(self):
-        watcher = object.__new__(AlanWatcher)
-        watcher.attention = {}
-        watcher.activity_baseline = {}
-        watcher._changed = queue.Queue()
-        watcher._consumer = threading.Event()
-        messages = [{"idx": 0, "payload": {
-            "kind": "fleet_attention", "actor": "codex-1", "attention": "tracked",
-            "last_touch": 456, "migration_id": "migration-1", "provider": "codex",
-            "native_id": "thread-1", "source": {
-                "host": "lovelace", "key": "tmux:key"}}}, {"idx": 1, "payload": {
-                "kind": "fleet_attention", "actor": "codex-1", "attention": "done"}}]
-
-        def response(_payload):
-            watcher._consumer.set()
-            return {"messages": messages}
-
-        with mock.patch("agent_fleet.alan.configured", return_value=True), \
-             mock.patch("agent_fleet.alan.request", side_effect=response):
-            watcher._run_attention()
-        self.assertEqual(watcher.attention["codex-1"], "done")
-        self.assertEqual(watcher.activity_baseline["codex-1"], {
-            "last_touch": 456, "provider": "codex", "native_id": "thread-1"})
-
-    def test_migration_activity_requires_matching_actor_native_identity(self):
-        actor = {"addr": "codex-1", "type": "codex", "state": "waiting",
-                 "human_activity": 123, "native": {"id": "thread-new"},
-                 "attachment": {"kind": "codex", "socket": "/run/codex.sock"}}
-        baseline = {"codex-1": {"last_touch": 456, "provider": "codex",
-                                "native_id": "thread-old"}}
-        projected = alan_inventory(
-            "lovelace", [actor], activity_baseline=baseline)[0]
-        self.assertEqual(projected.human_activity, 123)
-
-    def test_attention_event_cannot_set_activity_without_migration_provenance(self):
-        watcher = object.__new__(AlanWatcher)
-        watcher.attention = {}
-        watcher.activity_baseline = {}
-        watcher._changed = queue.Queue()
-        watcher._consumer = threading.Event()
-
-        def response(_payload):
-            watcher._consumer.set()
-            return {"messages": [{"idx": 0, "payload": {
-                "kind": "fleet_attention", "actor": "codex-1",
-                "attention": "tracked", "last_touch": 999}}]}
-
-        with mock.patch("agent_fleet.alan.configured", return_value=True), \
-             mock.patch("agent_fleet.alan.request", side_effect=response):
-            watcher._run_attention()
-        self.assertEqual(watcher.activity_baseline, {})
+        }])[0]
+        self.assertEqual(actor.human_activity, 123)
 
     def test_non_attachable_alan_actors_are_not_fleet_rows(self):
         self.assertEqual(alan_inventory("lovelace", [{
@@ -248,13 +194,13 @@ class IdentityTests(unittest.TestCase):
             "attachment": {"kind": "none"},
         }]), [])
 
-    def test_noninteractive_cli_uses_the_user_owned_alan_socket(self):
+    def test_noninteractive_cli_uses_the_fleet_configured_alan_socket(self):
         root = Path(__file__).parents[1]
         self.assertNotIn("/etc/agent-fleet/alan-socket",
                          (root / "PKGBUILD").read_text())
         self.assertNotIn("LOOP_SOCKET=", (root / "fleet.service").read_text())
         with mock.patch.dict(os.environ, {"LOOP_SOCKET": "/run/alan-loop/loop.sock"}), \
-             mock.patch("agent_fleet.alan.Path.home", return_value=Path("/home/will")), \
+             mock.patch("agent_fleet.alan.CONFIG", Path("/home/will/.config/agent-fleet")), \
              mock.patch("agent_fleet.alan.Path.exists", return_value=True), \
              mock.patch("agent_fleet.alan.Path.read_text",
                         return_value="/home/will/.local/state/alan/loop.sock\n"):
@@ -303,13 +249,25 @@ class IdentityTests(unittest.TestCase):
             "attachment": {"kind": "tmux", "session": "fleet@codex-review-1",
                            "generation": "thread-1"},
         }])[0]
-        with mock.patch("agent_fleet.viewer.find", return_value=actor), \
+        with mock.patch("agent_fleet.viewer.alan.request",
+                        return_value={"actors": [{
+                            "addr": "codex-1", "type": "codex", "state": "live",
+                            "label": "review", "cwd": "/work", "native": {"id": "thread-1"},
+                            "attachment": actor.attachment}]}), \
              mock.patch("agent_fleet.viewer.subprocess.run",
                         return_value=mock.Mock(stdout="thread-1\n")), \
              mock.patch("os.execvp") as execute:
             viewer.attach(actor.ref.key)
         execute.assert_called_once_with(
             "tmux", ["tmux", "attach-session", "-t", "fleet@codex-review-1"])
+
+    def test_show_still_resolves_the_global_source_before_requesting_a_viewer(self):
+        session = self.session("newton")
+        with mock.patch("agent_fleet.viewer.find", return_value=session) as find, \
+             mock.patch("agent_fleet.viewer.request") as request:
+            viewer.show(session.ref.key, "main")
+        find.assert_called_once_with(session.ref.key)
+        request.assert_called_once_with("main", session.ref.key)
 
     def test_alan_attach_execs_the_declared_claude_tmux_session(self):
         actor = alan_inventory("lovelace", [{
@@ -318,7 +276,11 @@ class IdentityTests(unittest.TestCase):
             "attachment": {"kind": "tmux", "session": "fleet@claude-review-1",
                            "generation": "session-1"},
         }])[0]
-        with mock.patch("agent_fleet.viewer.find", return_value=actor), \
+        with mock.patch("agent_fleet.viewer.alan.request",
+                        return_value={"actors": [{
+                            "addr": "claude-1", "type": "claude", "state": "waiting",
+                            "label": "review", "cwd": "/work", "native": {"id": "session-1"},
+                            "attachment": actor.attachment}]}), \
              mock.patch("agent_fleet.viewer.subprocess.run",
                         return_value=mock.Mock(stdout="session-1\n")), \
              mock.patch("os.execvp") as execute:
@@ -328,8 +290,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_codex_tmux_attach_enables_native_nested_mouse_routing(self):
         session = self.session(os.uname().nodename)
-        with mock.patch("agent_fleet.viewer.find", return_value=session), \
-             mock.patch("agent_fleet.viewer.inventory", return_value=[session]), \
+        with mock.patch("agent_fleet.viewer.inventory", return_value=[session]), \
              mock.patch("subprocess.run") as run, \
              mock.patch("os.execvp") as execute:
             viewer.attach(session.ref.key)
@@ -391,11 +352,149 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(session_name(" Test session. "), "Test session")
         self.assertEqual(session_name("docs:v2.1"), "docs-v2-1")
 
-    def test_done_is_attention_not_agent_or_lifecycle_state(self):
-        session = self.session("newton")
-        done = Session(**{**session.__dict__, "attention": "done"})
-        self.assertEqual((session.agent, done.agent), ("codex", "codex"))
-        self.assertEqual(done.state, "waiting")
+    def test_archive_retires_exact_alan_actor_after_durable_identity_check(self):
+        host = os.uname().nodename
+        session = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"), "codex-1"),
+            "work", 1, 0, 0, 1, "tmux", "", "/work",
+            "codex", "waiting", "", 0, "thread-1", {"kind": "tmux"}, 1)
+        with mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.host_command") as command, \
+             mock.patch("agent_fleet.actions.wait_for_absence") as absent, \
+             mock.patch("agent_fleet.actions.viewer.slots", return_value=[("main", session.ref.key)]), \
+             mock.patch("agent_fleet.actions.viewer.request") as request:
+            actions.archive(session.ref.key)
+        command.assert_called_once_with(host, "fleet", "alan-retire", "codex-1",
+                                        capture_output=True)
+        absent.assert_called_once_with(session.ref.key)
+        request.assert_called_once_with("main", "")
+
+    def test_archive_refuses_actor_without_native_identity_before_mutation(self):
+        host = os.uname().nodename
+        session = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"), "codex-1"),
+            "work", 1, 0, 0, 1, "tmux", "", "/work",
+            "codex", "waiting")
+        with mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.host_command") as command:
+            with self.assertRaisesRegex(SystemExit, "durable Claude or Codex identity"):
+                actions.archive(session.ref.key)
+        command.assert_not_called()
+
+    def test_archive_verifies_transcript_then_closes_exact_tmux_identity(self):
+        session = self.session("lovelace")
+        session = Session(**{**session.__dict__, "transcript_id": "thread-1"})
+        with mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.host_command") as command, \
+             mock.patch("agent_fleet.actions.wait_for_absence") as absent, \
+             mock.patch("agent_fleet.actions.viewer.slots", return_value=[]):
+            actions.archive(session.ref.key)
+        self.assertEqual(command.call_args_list, [
+            mock.call("lovelace", "fleet", "transcript-check", "codex", "thread-1",
+                      capture_output=True),
+            mock.call("lovelace", "fleet", "mutate", session.ref.key, "archive",
+                      capture_output=True),
+        ])
+        absent.assert_called_once_with(session.ref.key)
+
+    def test_tmux_archive_revalidates_full_source_before_kill(self):
+        key = "lovelace:/tmp/tmux:12:10:$1"
+        result = mock.Mock(stdout=[])
+        server = mock.Mock()
+        server.cmd.return_value = result
+        with mock.patch("agent_fleet.tmux.server", return_value=server):
+            tmux.mutate(key, "archive", [])
+        command = server.cmd.call_args.args
+        self.assertEqual(command[:4], ("if-shell", "-t", "$1", "-F"))
+        self.assertIn("kill-session -t '$1'", command[5])
+        self.assertIn("/tmp/tmux", command[4])
+        self.assertIn("12", command[4])
+        self.assertIn("10", command[4])
+
+    def test_history_keeps_failed_alan_actor_and_suppresses_transcript_fallback(self):
+        actor = {"addr": "codex-1", "type": "codex", "state": "failed",
+                 "label": "work", "cwd": "/work", "created": 10,
+                 "human_activity": 20, "native": {"id": "thread-1"}}
+
+        def command(_host, _fleet, operation, *args, **_kwargs):
+            payload = ([actor] if operation == "alan-actors" else [{
+                "agent": "codex", "session_id": "thread-1", "mtime": 20,
+                "name": "duplicate", "cwd": "/work"}])
+            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload))
+
+        output = io.StringIO()
+        with mock.patch("agent_fleet.actions.hosts", return_value=["lovelace"]), \
+             mock.patch("agent_fleet.actions.snapshot",
+                        return_value='{"sessions":[],"usage":{},"unavailable":[]}'), \
+             mock.patch("agent_fleet.actions.host_command", side_effect=command), \
+             contextlib.redirect_stdout(output):
+            actions.history()
+        self.assertEqual(output.getvalue().splitlines(), [
+            "alan:lovelace:codex-1\tlovelace\tcodex\twork\t/work"])
+
+    def test_unavailable_alan_descriptor_does_not_erase_transcript_history(self):
+        actor = {"addr": "codex-1", "type": "codex", "state": "unavailable",
+                 "native": {"id": "thread-1"}}
+
+        def command(_host, _fleet, operation, *args, **_kwargs):
+            payload = ([actor] if operation == "alan-actors" else [{
+                "agent": "codex", "session_id": "thread-1", "mtime": 20,
+                "name": "work", "cwd": "/work"}])
+            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload))
+
+        output = io.StringIO()
+        with mock.patch("agent_fleet.actions.hosts", return_value=["lovelace"]), \
+             mock.patch("agent_fleet.actions.snapshot",
+                        return_value='{"sessions":[],"usage":{},"unavailable":[]}'), \
+             mock.patch("agent_fleet.actions.host_command", side_effect=command), \
+             contextlib.redirect_stdout(output):
+            actions.history()
+        self.assertEqual(output.getvalue().splitlines(), [
+            "lovelace:codex:thread-1\tlovelace\tcodex\twork\t/work"])
+
+    def test_history_open_retries_the_same_alan_address(self):
+        key = "alan:lovelace:codex-1"
+        with mock.patch("agent_fleet.actions.host_command") as command, \
+             mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
+             mock.patch("agent_fleet.actions.viewer.open_main") as show:
+            actions.open_history(key)
+        command.assert_called_once_with("lovelace", "fleet", "alan-resume", "codex-1",
+                                        capture_output=True)
+        wait.assert_called_once_with(key)
+        show.assert_called_once_with(key)
+
+    def test_transcript_history_open_captures_remote_resume_failure(self):
+        key = "lovelace:codex:full-thread-id"
+        with mock.patch("agent_fleet.actions.snapshot",
+                        return_value='{"sessions":[],"usage":{},"unavailable":[]}'), \
+             mock.patch("agent_fleet.actions.desktop_input", return_value="work"), \
+             mock.patch("agent_fleet.actions.host_command") as command, \
+             mock.patch("agent_fleet.actions.created_key", return_value="new-key"), \
+             mock.patch("agent_fleet.actions.viewer.request"):
+            actions.open_history(key)
+        command.assert_called_once_with(
+            "lovelace", "fleet", "resume", "codex", "full-thread-id", "work",
+            capture_output=True)
+
+    def test_archive_failure_is_visible_in_muster(self):
+        failure = subprocess.CalledProcessError(1, ["fleet"], stderr="retire refused")
+        with mock.patch("agent_fleet.actions.archive", side_effect=failure), \
+             mock.patch("agent_fleet.actions.subprocess.run") as run:
+            with self.assertRaisesRegex(SystemExit, "retire refused"):
+                actions.archive_report("alan:lovelace:codex-1")
+        run.assert_called_once_with([
+            "tmux", "display-message", "-t", "fleet@muster",
+            "Archive failed: retire refused"])
+
+    def test_history_open_failure_is_visible_in_muster(self):
+        with mock.patch("agent_fleet.actions.open_history",
+                        side_effect=RuntimeError("native identity changed")), \
+             mock.patch("agent_fleet.actions.subprocess.run") as run:
+            with self.assertRaisesRegex(SystemExit, "native identity changed"):
+                actions.open_history_report("alan:lovelace:codex-1")
+        run.assert_called_once_with([
+            "tmux", "display-message", "-t", "fleet@muster",
+            "Open failed: native identity changed"])
 
     def test_working_recency_is_human_activity(self):
         working = Session(**{**self.session("newton").__dict__,
@@ -415,7 +514,7 @@ class IdentityTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()
         self.assertNotIn("#{client_activity}", source)
 
-    def test_working_sorts_before_waiting_and_done(self):
+    def test_working_sorts_before_waiting(self):
         self.assertLess(STATE_ORDER["working"], STATE_ORDER["waiting"])
 
     def test_next_waiting_follows_active_and_wraps(self):
@@ -423,9 +522,7 @@ class IdentityTests(unittest.TestCase):
                              "reported_state": "working"})
         first = self.session("newton", "$1")
         second = self.session("lovelace", "$2")
-        done = Session(**{**self.session("turing", "$3").__dict__,
-                          "attention": "done"})
-        sessions = [working, first, second, done]
+        sessions = [working, first, second]
         self.assertEqual(next_waiting_key(sessions, working.ref.key), first.ref.key)
         self.assertEqual(next_waiting_key(sessions, first.ref.key), second.ref.key)
         self.assertEqual(next_waiting_key(sessions, second.ref.key), first.ref.key)
@@ -435,19 +532,20 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(split_key(session.ref.key),
                          ("newton", "/tmp/tmux/default", 12, 10, "$1"))
 
-    def test_new_cli_has_no_destructive_surface(self):
+    def test_archive_is_the_only_destructive_surface(self):
         root = Path(__file__).parents[1]
         paths = [root / "fleet", *(root / "agent_fleet").glob("*.py")]
         source = "\n".join(path.read_text() for path in paths)
-        for command in ("kill-session", "kill-window", "unlink-window"):
+        self.assertEqual(source.count('"kill-session"'), 1)
+        for command in ("kill-window", "unlink-window"):
             self.assertNotIn(command, source)
 
-    def test_commander_uses_native_codex(self):
+    def test_commander_routes_to_the_lovelace_alan_client(self):
         launcher = (Path(__file__).parents[1] / "fleet-commander").read_text()
-        self.assertIn('.thread_name == "commander"', launcher)
-        self.assertIn("codex --sandbox danger-full-access resume $id", launcher)
-        self.assertIn('"$1" = restart', launcher)
-        self.assertNotIn("fleet commander\"", launcher)
+        self.assertIn("ssh -tt -o BatchMode=yes lovelace fleet-commander", launcher)
+        self.assertIn('exec fleet commander "$@"', launcher)
+        self.assertNotIn("session_index.jsonl", launcher)
+        self.assertNotIn("codex", launcher)
 
     def test_muster_and_main_route_to_the_lovelace_hub(self):
         root = Path(__file__).parents[1]
@@ -476,6 +574,18 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("change-prompt(Search: )", source)
         self.assertIn("c:execute-silent(fleet create-tab)", source)
         self.assertIn("r:execute-silent(fleet rename-tab {1})", source)
+        self.assertIn('"--footer-border=bottom"', source)
+
+    def test_footer_contains_only_action_hints(self):
+        from agent_fleet.ui import footer
+        with mock.patch("shutil.get_terminal_size",
+                        return_value=os.terminal_size((100, 24))):
+            self.assertEqual(
+                footer(),
+                "Enter open  c create  r rename  R refresh  x archive")
+
+    def test_claude_and_codex_use_distinct_provider_colours(self):
+        self.assertNotEqual(AGENT_COLOUR["claude"], AGENT_COLOUR["codex"])
 
     def test_create_opens_inside_the_muster(self):
         with mock.patch("subprocess.run") as run:
@@ -701,7 +811,7 @@ class IdentityTests(unittest.TestCase):
             actions.refresh(session.ref.key)
             self.assertEqual(viewer.exchange("refresh", "STATUS"), session.ref.key)
 
-    def test_viewer_dismiss_is_an_explicit_clear(self):
+    def test_viewer_clear_remains_an_internal_primitive(self):
         root = Path(__file__).parents[1]
         with tempfile.TemporaryDirectory() as runtime:
             env = {**os.environ, "XDG_RUNTIME_DIR": runtime,
@@ -714,8 +824,8 @@ class IdentityTests(unittest.TestCase):
                     if socket.exists():
                         break
                     time.sleep(.01)
-                subprocess.run([sys.executable, "-m", "agent_fleet.cli", "dismiss",
-                                "--slot", "test"], env=env, check=True)
+                code = "from agent_fleet.viewer import request; request('test', '')"
+                subprocess.run([sys.executable, "-c", code], env=env, check=True)
                 code = "from agent_fleet.viewer import slots; print(slots())"
                 result = subprocess.run([sys.executable, "-c", code], env=env,
                                         text=True, capture_output=True, check=True)

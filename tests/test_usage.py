@@ -1,7 +1,8 @@
 import importlib.machinery
 import io
 import json
-import tempfile
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,37 +17,50 @@ class UsageTests(unittest.TestCase):
         five = usage.field("5h", 0)
         week = usage.field("7d", 4, 1784493419)
         line = f"{five}  {week}"
-        self.assertEqual(line.index("7d"), 30)
+        self.assertEqual(line.index("7d"), 38)
         self.assertRegex(week, r"@[A-Z][a-z]{2} \d\d \d\d:\d\d$")
 
-    def test_codex_falls_back_to_cached_proxy_quota(self):
-        body = {"accounts": [{"status": "active", "quota": {
-            "rate_limit": {"used_percent": 4, "reset_at": 1784493419,
-                           "limit_window_seconds": 604800},
-            "secondary_rate_limit": None,
-        }}]}
-        with patch.object(usage, "codex_local", return_value=None), \
-             patch.object(usage.urllib.request, "urlopen",
-                          return_value=io.StringIO(json.dumps(body))):
-            text = usage.codex()
-        self.assertIn("5h [--------]   0%/0h", text)
-        self.assertIn("7d [--------]   4%", text)
+    def test_codex_reads_native_app_server_limits(self):
+        server = r'''
+import json, sys
+initialize = json.loads(sys.stdin.readline())
+assert initialize["method"] == "initialize"
+print(json.dumps({"id": initialize["id"], "result": {}}), flush=True)
+assert json.loads(sys.stdin.readline()) == {"method": "initialized"}
+request = json.loads(sys.stdin.readline())
+assert request["method"] == "account/rateLimits/read"
+print(json.dumps({"id": request["id"], "result": {"rateLimits": {
+    "primary": {"usedPercent": 14, "windowDurationMins": 10080,
+                "resetsAt": 1784958277},
+    "secondary": {"usedPercent": 5, "windowDurationMins": 300,
+                  "resetsAt": 1784958277}}}}), flush=True)
+'''
+        text = usage.codex((sys.executable, "-c", server))
+        self.assertIn("5h [#---------------]   5%", text)
+        self.assertIn("7d [##--------------]  14%", text)
 
-    def test_codex_prefers_latest_local_rate_limit(self):
-        event = {"payload": {"type": "token_count", "rate_limits": {
-            "primary": {"used_percent": 14, "resets_at": 1784958277,
-                        "window_minutes": 10080},
-            "secondary": None,
-        }}}
-        with tempfile.TemporaryDirectory() as home:
-            path = Path(home) / ".codex/sessions/2026/07/19/session.jsonl"
-            path.parent.mkdir(parents=True)
-            path.write_text(json.dumps(event) + "\n")
-            with patch.object(usage.Path, "home", return_value=Path(home)), \
-                 patch.object(usage.urllib.request, "urlopen") as urlopen:
-                text = usage.codex()
-        self.assertIn("7d [#-------]  14%", text)
-        urlopen.assert_not_called()
+    def test_codex_rejects_malformed_protocol_response(self):
+        server = "import sys; sys.stdin.readline(); print('not-json', flush=True)"
+        with self.assertRaises(json.JSONDecodeError):
+            usage.codex((sys.executable, "-c", server))
+
+    def test_codex_timeout_reaps_app_server(self):
+        process = None
+        real_popen = subprocess.Popen
+
+        def capture(*args, **kwargs):
+            nonlocal process
+            process = real_popen(*args, **kwargs)
+            return process
+
+        with patch.object(usage.subprocess, "Popen", side_effect=capture):
+            with self.assertRaises(TimeoutError):
+                server = ("import os, signal, time; "
+                          "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                          "os.write(1, b'{'); time.sleep(60)")
+                usage.codex((sys.executable, "-c", server),
+                            timeout=0.05)
+        self.assertIsNotNone(process.poll())
 
     def test_claude_keeps_usage_when_reset_is_unavailable(self):
         body = {"limits": [
@@ -59,20 +73,8 @@ class UsageTests(unittest.TestCase):
              patch.object(usage.urllib.request, "urlopen",
                           return_value=io.StringIO(json.dumps(body))):
             text = usage.claude()
-        self.assertIn("5h [########]  99%/0h", text)
-        self.assertIn("7d [########]  95%", text)
-
-    def test_unknown_codex_window_is_drift(self):
-        body = {"accounts": [{"status": "active", "quota": {
-            "rate_limit": {"used_percent": 1, "reset_at": 1,
-                           "limit_window_seconds": 42},
-            "secondary_rate_limit": None,
-        }}]}
-        with patch.object(usage.urllib.request, "urlopen",
-                          return_value=io.StringIO(json.dumps(body))):
-            with self.assertRaises(ValueError):
-                usage.codex_proxy()
-
+        self.assertIn("5h [################]  99%/0h", text)
+        self.assertIn("7d [###############-]  95%", text)
 
 if __name__ == "__main__":
     unittest.main()

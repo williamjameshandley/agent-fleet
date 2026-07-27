@@ -10,7 +10,6 @@ def encode(sessions, usage=None, unavailable=None):
         "id": s.ref.session_id, "name": s.name, "created": s.created,
         "activity": s.activity, "attached": s.attached, "windows": s.windows,
         "command": s.command, "title": s.title, "cwd": s.cwd,
-        "attention": s.attention,
         "agent_name": s.agent_name, "reported_state": s.reported_state,
         "summary": s.summary, "recency": s.recency,
         "transcript_id": s.transcript_id,

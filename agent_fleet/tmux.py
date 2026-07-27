@@ -34,18 +34,18 @@ def mutate(key, operation, arguments):
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:
         raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
-    commands = {
-        "rename": ["rename-session", "-t", session_id, arguments[0]],
-        "attention": ["set-option", "-t", session_id, "@fleet_attention", arguments[0]],
-    }
-    if operation not in commands:
+    if operation == "rename":
+        command = ["rename-session", "-t", session_id, arguments[0]]
+    elif operation == "archive":
+        command = ["kill-session", "-t", session_id]
+    else:
         raise SystemExit(f"unknown mutation {operation!r}")
     condition = (f"#{{&&:#{{==:#{{socket_path}},{socket}}},"
                  f"#{{&&:#{{==:#{{pid}},{pid}}},"
                  f"#{{&&:#{{==:#{{start_time}},{started}}},"
                  f"#{{==:#{{session_id}},{session_id}}}}}}}}}")
     result = server().cmd("if-shell", "-t", session_id, "-F", condition,
-                          shlex.join(commands[operation]),
+                          shlex.join(command),
                           "display-message -p FLEET_STALE")
     if result.stdout and result.stdout[0] == "FLEET_STALE":
         raise SystemExit(f"stale source identity: {key}")
@@ -96,10 +96,10 @@ def capture_pane(session, columns=0, lines=0):
 
 def inventory(host):
     tmux = server()
-    metadata = {sid: (attention, int(activity or 0))
-                for sid, attention, activity in (line.split("\t") for line in tmux.cmd(
+    metadata = {sid: int(activity or 0)
+                for sid, activity in (line.split("\t") for line in tmux.cmd(
                     "list-sessions", "-F",
-                    "#{session_id}\t#{@fleet_attention}\t#{@fleet_human_activity}").stdout)}
+                    "#{session_id}\t#{@fleet_human_activity}").stdout)}
     sessions = []
     for item in tmux.sessions:
         if item.session_name.startswith("fleet@"):
@@ -110,8 +110,7 @@ def inventory(host):
             int(item.session_created), int(item.session_activity),
             int(item.session_attached), int(item.session_windows),
             item.pane_current_command, item.pane_title, item.pane_current_path,
-            metadata[item.session_id][0] or "tracked",
-            human_activity=metadata[item.session_id][1]))
+            human_activity=metadata[item.session_id]))
     return sessions
 
 
@@ -168,8 +167,7 @@ def event_stream(host, consumer=None):
             _alan_attachments = {
                 actor["addr"]: actor.get("attachment") or {"kind": "none"}
                 for actor in alan.actors if actor.get("type") in {"claude", "codex"}}
-            current = inventory(host) + alan_inventory(
-                host, alan.actors, alan.attention, alan.activity_baseline)
+            current = inventory(host) + alan_inventory(host, alan.actors)
             try:
                 current = observe(current)
                 agent_cache = {session.ref: session for session in current}

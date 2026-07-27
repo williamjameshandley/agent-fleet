@@ -7,12 +7,12 @@ from pathlib import Path
 
 from .config import hosts, ssh_environment
 from .remote import find
-from .daemon import preview as pane_preview, snapshot
+from .daemon import commander_context as commander_projection, preview as pane_preview, snapshot
 from .protocol import decode
 from .protocol import decode_message
 from . import viewer
 from . import workstation
-from .alan import rename as alan_rename, set_attention as alan_attention
+from .alan import rename as alan_rename
 from .alan import refresh as alan_refresh
 from .alan import attachment_usable as alan_attachment_usable
 
@@ -129,34 +129,44 @@ def rename(key):
             host_command(session.ref.server.host, "fleet", "mutate", key, "rename", name)
 
 
-def done(key):
+def wait_for_absence(key):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            find(key)
+        except SystemExit:
+            return
+        time.sleep(.1)
+    raise RuntimeError(f"Fleet projection did not archive {key}")
+
+
+def archive(key):
     session = find(key)
+    if session.agent not in {"claude", "codex"} or not session.transcript_id:
+        raise SystemExit("archive requires a durable Claude or Codex identity")
     if session.ref.server.kind == "alan":
-        for slot, source in viewer.slots():
-            if source == key:
-                viewer.request(slot, "")
-        if session.ref.server.host == os.uname().nodename:
-            alan_attention(session.ref.session_id, "done")
-        else:
-            host_command(session.ref.server.host, "fleet", "alan-attention",
-                         session.ref.session_id, "done")
-        return
+        host_command(session.ref.server.host, "fleet", "alan-retire",
+                     session.ref.session_id, capture_output=True)
+    else:
+        host_command(session.ref.server.host, "fleet", "transcript-check",
+                     session.agent, session.transcript_id, capture_output=True)
+        host_command(session.ref.server.host, "fleet", "mutate", key, "archive",
+                     capture_output=True)
+    wait_for_absence(key)
     for slot, source in viewer.slots():
         if source == key:
             viewer.request(slot, "")
-    host_command(session.ref.server.host, "fleet", "mutate", key,
-                 "attention", "done")
-    host_command(session.ref.server.host, "fleet", "signal")
 
 
-def dismiss_source(key):
-    shown = [slot for slot, source in viewer.slots() if source == key]
-    if not shown:
-        raise SystemExit("that source is not shown locally")
-    for slot in shown:
-        viewer.request(slot, "")
-    subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
-                    "Viewer dismissed; source session is still running"])
+def archive_report(key):
+    try:
+        archive(key)
+    except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
+        reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
+                  and error.stderr else str(error))
+        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+                        f"Archive failed: {reason}"])
+        raise SystemExit(reason)
 
 
 def refresh_local(key):
@@ -270,8 +280,7 @@ def refresh_command(key, all_sessions):
 
 
 def next_waiting_key(sessions, active):
-    waiting = [session for session in sessions
-               if session.attention != "done" and session.state == "waiting"]
+    waiting = [session for session in sessions if session.state == "waiting"]
     if not waiting:
         return None
     current = next((i for i, session in enumerate(waiting)
@@ -298,19 +307,38 @@ def preview(key, columns=0, lines=0):
 def history():
     live = {(session.ref.server.host, session.agent, session.transcript_id)
             for session in decode(snapshot()) if session.transcript_id}
+    authorities = set(live)
     rows = []
     for host in hosts():
+        result = host_command(host, "fleet", "alan-actors", capture_output=True)
+        for actor in json.loads(result.stdout):
+            native_id = (actor.get("native") or {}).get("id")
+            identity = (host, actor.get("type"), native_id)
+            if (actor.get("type") in {"claude", "codex"} and native_id and
+                    actor.get("state") in {"retired", "failed"}):
+                authorities.add(identity)
+                key = f'alan:{host}:{actor["addr"]}'
+                mtime = max(actor.get("human_activity", 0), actor.get("created", 0))
+                rows.append((mtime, key, host, actor["type"],
+                             actor.get("label") or actor["addr"], actor.get("cwd") or ""))
         result = host_command(host, "fleet", "transcripts", "--limit", "100",
                               capture_output=True)
         for item in json.loads(result.stdout):
-            if (host, item["agent"], item["session_id"]) not in live:
-                rows.append((item["mtime"], host, item))
-    for _, host, item in sorted(rows, key=lambda row: row[0], reverse=True):
-        key = f'{host}:{item["agent"]}:{item["session_id"]}'
-        print("\t".join((key, host, item["agent"], item["name"], item["cwd"])))
+            if (host, item["agent"], item["session_id"]) not in authorities:
+                key = f'{host}:{item["agent"]}:{item["session_id"]}'
+                rows.append((item["mtime"], key, host, item["agent"],
+                             item["name"], item["cwd"]))
+    for _, key, host, agent, name, cwd in sorted(rows, reverse=True):
+        print("\t".join((key, host, agent, name, cwd)))
 
 
-def resurrect(key):
+def open_history(key):
+    if key.startswith("alan:"):
+        _, host, addr = key.split(":", 2)
+        host_command(host, "fleet", "alan-resume", addr, capture_output=True)
+        wait_for_projection(key)
+        viewer.open_main(key)
+        return
     host, agent, transcript = key.split(":", 2)
     if any((session.ref.server.host, session.agent, session.transcript_id) ==
            (host, agent, transcript) for session in decode(snapshot())):
@@ -318,8 +346,20 @@ def resurrect(key):
     name = desktop_input("new session name")
     if not name:
         raise SystemExit("session name is required")
-    host_command(host, "fleet", "resume", agent, transcript, name)
+    host_command(host, "fleet", "resume", agent, transcript, name,
+                 capture_output=True)
     viewer.request("main", created_key(host, name))
+
+
+def open_history_report(key):
+    try:
+        open_history(key)
+    except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
+        reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
+                  and error.stderr else str(error))
+        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+                        f"Open failed: {reason}"])
+        raise SystemExit(reason)
 
 
 def arrive(profile, available=False):
@@ -340,7 +380,7 @@ def arrive(profile, available=False):
     free = [slot for slot, source in placements if not source]
     shown = {source for _, source in placements if source}
     ranked = sorted((session for session in sessions
-                     if session.attention != "done" and session.windows == 1
+                     if session.windows == 1
                      and session.ref.key not in shown),
                     key=lambda session: ({"needs-action": 0, "working": 1,
                                           "waiting": 2, "finished": 3}.get(session.state, 2),
@@ -372,7 +412,7 @@ def context():
         "unavailable": unavailable,
         "slots": [{"slot": slot, "source": source} for slot, source in viewer.slots()],
         "sessions": [{"source": s.ref.key, "host": s.ref.server.host, "name": s.name,
-                      "agent": s.agent, "state": s.state, "attention": s.attention,
+                      "agent": s.agent, "state": s.state,
                       "summary": s.summary, "recency": s.human_activity}
                      for s in sessions],
     }
@@ -380,16 +420,4 @@ def context():
 
 
 def commander_context():
-    local = json.loads(subprocess.run(["fleet", "context"], text=True,
-                                      capture_output=True, check=True).stdout)
-    environment = ssh_environment()
-    workstations = {}
-    for host in ("boltzmann", "noether", "newton"):
-        remote = json.loads(subprocess.run(
-            ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet context"],
-            text=True, capture_output=True, check=True, env=environment).stdout)
-        workstations[host] = {key: remote[key]
-                              for key in ("profile", "unavailable", "slots")}
-    print(json.dumps({"sessions": local["sessions"],
-                      "unavailable": local["unavailable"],
-                      "workstations": workstations}, indent=2))
+    print(json.dumps(json.loads(commander_projection()), indent=2))

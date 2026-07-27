@@ -10,7 +10,7 @@ from .config import RUNTIME, ssh_environment
 from .tmux import inventory
 from .remote import find
 from .model import key_host
-from . import workstation
+from . import alan, workstation
 
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -76,19 +76,6 @@ def open_main(key):
 
 def show(key, slot=None):
     session = find(key)
-    if session.attention == "done":
-        host = session.ref.server.host
-        operation = (("fleet", "alan-attention", session.ref.session_id, "tracked")
-                     if session.ref.server.kind == "alan" else
-                     ("fleet", "mutate", key, "attention", "tracked"))
-        command = shlex.join(operation)
-        argv = (list(operation)
-                if host == os.uname().nodename else
-                ["ssh", "-T", "-o", "BatchMode=yes", host, command])
-        subprocess.run(argv, check=True)
-        signal = (["fleet", "signal"] if host == os.uname().nodename else
-                  ["ssh", "-T", "-o", "BatchMode=yes", host, "fleet signal"])
-        subprocess.run(signal, check=True)
     available = slots()
     for name, source in available:
         if source == key:
@@ -189,8 +176,15 @@ def serve(slot):
 
 
 def attach(key):
-    session = find(key)
-    if session.ref.server.kind == "alan":
+    if key.startswith("alan:"):
+        _, host, addr = key.split(":", 2)
+        if host != os.uname().nodename:
+            raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+        actors = alan.request({"op": "list"})["actors"]
+        session = next((item for item in alan.inventory(host, actors)
+                        if item.ref.session_id == addr), None)
+        if session is None:
+            raise SystemExit(f"Alan actor disappeared: {addr}")
         attachment = session.attachment or {}
         if attachment.get("kind") == "tmux":
             generation = subprocess.run(
@@ -201,7 +195,9 @@ def attach(key):
             os.execvp("tmux", ["tmux", "attach-session", "-t", attachment["session"]])
             return
         raise SystemExit(f"actor {session.ref.session_id} has no supported attachment")
-    host = session.ref.server.host
+    host = key_host(key)
+    if host != os.uname().nodename:
+        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
     current = [s for s in inventory(host) if s.ref.key == key]
     if len(current) != 1:
         raise SystemExit(f"session identity changed: {key}")

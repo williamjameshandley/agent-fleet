@@ -1,8 +1,10 @@
 import os
+import json
 import subprocess
 import time
 import shutil
 import re
+import textwrap
 
 from .config import RUNTIME, machine
 from .daemon import snapshot
@@ -12,11 +14,12 @@ from . import viewer
 
 STATE_ORDER = {"working": 0, "needs-action": 1, "waiting": 2, "finished": 3}
 RESET = "\033[0m"
+BOLD = "\033[1m"
 STATE_COLOUR = {
-    "working": "\033[32m",
-    "needs-action": "\033[1;31m",
-    "waiting": "\033[33m",
-    "finished": "\033[90m",
+    "working": "\033[30;42m",
+    "needs-action": "\033[1;37;41m",
+    "waiting": "\033[30;43m",
+    "finished": "\033[37;100m",
 }
 HOST_COLOUR = {
     "newton": "\033[34m",
@@ -25,7 +28,10 @@ HOST_COLOUR = {
     "turing": "\033[36m",
     "noether": "\033[32m",
 }
+AGENT_COLOUR = {"claude": "\033[38;5;173m", "codex": "\033[38;5;75m"}
 FZF_COLOUR = "16,fg:-1,bg:-1,fg+:-1,bg+:8,hl:3,hl+:3,info:4,prompt:2,pointer:1,marker:1,spinner:6,header:4,gutter:-1,border:8"
+COLUMN_ICONS = {"machine": "", "agent": "", "time": "",
+                "status": "", "title": "", "summary": ""}
 
 
 def rows(include_header=True):
@@ -38,43 +44,48 @@ def rows(include_header=True):
     if include_header:
         print(f"Claude {claude}{offline}")
         print(f"OpenAI {codex}")
+        print(column_header())
     width = shutil.get_terminal_size((100, 24)).columns
-    placement = {source: slot for slot, source in viewer.slots() if source}
     for session in sessions:
         timestamp = recency(session)
         age = max(0, now - timestamp)
         elapsed = ("?" if not timestamp else
                    f"{age // 60}m" if age < 3600 else f"{age // 3600}h")
         marker = ("?" if session.ref.server.host in unavailable else
-                  "x" if session.attention == "done" else
                   {"needs-action": "!", "working": "*", "waiting": ".",
                    "finished": "-"}[session.state])
-        agent = {"claude": "Claude", "codex": "OpenAI", "python": "Python", "gemini": "Gemini",
-                 "multiple": "Agents", "shell": ""}[session.agent]
+        agent = {"claude": "C", "codex": "X", "python": "P", "gemini": "G",
+                 "multiple": "M", "shell": ""}[session.agent]
         summary = " ".join((session.summary or session.title).split())
         summary = re.sub(r"^[\u2800-\u28ff✳●*]+\s*", "", summary)
-        description = " ".join(x for x in (agent, summary) if x).strip()
-        place = placement.get(session.ref.key, "")
-        room = max(8, width - 2 - 1 - 20 - 8 - 4 - 8)
+        room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 20 - 1)
         host_colour = HOST_COLOUR.get(session.ref.server.host, "")
-        state_colour = ("\033[31m" if marker == "?" else "\033[90m" if marker == "x"
-                        else STATE_COLOUR[session.state])
-        visible = (f"{host_colour}{machine(session.ref.server.host):<2}{RESET} "
-                   f"{state_colour}{marker}{RESET} {session.name:<20.20} "
-                   f"{place:<8.8} {description:<{room}.{room}} {elapsed:>4}")
+        agent_colour = AGENT_COLOUR.get(session.agent, "")
+        state_colour = ("\033[37;41m" if marker == "?" else STATE_COLOUR[session.state])
+        emphasis = BOLD if session.state in {"working", "needs-action"} else ""
+        visible = (f"{emphasis}{host_colour}{machine(session.ref.server.host)}{RESET}{emphasis} "
+                   f"{agent_colour}{agent:1}{RESET}{emphasis} {elapsed:>4} "
+                   f"{state_colour}{marker}{RESET}{emphasis} "
+                   f"{session.name:<20.20} {summary:<{room}.{room}}{RESET}")
         print(f"{session.ref.key}\t{visible}")
 
 
 def ordered():
     sessions, usage, unavailable = decode_message(snapshot())
     sessions.sort(key=lambda s: (s.ref.server.host in unavailable,
-                                 s.attention == "done", STATE_ORDER.get(s.state, 2),
+                                 STATE_ORDER.get(s.state, 2),
                                  -recency(s), s.ref.key))
     return sessions, usage, unavailable
 
 
 def recency(session):
     return session.human_activity or session.created
+
+
+def column_header():
+    icon = COLUMN_ICONS
+    return (f"{icon['machine']} {icon['agent']} {icon['time']:^4} {icon['status']} "
+            f"{icon['title']:<20} {icon['summary']}")
 
 
 def muster():
@@ -89,6 +100,8 @@ def muster():
         "--delimiter=\t", "--with-nth=2..", "--id-nth=1",
         "--layout=reverse", "--no-sort", "--no-multi", "--info=inline", "--border=none",
         f"--header={header()}",
+        f"--footer={footer()}",
+        "--footer-border=bottom",
         "--bind=start:unbind(esc)",
         "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k)+rebind(esc)",
         "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k)",
@@ -100,8 +113,7 @@ def muster():
         "--bind=c:execute-silent(fleet create-tab)",
         "--bind=r:execute-silent(fleet rename-tab {1})",
         "--bind=R:execute-silent(fleet refresh {1})+reload-sync(fleet items)",
-        "--bind=d:execute-silent(fleet done {1})+reload(fleet items)",
-        "--bind=x:execute-silent(fleet dismiss-source {1})+reload-sync(fleet items)",
+        "--bind=x:execute-silent(fleet archive {1})+reload-sync(fleet items)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--preview=fleet preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
@@ -116,7 +128,14 @@ def header():
     offline = f"  |  offline {' '.join(unavailable)}" if unavailable else ""
     return (f"Claude {usage.get('claude', empty)}{offline}\n"
             f"OpenAI {usage.get('codex', empty)}\n"
-            "N/L/B/T/OE  * working  ! needs action  Enter show  / search  Tab history  c create  r rename  R refresh  d done  x dismiss")
+            f"{column_header()}")
+
+
+def footer():
+    hints = ("Enter open  c create  r rename  R refresh  x archive")
+    width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
+    return textwrap.fill(hints, width=width, break_long_words=False,
+                         break_on_hyphens=False)
 
 
 def cursor():
@@ -128,20 +147,27 @@ def cursor():
         if position:
             return position
     return next((i for i, session in enumerate(sessions, 1)
-                 if session.attention != "done" and session.state == "waiting"), 1)
+                 if session.state == "waiting"), 1)
 
 
 def select(key):
-    sessions, _, _ = ordered()
-    position = next((i for i, session in enumerate(sessions, 1)
-                     if session.ref.key == key), None)
-    if position is None:
-        return
     path = RUNTIME / "muster.sock"
     if path.exists():
-        subprocess.run(["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-                        "-XPOST", "-d", f"pos({position})", "http://localhost"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(
+            ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
+             "http://localhost"], capture_output=True, text=True
+        )
+        if result.returncode:
+            return
+        matches = json.loads(result.stdout)["matches"]
+        position = next((i for i, match in enumerate(matches, 1)
+                         if match["text"].partition("\t")[0] == key), None)
+        if position:
+            subprocess.run(
+                ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
+                 "-XPOST", "-d", f"pos({position})+track-current", "http://localhost"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
 
 
 def history():
@@ -149,8 +175,8 @@ def history():
         "fzf", "--track", "--delimiter=\t", "--with-nth=2..",
         f"--color={FZF_COLOUR}",
         "--id-nth=1", "--layout=reverse", "--no-sort", "--no-multi",
-        "--header=History  Enter resurrect  Tab live",
-        "--bind=enter:execute-silent(fleet resurrect {1})+reload-sync(fleet history-rows)",
+        "--header=History  Enter open  Tab live",
+        "--bind=enter:execute-silent(fleet open-history {1})+reload-sync(fleet history-rows)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:live)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:live)",
     ]

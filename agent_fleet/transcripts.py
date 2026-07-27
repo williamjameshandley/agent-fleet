@@ -75,6 +75,13 @@ def find(session_id, agent=None):
     return matches[0]
 
 
+def verify(agent, session_id):
+    item = find(session_id, agent)
+    if item.session_id != session_id:
+        raise SystemExit(f"transcript identity changed: {session_id}")
+    return item
+
+
 def history(limit=100):
     rows = []
     seen = set()
@@ -94,12 +101,12 @@ def history(limit=100):
 
 
 def resume(agent, session_id, name):
-    item = find(session_id, agent)
+    item = verify(agent, session_id)
     command = (["claude", "--resume", item.session_id] if agent == "claude"
                else ["codex", "resume", item.session_id])
     subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c",
                     item.cwd() or str(Path.home()), *command], check=True)
-    subprocess.run(["tmux", "set-option", "-t", f"={name}", "status", "off"],
+    subprocess.run(["tmux", "set-option", "-t", name, "status", "off"],
                    check=True)
 
 
@@ -177,6 +184,32 @@ def last_human_time(item):
             return int(datetime.fromisoformat(
                 event["timestamp"].replace("Z", "+00:00")).timestamp())
     return 0
+
+
+def latest_assistant_text(item):
+    for event in reverse_events(item.path):
+        if text := event_text(item.agent, event, "assistant"):
+            return " ".join(text.split())
+    return ""
+
+
+def native_transcript(session):
+    if session.ref.server.kind != "alan" or not session.transcript_id:
+        return None
+    if session.agent == "claude":
+        path = (CLAUDE / session.cwd.replace("/", "-").replace(".", "-") /
+                f"{session.transcript_id}.jsonl")
+        return transcript("claude", path) if path.exists() else None
+    if session.agent == "codex":
+        matches = list(CODEX.glob(f"*/*/*/rollout-*{session.transcript_id}.jsonl"))
+        if matches:
+            return transcript("codex", max(matches, key=lambda path: path.stat().st_mtime))
+    return None
+
+
+def native_summary(session):
+    item = native_transcript(session)
+    return replace(session, summary=latest_assistant_text(item)) if item else session
 
 
 def codex_state(item):
@@ -308,7 +341,7 @@ def observe(sessions):
     for session in sessions:
         row = by_session.get(session.ref.session_id)
         if not row:
-            result.append(session)
+            result.append(native_summary(session))
         elif counts[session.ref.session_id] > 1:
             count = counts[session.ref.session_id]
             result.append(replace(session, agent_name="multiple",

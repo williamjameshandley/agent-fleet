@@ -37,7 +37,6 @@ class Session:
     command: str
     title: str
     cwd: str
-    attention: str
     agent_name: str = ""
     reported_state: str = ""
     summary: str = ""

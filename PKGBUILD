@@ -12,12 +12,9 @@ optdepends=(
     'ghostty: workstation viewer terminals'
     'i3-wm: workstation layout and focus control'
     'jq: workstation launcher window discovery'
-    'python-openwakeword: wake-dryrun harness (the mic machine)'
-    'python-sounddevice: wake-dryrun harness (the mic machine)'
-    'python-numpy: wake-dryrun harness (the mic machine)'
-    'python-gobject: Alan composer interface (the mic machine)'
-    'xdotool: Alan destination focus restoration (the mic machine)'
-    'ffmpeg: Alan ambient FLAC archive (the mic machine)'
+    'alan-home-satellite: voice events from the Alan Home speech pipeline'
+    'python-gobject: Alan composer interface'
+    'xdotool: Alan destination focus restoration'
 )
 source=()
 sha256sums=()
@@ -42,12 +39,11 @@ package() {
   install -m644 "$startdir"/agent_fleet/*.py "$purelib/agent_fleet/"
   install -d "$purelib/alan_composer"
   install -m644 "$startdir"/alan_composer/*.py "$purelib/alan_composer/"
-  install -Dm755 "$startdir/wake-dryrun" "$pkgdir/usr/lib/agent-fleet/wake-dryrun"
-  install -Dm644 "$startdir/wake-dryrun.service" "$pkgdir/usr/lib/systemd/user/wake-dryrun.service"
   install -Dm755 "$startdir/alan-composer" "$pkgdir/usr/bin/alan-composer"
   install -Dm644 "$startdir/alan-composer.service" "$pkgdir/usr/lib/systemd/user/alan-composer.service"
   install -Dm644 "$startdir/fleet.service" "$pkgdir/usr/lib/systemd/user/fleet.service"
   install -Dm644 "$startdir/fleet-quota.service" "$pkgdir/usr/lib/systemd/user/fleet-quota.service"
   install -Dm644 "$startdir/fleet-quota.timer" "$pkgdir/usr/lib/systemd/user/fleet-quota.timer"
+  install -Dm644 "$startdir/personas/commander.md" "$pkgdir/usr/share/alan/personas/commander.md"
   install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

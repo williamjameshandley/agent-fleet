@@ -5,14 +5,16 @@ import sys
 import threading
 
 from . import actions, ui, viewer, workstation
+from .commander_client import run as commander
 from .daemon import Fleet, projection
 from .protocol import encode
 from .quota import read as quota_read, update as quota_update
 from .tmux import capture, event_stream, inventory, mutate
-from .config import RUNTIME, hosts
-from .transcripts import history as transcript_history, resume
-from .alan import (spawn_claude, spawn_codex,
-                   rename as alan_rename, set_attention as alan_attention)
+from .config import hosts
+from .transcripts import history as transcript_history, resume, verify as transcript_verify
+from .alan import (spawn_claude, spawn_codex, actors as alan_actors,
+                   retire as alan_retire, resume as alan_resume,
+                   rename as alan_rename)
 
 
 def events(args):
@@ -70,11 +72,14 @@ def main():
     command("history-rows", lambda _: actions.history())
     item = command("transcripts", lambda a: print(json.dumps(transcript_history(a.limit))))
     item.add_argument("--limit", type=int, default=100)
+    item = command("transcript-check", lambda a: transcript_verify(a.agent, a.session))
+    item.add_argument("agent", choices=("claude", "codex"))
+    item.add_argument("session")
     item = command("resume", lambda a: resume(a.agent, a.session, a.name))
     item.add_argument("agent", choices=("claude", "codex"))
     item.add_argument("session")
     item.add_argument("name")
-    item = command("resurrect", lambda a: actions.resurrect(a.key))
+    item = command("open-history", lambda a: actions.open_history_report(a.key))
     item.add_argument("key")
     item = command("refresh", lambda a: actions.refresh_command(a.key, a.all_sessions))
     target = item.add_mutually_exclusive_group(required=True)
@@ -90,12 +95,11 @@ def main():
     item.add_argument("--available", action="store_true")
     command("context", lambda _: actions.context())
     command("commander-context", lambda _: actions.commander_context())
+    command("commander", lambda _: commander())
     item = command("mutate", lambda a: mutate(a.key, a.operation, a.arguments))
     item.add_argument("key")
     item.add_argument("operation")
     item.add_argument("arguments", nargs="*")
-    command("signal", lambda _: (RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True),
-                                  (RUNTIME / "fleet.changed").touch()))
     item = command("workstation", lambda a: workstation.serve(a.socket))
     item.add_argument("--socket", required=True)
     item = command("viewer", lambda a: viewer.serve(a.slot))
@@ -105,8 +109,6 @@ def main():
     item = command("show", lambda a: viewer.show(a.key, a.slot))
     item.add_argument("key")
     item.add_argument("--slot")
-    item = command("dismiss", lambda a: viewer.request(a.slot, ""))
-    item.add_argument("--slot", default="main")
     item = command("attach", lambda a: viewer.attach(a.key))
     item.add_argument("key")
     command("create", lambda _: actions.create())
@@ -122,12 +124,14 @@ def main():
     item = command("alan-rename", lambda a: alan_rename(a.addr, a.label))
     item.add_argument("addr")
     item.add_argument("label")
-    item = command("alan-attention", lambda a: alan_attention(a.addr, a.attention))
+    command("alan-actors", lambda _: print(json.dumps(alan_actors())))
+    item = command("alan-retire", lambda a: alan_retire(a.addr))
     item.add_argument("addr")
-    item.add_argument("attention", choices=("tracked", "done"))
+    item = command("alan-resume", lambda a: print(alan_resume(a.addr)))
+    item.add_argument("addr")
     command("next-waiting", lambda _: actions.next_waiting())
-    for name, fn in (("rename", actions.rename), ("done", actions.done),
-                     ("dismiss-source", actions.dismiss_source)):
+    for name, fn in (("rename", actions.rename), ("archive", actions.archive_report),
+                     ):
         item = command(name, lambda a, fn=fn: fn(a.key))
         item.add_argument("key")
     item = command("preview", lambda a: actions.preview(a.key, a.columns, a.lines))
