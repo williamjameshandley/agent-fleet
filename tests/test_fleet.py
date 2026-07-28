@@ -1,17 +1,21 @@
 import unittest
 import asyncio
 import os
+import pty
 import subprocess
 import sys
 import tempfile
 import time
 import json
 import queue
+import socket
 import threading
 import contextlib
 import io
 from unittest import mock
 from pathlib import Path
+
+import loop
 
 from agent_fleet.model import ServerRef, Session, SessionRef
 from agent_fleet.protocol import decode, encode
@@ -140,6 +144,194 @@ class IdentityTests(unittest.TestCase):
 
         sleep.assert_awaited_once_with(2)
         self.assertEqual(execute.call_count, 2)
+
+    def test_real_muster_input_survives_reload_after_an_alan_watch_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "agent-fleet"
+            runtime.mkdir()
+            tmux_runtime = root / "tmux"
+            tmux_runtime.mkdir()
+            muster_socket = runtime / "muster.sock"
+            fleet_socket = runtime / "fleet.sock"
+            alan_socket = root / "alan.sock"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fleet_executable = Path(__file__).parents[1] / "fleet"
+            ssh = bin_dir / "ssh"
+            ssh.write_text(f"#!/bin/sh\nexec {fleet_executable} projection\n")
+            ssh.chmod(0o755)
+            host = os.uname().nodename
+            fleet = Fleet()
+            stopped = threading.Event()
+            emit_update = threading.Event()
+            initial = {
+                "addr": "codex-one", "type": "codex", "state": "waiting",
+                "label": "needle row", "cwd": str(root), "created": 1,
+                "native": {"id": "native-one"},
+                "attachment": {"kind": "none"},
+            }
+            updated = {**initial, "label": "new needle"}
+
+            def serve_projection():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(fleet_socket))
+                    server.listen()
+                    server.settimeout(.1)
+                    while not stopped.is_set():
+                        try:
+                            connection, _ = server.accept()
+                        except TimeoutError:
+                            continue
+                        with connection:
+                            request = connection.makefile("rb").readline()
+                            if request == b"snapshot\n":
+                                sessions = [
+                                    session for group in fleet.sessions.values()
+                                    for session in group
+                                ]
+                                connection.sendall(
+                                    (encode(sessions, {}, []) + "\n").encode()
+                                )
+
+            def serve_watch():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(alan_socket))
+                    server.listen()
+                    connection, _ = server.accept()
+                    with connection:
+                        connection.makefile("rb").readline()
+                        for actors in ([initial], [updated]):
+                            connection.sendall(
+                                (json.dumps({"ok": True, "actors": actors}) + "\n").encode()
+                            )
+                            if actors == [initial]:
+                                emit_update.wait(5)
+                        stopped.wait(5)
+
+            projection_server = threading.Thread(
+                target=serve_projection, daemon=True)
+            watch_server = threading.Thread(target=serve_watch, daemon=True)
+            projection_server.start()
+            watch_server.start()
+            for path in (fleet_socket, alan_socket):
+                for _ in range(100):
+                    if path.exists():
+                        break
+                    time.sleep(.01)
+                self.assertTrue(path.exists())
+
+            command = (
+                f"printf 'alpha\\nneedle row\\nomega\\n' | "
+                f"exec fzf --listen {muster_socket}"
+            )
+            environment = {
+                **os.environ,
+                "LOOP_SOCKET": str(alan_socket),
+                "PYTHONPATH": (
+                    f"{Path(loop.__file__).parents[1]}:"
+                    f"{Path(__file__).parents[1]}"
+                ),
+                "PATH": f"{bin_dir}:{Path(__file__).parents[1]}:{os.environ['PATH']}",
+                "TMUX_TMPDIR": str(tmux_runtime),
+                "XDG_RUNTIME_DIR": str(root),
+            }
+            subprocess.run([
+                "tmux", "new-session", "-d", "-s", "fleet@muster", command,
+            ], check=True, env=environment)
+            master = slave = None
+            client = None
+            try:
+                for _ in range(500):
+                    if muster_socket.exists():
+                        break
+                    time.sleep(.01)
+                self.assertTrue(muster_socket.exists())
+
+                async def wait_for(predicate):
+                    for _ in range(200):
+                        value = predicate()
+                        if value:
+                            return value
+                        await asyncio.sleep(.02)
+                    self.fail("fixture state did not arrive")
+
+                def fzf_state():
+                    result = subprocess.run(
+                        ["curl", "-fsS", "--unix-socket", str(muster_socket),
+                         "http://localhost"],
+                        text=True, capture_output=True)
+                    return json.loads(result.stdout) if result.returncode == 0 else {}
+
+                async def exercise():
+                    collector = asyncio.create_task(fleet.collect(host))
+                    try:
+                        await wait_for(
+                            lambda: fleet.sessions.get(host)
+                            and fleet.sessions[host][0].name == "needle row"
+                        )
+                        await wait_for(
+                            lambda: "alan:" in
+                            fzf_state().get("current", {}).get("text", "")
+                        )
+
+                        nonlocal master, slave, client
+                        master, slave = pty.openpty()
+                        client = subprocess.Popen(
+                            ["tmux", "-u", "attach-session", "-t", "fleet@muster"],
+                            stdin=slave, stdout=slave, stderr=slave,
+                            env={**environment, "TERM": "xterm-256color"},
+                            start_new_session=True)
+                        os.close(slave)
+                        slave = None
+                        await asyncio.sleep(.2)
+                        os.write(master, b"needle")
+                        await wait_for(lambda: fzf_state().get("query") == "needle")
+                        initial_text = fzf_state()["current"]["text"]
+                        self.assertIn("needle row", initial_text)
+
+                        emit_update.set()
+                        await wait_for(
+                            lambda: fleet.sessions.get(host)
+                            and fleet.sessions[host][0].name == "new needle"
+                            and fleet.refresh_pending
+                        )
+                        await asyncio.sleep(.2)
+                        before = fzf_state()
+                        self.assertEqual(before["current"]["text"], initial_text)
+
+                        after = await wait_for(
+                            lambda: (
+                                state if
+                                "new needle" in
+                                (state := fzf_state()).get("current", {}).get("text", "")
+                                else None
+                            )
+                        )
+                        self.assertEqual(after["query"], "needle")
+                    finally:
+                        collector.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await collector
+
+                with mock.patch.dict(os.environ, environment), \
+                     mock.patch("agent_fleet.daemon.RUNTIME", runtime):
+                    asyncio.run(exercise())
+            finally:
+                stopped.set()
+                emit_update.set()
+                projection_server.join(1)
+                watch_server.join(1)
+                if client is not None:
+                    client.terminate()
+                    client.wait(timeout=2)
+                if slave is not None:
+                    os.close(slave)
+                if master is not None:
+                    os.close(master)
+                subprocess.run(
+                    ["tmux", "kill-server"], env=environment,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def test_alan_inventory_includes_python(self):
         actors = alan_inventory("newton", [{
