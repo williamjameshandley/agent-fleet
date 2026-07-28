@@ -180,21 +180,21 @@ def attach(key):
         _, host, addr = key.split(":", 2)
         if host != os.uname().nodename:
             raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
-        actors = alan.request({"op": "list"})["actors"]
-        session = next((item for item in alan.inventory(host, actors)
-                        if item.ref.session_id == addr), None)
-        if session is None:
+        actor = next((item for item in alan.actors() if item["addr"] == addr), None)
+        if actor is None:
             raise SystemExit(f"Alan actor disappeared: {addr}")
-        attachment = session.attachment or {}
+        attachment = (alan.present(addr)
+                      if actor.get("type") in {"python", "codex"}
+                      else alan.attachment(addr))
         if attachment.get("kind") == "tmux":
             generation = subprocess.run(
                 ["tmux", "show-options", "-v", "-t", attachment["session"],
                  "@fleet_generation"], text=True, capture_output=True).stdout.strip()
             if generation != attachment.get("generation"):
-                raise SystemExit(f"stale actor presentation: {session.ref.session_id}")
+                raise SystemExit(f"stale actor presentation: {addr}")
             os.execvp("tmux", ["tmux", "attach-session", "-t", attachment["session"]])
             return
-        raise SystemExit(f"actor {session.ref.session_id} has no supported attachment")
+        raise SystemExit(f"actor {addr} has no supported attachment")
     host = key_host(key)
     if host != os.uname().nodename:
         raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")

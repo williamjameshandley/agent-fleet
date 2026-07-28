@@ -14,13 +14,14 @@ from . import viewer
 from . import workstation
 from .alan import rename as alan_rename
 from .alan import refresh as alan_refresh
-from .alan import attachment_usable as alan_attachment_usable
+from .alan import native_identity_usable as alan_native_identity_usable
 
 
-def host_command(host, *command, capture_output=False):
+def host_command(host, *command, capture_output=False, stdout=None):
     argv = list(command) if host == os.uname().nodename else [
         "ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(command)]
-    return subprocess.run(argv, text=True, check=True, capture_output=capture_output)
+    return subprocess.run(argv, text=True, check=True, capture_output=capture_output,
+                          stdout=stdout)
 
 
 def desktop_input(prompt, values=(), fixed=False):
@@ -58,15 +59,6 @@ def muster_input(prompt, values=(), initial="", context="", title="Create sessio
     return result.stdout.splitlines()[0].strip()
 
 
-def agent_command(agent, name):
-    if agent == "claude":
-        return ["claude", "--dangerously-skip-permissions", "--name", name]
-    if agent == "codex":
-        return ["codex", "--sandbox", "danger-full-access",
-                "--ask-for-approval", "never"]
-    return [os.environ.get("SHELL", "/bin/sh")]
-
-
 def created_key(host, name):
     result = host_command(host, "fleet", "snapshot", "--host", host,
                           capture_output=True)
@@ -88,22 +80,17 @@ def create_tab():
 
 def create():
     host = muster_input("host", hosts())
-    agent = muster_input("agent", ("claude", "codex", "shell"),
+    agent = muster_input("agent", ("python", "codex", "claude"),
                          context=host)
     name = session_name(muster_input("name", context=f"{host} · {agent}"))
     cwd = muster_input("directory", initial=str(Path.home()),
                        context=f"{host} · {agent} · {name}") or str(Path.home())
     if not name:
         raise SystemExit("session name is required")
-    if agent == "shell":
-        host_command(host, "tmux", "new-session", "-d", "-s", name, "-c", cwd,
-                     *agent_command(agent, name))
-        key = created_key(host, name)
-    else:
-        result = host_command(host, "fleet", "alan-spawn", agent, name, cwd,
-                              capture_output=True)
-        key = f"alan:{host}:{result.stdout.strip()}"
-        wait_for_projection(key)
+    result = host_command(host, "alan-create", agent, name, cwd,
+                          stdout=subprocess.PIPE)
+    key = f"alan:{host}:{result.stdout.strip()}"
+    wait_for_projection(key)
     viewer.open_main(key)
 
 
@@ -184,8 +171,8 @@ def refresh_check(key, native_id):
     _, host, addr = key.split(":", 2)
     if host != os.uname().nodename:
         raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
-    if not alan_attachment_usable(addr, native_id):
-        raise SystemExit(f"actor {addr} has no usable current attachment")
+    if not alan_native_identity_usable(addr, native_id):
+        raise SystemExit(f"actor {addr} has no usable current native identity")
 
 
 def wait_for_projection(key, native_id=None):
@@ -196,10 +183,8 @@ def wait_for_projection(key, native_id=None):
         except SystemExit:
             time.sleep(.1)
             continue
-        attachment = session.attachment or {}
         if (session.ref.server.kind != "alan" or
-                ((native_id is None or session.transcript_id == native_id) and
-                 attachment.get("kind") not in {None, "none"})):
+                native_id is None or session.transcript_id == native_id):
             return
         time.sleep(.1)
     raise RuntimeError(f"Fleet projection did not restore {key}")

@@ -150,16 +150,6 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "provider: failed\n")
 
     def test_exchange_tails_the_socket_peer_identity(self):
-        calls = []
-
-        def request(payload):
-            calls.append(payload)
-            if payload["op"] == "hello":
-                return {"actor": "socket-peer"}
-            if payload["op"] == "tail":
-                return {"after_resolved": -1}
-            return {"addr": "llm-1", "envelope_id": "llm-1#0"}
-
         class Thread:
             def __init__(self, target, args, daemon):
                 self.args = args
@@ -170,13 +160,20 @@ class ProposalTests(unittest.TestCase):
                             "payload": {"kind": "finished"}})
 
         with mock.patch.object(commander_client, "commander_context", return_value=json.dumps({})), \
-             mock.patch.object(commander_client.alan, "request", side_effect=request), \
+             mock.patch.object(commander_client.alan, "peer",
+                               return_value="socket-peer") as peer, \
+             mock.patch.object(commander_client, "current_end",
+                               return_value=-1) as current_end, \
+             mock.patch.object(commander_client.alan, "commander_request",
+                               return_value={"addr": "llm-1",
+                                             "envelope_id": "llm-1#0"}) as request, \
              mock.patch.object(commander_client.threading, "Thread", Thread), \
              mock.patch.dict("os.environ", {"USER": "wrong", "LOGNAME": "wrong"}):
             commander_client.exchange("status")
 
-        self.assertEqual(calls[0], {"op": "hello"})
-        self.assertEqual(calls[1]["addr"], "socket-peer")
+        peer.assert_called_once_with()
+        current_end.assert_called_once_with("socket-peer")
+        self.assertEqual(request.call_args.args[0]["kind"], "commander_request")
 
 
 if __name__ == "__main__":

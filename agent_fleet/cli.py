@@ -12,8 +12,7 @@ from .quota import read as quota_read, update as quota_update
 from .tmux import capture, event_stream, inventory, mutate
 from .config import hosts
 from .transcripts import history as transcript_history, resume, verify as transcript_verify
-from .alan import (spawn_claude, spawn_codex, actors as alan_actors,
-                   retire as alan_retire, resume as alan_resume,
+from .alan import (actors as alan_actors, retire as alan_retire, resume as alan_resume,
                    rename as alan_rename)
 
 
@@ -116,12 +115,6 @@ def main():
     command("create-tab", lambda _: actions.create_tab())
     item = command("rename-tab", lambda a: actions.rename_tab(a.key))
     item.add_argument("key")
-    item = command("alan-spawn", lambda a: print(
-        {"codex": spawn_codex,
-         "claude": spawn_claude}[a.agent](a.name, a.cwd)))
-    item.add_argument("agent", choices=("codex", "claude"))
-    item.add_argument("name")
-    item.add_argument("cwd")
     item = command("alan-rename", lambda a: alan_rename(a.addr, a.label))
     item.add_argument("addr")
     item.add_argument("label")

@@ -166,7 +166,8 @@ def event_stream(host, consumer=None):
             global _alan_attachments
             _alan_attachments = {
                 actor["addr"]: actor.get("attachment") or {"kind": "none"}
-                for actor in alan.actors if actor.get("type") in {"claude", "codex"}}
+                for actor in alan.actors
+                if actor.get("type") in {"python", "claude", "codex"}}
             current = inventory(host) + alan_inventory(host, alan.actors)
             try:
                 current = observe(current)

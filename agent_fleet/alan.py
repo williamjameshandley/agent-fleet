@@ -1,44 +1,9 @@
-import json
-import socket
 import threading
 import time
-from pathlib import Path
 
-from .config import CONFIG
+import loop
+
 from .model import ServerRef, Session, SessionRef
-
-
-def socket_path():
-    for path in (CONFIG / "alan-socket", Path("/etc/agent-fleet/alan-socket")):
-        if path.exists():
-            configured_path = Path(path.read_text().strip())
-            if configured_path.is_absolute():
-                return configured_path
-            raise RuntimeError(f"Alan socket path in {path} must be absolute")
-    raise RuntimeError("Alan socket is not configured")
-
-
-def configured():
-    try:
-        socket_path()
-        return True
-    except RuntimeError:
-        return False
-
-
-def raw_request(payload):
-    with socket.socket(socket.AF_UNIX) as client:
-        client.connect(str(socket_path()))
-        client.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode())
-        line = client.makefile().readline()
-    return json.loads(line)
-
-
-def request(payload):
-    result = raw_request(payload)
-    if not result.get("ok"):
-        raise RuntimeError(result.get("error", "Alan request failed"))
-    return result
 
 
 class Watcher:
@@ -51,33 +16,22 @@ class Watcher:
         self._consumer = consumer
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        if configured():
-            self.initialized.wait(2)
+        self.initialized.wait(2)
 
     def _run(self):
-        if not configured():
-            return
         while not (self._consumer and self._consumer.is_set()):
             try:
-                with socket.socket(socket.AF_UNIX) as client:
-                    client.connect(str(socket_path()))
-                    client.sendall(b'{"op":"watch"}\n')
-                    stream = client.makefile()
-                    for line in stream:
-                        message = json.loads(line)
-                        if not message.get("ok"):
-                            raise RuntimeError(message.get("error", "Alan watch failed"))
-                        self.actors = message["actors"]
-                        self.available = True
-                        self.error = None
-                        self.initialized.set()
-                        self._changed.put("alan")
-                        if self._consumer and self._consumer.is_set():
-                            return
-            except RuntimeError as error:
-                self._unavailable(str(error))
-            except (ConnectionError, FileNotFoundError, json.JSONDecodeError, OSError):
-                self._unavailable(f"Alan unavailable at {socket_path()}")
+                for actors in loop.watch():
+                    self.actors = actors
+                    self.available = True
+                    self.error = None
+                    self.initialized.set()
+                    self._changed.put("alan")
+                    if self._consumer and self._consumer.is_set():
+                        return
+                self._unavailable("Alan watch closed")
+            except (loop.LoopError, OSError, ValueError) as error:
+                self._unavailable(f"Alan unavailable: {error}")
 
     def _unavailable(self, error):
         self.error = error
@@ -88,17 +42,19 @@ class Watcher:
             self._changed.put("alan")
         time.sleep(1)
 
+
 def inventory(host, actors):
     source = ServerRef(host, "", 0, 0, "alan")
     sessions = []
     for actor in actors:
-        if actor.get("type") not in {"claude", "codex"}:
-            continue
-        attachment = actor.get("attachment") or {"kind": "none"}
-        if attachment.get("kind") == "none":
+        if (actor.get("type") not in {"python", "claude", "codex"} or
+                actor.get("profile") is not None):
             continue
         state = actor.get("state", "live")
-        reported_state = ("working" if state in {"busy", "working"} else
+        if state in {"retired", "failed"}:
+            continue
+        attachment = actor.get("attachment") or {"kind": "none"}
+        reported_state = ("working" if state in {"busy", "working", "starting"} else
                           "needs-action" if state == "needs-action" else "waiting")
         sessions.append(Session(
             SessionRef(source, actor["addr"]), actor.get("label") or actor["addr"],
@@ -111,20 +67,12 @@ def inventory(host, actors):
     return sessions
 
 
-def spawn_codex(label, cwd):
-    return request({"op": "spawn", "source": "codex", "label": label, "cwd": cwd})["addr"]
-
-
-def spawn_claude(label, cwd):
-    return request({"op": "spawn", "source": "claude", "label": label, "cwd": cwd})["addr"]
-
-
 def actors():
-    return request({"op": "list"})["actors"] if configured() else []
+    return loop.list()
 
 
 def retire(addr):
-    request({"op": "retire", "addr": addr})
+    loop.retire(addr)
 
 
 def resume(addr):
@@ -134,56 +82,45 @@ def resume(addr):
     native_id = (actor.get("native") or {}).get("id")
     if actor.get("type") not in {"claude", "codex"} or not native_id:
         raise RuntimeError("open requires a durable Claude or Codex identity")
-    result = request({"op": "spawn", "source": addr})
-    if result["addr"] != addr:
+    if loop.spawn(addr) != addr:
         raise RuntimeError(f"Alan open changed actor identity: {addr}")
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        actor = next((item for item in actors() if item["addr"] == addr), None)
-        if actor:
-            attachment = actor.get("attachment") or {"kind": "none"}
-            if ((actor.get("native") or {}).get("id") == native_id and
-                    attachment.get("kind") != "none"):
-                return addr
-        time.sleep(.1)
-    raise RuntimeError(f"Alan open did not restore native identity for {addr}")
+    return addr
 
 
 def rename(addr, label):
-    request({"op": "rename", "addr": addr, "label": label})
+    loop.rename(addr, label)
 
 
 def refresh(addr):
-    actors = request({"op": "list"})["actors"]
-    actor = next((item for item in actors if item["addr"] == addr), None)
+    actor = next((item for item in actors() if item["addr"] == addr), None)
     if not actor:
         raise RuntimeError(f"Alan actor disappeared: {addr}")
     if actor.get("type") not in {"claude", "codex"}:
         raise RuntimeError(f"refresh does not support {actor.get('type')}")
-    native_id = (actor.get("native") or {}).get("id")
-    if not native_id:
+    if not (actor.get("native") or {}).get("id"):
         raise RuntimeError("refresh requires a durable native identity")
-    result = request({"op": "refresh", "addr": addr})
-    if result["addr"] != addr:
-        raise RuntimeError(f"Alan refresh changed actor identity: {addr}")
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        actors = request({"op": "list"})["actors"]
-        actor = next((item for item in actors if item["addr"] == addr), None)
-        if actor:
-            attachment = actor.get("attachment") or {"kind": "none"}
-            if ((actor.get("native") or {}).get("id") == native_id and
-                    attachment.get("kind") != "none"):
-                return
-        time.sleep(.1)
-    raise RuntimeError(f"Alan refresh did not restore attachment for {addr}")
+    loop.refresh(addr)
 
 
-def attachment_usable(addr, native_id):
-    actors = request({"op": "list"})["actors"]
-    actor = next((item for item in actors if item["addr"] == addr), None)
+def present(addr):
+    return loop.present(addr)
+
+
+def attachment(addr):
+    return loop.attachment(addr)
+
+
+def native_identity_usable(addr, native_id):
+    actor = next((item for item in actors() if item["addr"] == addr), None)
     if not actor:
         return False
-    attachment = actor.get("attachment") or {"kind": "none"}
     return ((actor.get("native") or {}).get("id") == native_id and
-            attachment.get("kind") != "none")
+            actor.get("state") in {"waiting", "working", "needs-action"})
+
+
+def peer():
+    return loop.peer()
+
+
+def commander_request(request):
+    return loop.commander_request(request)
