@@ -7,10 +7,6 @@ RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / 
 HUB = "lovelace"
 
 
-def local_host():
-    return os.uname().nodename.split(".", 1)[0]
-
-
 def ssh_environment():
     """Return an environment pinned to the user's stable SSH agent socket."""
     return {**os.environ,

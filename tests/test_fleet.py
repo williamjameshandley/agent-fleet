@@ -23,7 +23,7 @@ from agent_fleet.ui import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.tmux import split_key
 from agent_fleet.actions import next_waiting_key, session_name
 from agent_fleet import actions
-from agent_fleet.config import local_host, machine, ssh_environment
+from agent_fleet.config import machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
 from agent_fleet.alan import Watcher as AlanWatcher
 from agent_fleet.alan import refresh as alan_refresh
@@ -43,11 +43,6 @@ class IdentityTests(unittest.TestCase):
 
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
-
-    def test_local_host_ignores_transient_dns_domain(self):
-        with mock.patch("agent_fleet.config.os.uname",
-                        return_value=mock.Mock(nodename="lovelace.fritz.box")):
-            self.assertEqual(local_host(), "lovelace")
 
     def muster_state(self, matches, count=None):
         state = json.dumps({"matches": matches,

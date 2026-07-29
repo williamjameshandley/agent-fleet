@@ -1,3 +1,4 @@
+import os
 import shlex
 import subprocess
 import queue
@@ -12,7 +13,7 @@ from watchfiles import watch
 
 from .model import ServerRef, Session, SessionRef
 from .agent import observe
-from .config import RUNTIME, local_host
+from .config import RUNTIME
 from .alan import Watcher as AlanWatcher, inventory as alan_inventory
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
@@ -31,8 +32,8 @@ def split_key(key):
 
 def mutate(key, operation, arguments):
     host, socket, pid, started, session_id = split_key(key)
-    if host != local_host():
-        raise SystemExit(f"identity is for {host}, not {local_host()}")
+    if host != os.uname().nodename:
+        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
     if operation == "rename":
         command = ["rename-session", "-t", session_id, arguments[0]]
     elif operation == "archive":
@@ -53,8 +54,8 @@ def mutate(key, operation, arguments):
 def capture(key, columns=0, lines=0):
     if key.startswith("alan:"):
         _, host, addr = key.split(":", 2)
-        if host != local_host():
-            raise RuntimeError(f"identity is for {host}, not {local_host()}")
+        if host != os.uname().nodename:
+            raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
         attachment = _alan_attachments.get(addr)
         if attachment is None:
             raise RuntimeError(f"Alan actor disappeared: {addr}")
@@ -71,8 +72,8 @@ def capture(key, columns=0, lines=0):
             raise RuntimeError(f"Alan presentation disappeared: {addr}")
         return capture_pane(session, columns, lines)
     host, socket, pid, started, session_id = split_key(key)
-    if host != local_host():
-        raise RuntimeError(f"identity is for {host}, not {local_host()}")
+    if host != os.uname().nodename:
+        raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
     tmux = server()
     session = TmuxSession.from_session_id(tmux, session_id)
     if (session.socket_path, int(session.pid), int(session.start_time)) != (socket, pid, started):
