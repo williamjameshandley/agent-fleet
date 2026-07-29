@@ -3,19 +3,19 @@ import queue
 import threading
 import uuid
 
+import loop
+
 from . import alan
 from .commander import validate_proposal
 from .daemon import commander_context
 
 
 def tail(addr, after, wait_ms=0):
-    return alan.request({"op": "tail", "addr": addr, "after": after,
-                         "limit": 100, "wait_ms": wait_ms})["messages"]
+    return loop.tail(addr, after=after, limit=100, wait_ms=wait_ms)
 
 
 def current_end(addr):
-    return alan.request({"op": "tail", "addr": addr, "after": -2,
-                         "limit": 1, "wait_ms": 0})["after_resolved"]
+    return loop.tail_end(addr)
 
 
 def related(envelope, root):
@@ -52,9 +52,9 @@ def exchange(text):
     snapshot = json.loads(commander_context())
     request = {"kind": "commander_request", "version": 1,
                "request_id": str(uuid.uuid4()), "text": text, "snapshot": snapshot}
-    requester = alan.request({"op": "hello"})["actor"]
+    requester = alan.peer()
     requester_after = current_end(requester)
-    result = alan.request({"op": "commander_request", "request": request})
+    result = alan.commander_request(request)
     root = result["envelope_id"]
 
     output = queue.Queue()

@@ -1,7 +1,8 @@
 # agent-fleet
 
 Agent Fleet is a fast switchboard for attachable shell and standalone vendor
-terminals plus Alan Codex and Claude actors spread across several machines.
+terminals plus Alan Python, Codex and Claude actors spread across several
+machines.
 
 ## Experience
 
@@ -10,6 +11,8 @@ the top, and waiting work follows by meaningful transcript recency. Its cursor i
 sorting cannot turn one row into another.
 
 Enter attaches the global `fleet@main` viewer to the selected native session.
+For a headless Python or Codex actor, Alan first creates or reuses its optional
+tmux presentation; Claude's tmux process is its provider runtime.
 Muster and Main are attachable from every workstation and therefore
 retain one shared selection while the user moves. A multi-screen deck
 focuses an already open source or uses a free slot; a full deck never evicts
@@ -67,7 +70,7 @@ fleet-viewer SLOT               run a workstation-local named slot
 fleet show SOURCE               focus/open a live source
 fleet next-waiting              advance main to the next waiting source
 fleet show SOURCE --slot S      explicit replacement
-fleet create                    create Alan Claude, Codex, or a plain shell
+fleet create                    create an Alan Python, Codex, or Claude actor
 fleet rename SOURCE             rename the native source
 fleet refresh SOURCE            replace one idle Claude/Codex runtime in place
 fleet refresh --all             refresh every eligible waiting native session
@@ -91,19 +94,21 @@ Host aliases come from `~/.config/agent-fleet/hosts`. Routing and credentials
 belong to OpenSSH configuration. Machine labels are ASCII (`N L B T OE`), so
 Fleet has no icon-font dependency.
 
-Fleet resolves the personal Alan socket from `LOOP_SOCKET`, then
-`~/.config/agent-fleet/alan-socket`, then `/etc/agent-fleet/alan-socket`. The
-package does not install a system-wide value. An unavailable Alan socket removes
-Alan rows but does not invalidate healthy tmux inventory on the same host.
+Fleet consumes the canonical `loop` client, which resolves the personal Alan
+socket from `LOOP_SOCKET` or the user's XDG state directory. An unavailable
+Alan socket removes Alan rows but does not invalidate healthy tmux inventory on
+the same host.
 
-Alan also owns Python and direct `llm` actors, but Fleet displays and creates only
-Codex and Claude actors. There is no native Alan Gemini actor.
-Already-running standalone Gemini terminals remain ordinary legacy tmux rows.
-Muster creates new Claude and Codex work through Alan, so the actor is
-durable and asynchronously addressable before Fleet opens its preferred viewer.
-Only a plain shell is created directly as a tmux session. Refresh replaces an
-idle Alan Claude or Codex provider at the same actor and vendor identity; Fleet
-does not bare-resume standalone vendor terminals.
+Fleet displays and creates user-facing Python, Codex and Claude actors. Direct
+`llm` and reviewer actors remain outside the session UI. There is no native
+Alan Gemini actor. Already-running standalone Gemini terminals remain ordinary
+legacy tmux rows.
+Muster collects the creation fields and invokes that host's local
+`alan-create`; Alan owns creation and returns only after native readiness.
+Ordinary shell sessions remain directly available through tmux rather than
+through Fleet's creator. Refresh replaces an idle Alan Claude or Codex provider
+at the same actor and vendor identity; Fleet does not bare-resume standalone
+vendor terminals.
 
 ## Development
 

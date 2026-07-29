@@ -7,7 +7,7 @@ arch=('x86_64')
 url='https://github.com/williamjameshandley/agent-fleet'
 license=('MIT')
 options=('!debug')
-depends=(python python-libtmux python-watchfiles jupyter-console openai-codex tmux fzf openssh curl procps-ng libvterm)
+depends=('alan>=1:2.0.0.a11.r1785330889.g64ac36c' python python-libtmux python-watchfiles jupyter-console openai-codex tmux fzf openssh curl procps-ng libvterm)
 optdepends=(
     'ghostty: workstation viewer terminals'
     'i3-wm: workstation layout and focus control'
