@@ -87,13 +87,13 @@ def create():
                        context=f"{host} · {agent} · {name}") or str(Path.home())
     if not name:
         raise SystemExit("session name is required")
-    result = host_command(host, "alan-create", agent, name, cwd,
+    command = ["alan-create"]
+    if agent == "codex":
+        command.append("--present")
+    result = host_command(host, *command, agent, name, cwd,
                           stdout=subprocess.PIPE)
     addr = result.stdout.strip()
     key = f"alan:{host}:{addr}"
-    if agent == "codex":
-        host_command(host, "fleet", "alan-present", addr,
-                     stdout=subprocess.DEVNULL)
     wait_for_projection(key)
     viewer.open_main(key)
 

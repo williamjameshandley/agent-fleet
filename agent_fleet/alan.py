@@ -104,10 +104,6 @@ def refresh(addr):
     loop.refresh(addr)
 
 
-def present(addr):
-    return loop.present(addr)
-
-
 def attachment(addr):
     return loop.attachment(addr)
 

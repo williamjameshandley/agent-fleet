@@ -544,44 +544,29 @@ class IdentityTests(unittest.TestCase):
         with mock.patch("agent_fleet.actions.muster_input",
                         side_effect=[host, "codex", "analysis.", "/work"]) as prompt, \
              mock.patch("agent_fleet.actions.host_command") as run, \
-             mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
+            mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
-            run.side_effect = [
-                subprocess.CompletedProcess([], 0, stdout="codex-deadbeef\n"),
-                subprocess.CompletedProcess([], 0, stdout='{"kind":"tmux"}\n'),
-            ]
+            run.return_value.stdout = "codex-deadbeef\n"
             actions.create()
         self.assertEqual(
             prompt.call_args_list[1],
             mock.call("agent", ("codex", "claude"), context=host))
-        self.assertEqual(run.call_args_list, [
-            mock.call(host, "alan-create", "codex", "analysis", "/work",
-                      stdout=subprocess.PIPE),
-            mock.call(host, "fleet", "alan-present", "codex-deadbeef",
-                      stdout=subprocess.DEVNULL),
-        ])
+        run.assert_called_once_with(
+            host, "alan-create", "--present", "codex", "analysis", "/work",
+            stdout=subprocess.PIPE)
         wait.assert_called_once_with(f"alan:{host}:codex-deadbeef")
         show.assert_called_once_with(f"alan:{host}:codex-deadbeef")
 
     def test_remote_creator_is_batch_mode_and_leaves_failure_output_visible(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
         with mock.patch("agent_fleet.actions.subprocess.run") as run:
-            actions.host_command(host, "alan-create", "codex", "work", "/work",
+            actions.host_command(host, "alan-create", "--present", "codex",
+                                 "work tree;safe", "/work dir/$literal",
                                  stdout=subprocess.PIPE)
         run.assert_called_once_with(
             ["ssh", "-T", "-o", "BatchMode=yes", host,
-             "alan-create codex work /work"],
+             "alan-create --present codex 'work tree;safe' '/work dir/$literal'"],
             text=True, check=True, capture_output=False, stdout=subprocess.PIPE)
-
-    def test_remote_present_leaves_failure_output_visible(self):
-        host = "newton" if os.uname().nodename != "newton" else "lovelace"
-        with mock.patch("agent_fleet.actions.subprocess.run") as run:
-            actions.host_command(host, "fleet", "alan-present", "codex-1",
-                                 stdout=subprocess.DEVNULL)
-        run.assert_called_once_with(
-            ["ssh", "-T", "-o", "BatchMode=yes", host,
-             "fleet alan-present codex-1"],
-            text=True, check=True, capture_output=False, stdout=subprocess.DEVNULL)
 
     def test_create_uses_claudes_existing_provider_presentation(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
@@ -603,22 +588,10 @@ class IdentityTests(unittest.TestCase):
         self.assertNotIn('"tmux", "new-session"',
                          (Path(__file__).parents[1] / "agent_fleet/actions.py").read_text())
 
-    def test_alan_present_command_uses_the_canonical_client(self):
-        attachment = {"kind": "tmux", "session": "fleet@codex-work"}
-        output = io.StringIO()
-        with mock.patch.object(sys, "argv",
-                               ["fleet", "alan-present", "codex-1"]), \
-             mock.patch("agent_fleet.cli.alan_present",
-                        return_value=attachment) as present, \
-             contextlib.redirect_stdout(output):
-            cli.main()
-        present.assert_called_once_with("codex-1")
-        self.assertEqual(json.loads(output.getvalue()), attachment)
-
     def test_fleet_package_requires_the_canonical_alan_client(self):
         package = (Path(__file__).parents[1] / "PKGBUILD").read_text()
         self.assertIn(
-            "depends=('alan>=1:2.0.0.a11.r1785282507.gee53cbf' ", package)
+            "depends=('alan>=1:2.0.0.a11.r1785325999.g52c81ad' ", package)
 
     def test_projection_readiness_waits_for_a_presented_actor(self):
         actor = alan_inventory("lovelace", [{
