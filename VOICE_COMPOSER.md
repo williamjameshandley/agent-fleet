@@ -1,5 +1,10 @@
 # Alan voice composer
 
+> **Status:** This is an older composer-specific design and is not the current
+> cross-system source of truth. See
+> `../alan-home/VOICE_REQUIREMENTS.md` for the settled Planck/Boltzmann voice
+> requirements and the items that still require architectural review.
+
 ## Purpose
 
 Alan is a hands-free prompt composer for the tmux pane visible when dictation
