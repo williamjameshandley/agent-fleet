@@ -41,22 +41,37 @@ class IdentityTests(unittest.TestCase):
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
 
+    def muster_state(self, matches, count=None):
+        state = json.dumps({"matches": matches,
+                            "matchCount": len(matches) if count is None else count})
+        return subprocess.CompletedProcess([], 0, stdout=state)
+
     def test_cursor_position_comes_from_musters_loaded_identities(self):
+        state = self.muster_state([{"text": "actor:first\tfirst"},
+                                   {"text": "actor:focused\tfocused"}])
+        with mock.patch.object(ui.viewer, "slots",
+                               return_value=[("main", "actor:focused")]), \
+                mock.patch("agent_fleet.ui.subprocess.run", return_value=state):
+            self.assertEqual(ui.cursor(), "pos(2)")
+
+    def test_cursor_placement_is_one_action_against_musters_own_list(self):
         with tempfile.TemporaryDirectory() as directory:
-            socket_path = Path(directory) / "muster.sock"
-            socket_path.touch()
-            state = json.dumps({"matches": [
-                {"text": "actor:first\tfirst"},
-                {"text": "actor:focused\tfocused"},
-            ]})
-            query = subprocess.CompletedProcess([], 0, stdout=state)
-            post = subprocess.CompletedProcess([], 0)
+            (Path(directory) / "muster.sock").touch()
             with mock.patch.object(ui, "RUNTIME", Path(directory)), \
                     mock.patch("agent_fleet.ui.subprocess.run",
-                               side_effect=[query, post]) as run:
-                ui.select("actor:focused")
+                               return_value=subprocess.CompletedProcess([], 0)) as run:
+                ui.select()
 
-        self.assertIn("pos(2)+track-current", run.call_args_list[1].args[0])
+        run.assert_called_once()
+        self.assertIn("transform(fleet cursor)", run.call_args.args[0])
+
+    def test_cursor_refuses_a_truncated_match_list(self):
+        state = self.muster_state([{"text": "actor:first\tfirst"}], count=2)
+        with mock.patch.object(ui.viewer, "slots",
+                               return_value=[("main", "actor:first")]), \
+                mock.patch("agent_fleet.ui.subprocess.run", return_value=state):
+            with self.assertRaises(SystemExit):
+                ui.cursor()
 
     def test_machine_labels_are_single_cell_and_noether_uses_ligature(self):
         self.assertEqual([machine(host) for host in
@@ -567,7 +582,7 @@ class IdentityTests(unittest.TestCase):
     def test_muster_always_opens_the_global_main_viewer(self):
         source = (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text()
         self.assertIn("fleet show --slot main {1}", source)
-        self.assertIn("load:pos({cursor()})+unbind(load)", source)
+        self.assertIn("load:transform(fleet cursor)+unbind(load)", source)
         self.assertIn('"--no-sort"', source)
         self.assertIn("enable-search+toggle-sort", source)
         self.assertNotIn('"--nth=2.."', source)

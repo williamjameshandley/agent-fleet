@@ -106,7 +106,7 @@ def muster():
         "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k)+rebind(esc)",
         "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k)",
         "--bind=j:down,k:up",
-        f"--bind=load:pos({cursor()})+unbind(load)",
+        "--bind=load:transform(fleet cursor)+unbind(load)",
         "--bind=enter:execute-silent(fleet show --slot main {1})",
         "--bind=left-click:execute-silent(fleet show --slot main {1})",
         "--bind=double-click:execute-silent(fleet show --slot main {1})",
@@ -139,35 +139,29 @@ def footer():
 
 
 def cursor():
-    sessions, _, _ = ordered()
     active = dict(viewer.slots()).get("main")
-    if active:
-        position = next((i for i, session in enumerate(sessions, 1)
-                         if session.ref.key == active), None)
-        if position:
-            return position
-    return next((i for i, session in enumerate(sessions, 1)
-                 if session.state == "waiting"), 1)
+    if not active:
+        sessions, _, _ = ordered()
+        active = next((s.ref.key for s in sessions if s.state == "waiting"), None)
+    result = subprocess.run(
+        ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(RUNTIME / "muster.sock"),
+         "http://localhost"], capture_output=True, text=True, check=True)
+    status = json.loads(result.stdout)
+    if len(status["matches"]) != status["matchCount"]:
+        raise SystemExit("Muster reported a truncated match list")
+    position = next((i for i, match in enumerate(status["matches"], 1)
+                     if match["text"].partition("\t")[0] == active), None)
+    return f"pos({position})" if position else ""
 
 
-def select(key):
+def select():
     path = RUNTIME / "muster.sock"
     if path.exists():
-        result = subprocess.run(
+        subprocess.run(
             ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-             "http://localhost"], capture_output=True, text=True
+             "-XPOST", "-d", "transform(fleet cursor)", "http://localhost"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        if result.returncode:
-            return
-        matches = json.loads(result.stdout)["matches"]
-        position = next((i for i, match in enumerate(matches, 1)
-                         if match["text"].partition("\t")[0] == key), None)
-        if position:
-            subprocess.run(
-                ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-                 "-XPOST", "-d", f"pos({position})+track-current", "http://localhost"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
 
 
 def history():

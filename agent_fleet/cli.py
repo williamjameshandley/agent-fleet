@@ -67,6 +67,7 @@ def main():
     command("rows", lambda _: ui.rows())
     command("items", lambda _: ui.rows(include_header=False))
     command("header", lambda _: print(ui.header()))
+    command("cursor", lambda _: print(ui.cursor(), end=""))
     command("muster", lambda _: ui.muster())
     command("history-ui", lambda _: ui.history())
     command("history-rows", lambda _: actions.history())

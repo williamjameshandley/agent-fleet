@@ -71,7 +71,7 @@ def slots():
 def open_main(key):
     request("main", key)
     from .ui import select
-    select(key)
+    select()
 
 
 def show(key, slot=None):
