@@ -44,7 +44,7 @@ def rows(include_header=True):
     if include_header:
         print(f"Claude {claude}{offline}")
         print(f"OpenAI {codex}")
-        print(column_header())
+        print(column_header(sessions))
     width = shutil.get_terminal_size((100, 24)).columns
     for session in sessions:
         timestamp = recency(session)
@@ -82,10 +82,13 @@ def recency(session):
     return session.human_activity or session.created
 
 
-def column_header():
+def column_header(sessions):
     icon = COLUMN_ICONS
+    working = sum(1 for session in sessions if session.state == "working")
+    waiting = sum(1 for session in sessions if session.state == "waiting")
     return (f"{icon['machine']} {icon['agent']} {icon['time']:^4} {icon['status']} "
-            f"{icon['title']:<20} {icon['summary']}")
+            f"{icon['title']:<20} {icon['summary']}  "
+            f"{working} working  {waiting} waiting  {len(sessions)} total")
 
 
 def muster():
@@ -123,12 +126,12 @@ def muster():
 
 
 def header():
-    _, usage, unavailable = ordered()
+    sessions, usage, unavailable = ordered()
     empty = "5h [--------]   0%/0h  7d [--------]   0%/0h"
     offline = f"  |  offline {' '.join(unavailable)}" if unavailable else ""
     return (f"Claude {usage.get('claude', empty)}{offline}\n"
             f"OpenAI {usage.get('codex', empty)}\n"
-            f"{column_header()}")
+            f"{column_header(sessions)}")
 
 
 def footer():
@@ -156,7 +159,13 @@ def cursor():
 
 def select():
     path = RUNTIME / "muster.sock"
-    if path.exists():
+    if not path.exists():
+        return
+    # A reload arriving alongside the placement discards it, so assert the
+    # position again once that reload has settled.
+    for attempt in range(2):
+        if attempt:
+            time.sleep(.3)
         subprocess.run(
             ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
              "-XPOST", "-d", "transform(fleet cursor)", "http://localhost"],

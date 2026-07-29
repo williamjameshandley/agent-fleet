@@ -81,19 +81,21 @@ class Fleet:
             asyncio.create_task(self.refresh_muster())
 
     async def refresh_muster(self):
-        await asyncio.sleep(.03)
-        path = RUNTIME / "muster.sock"
-        if not path.exists():
+        try:
+            await asyncio.sleep(.03)
+            path = RUNTIME / "muster.sock"
+            if not path.exists():
+                return
+            await self.wait_for_muster_idle()
             self.refresh_pending = False
-            return
-        await self.wait_for_muster_idle()
-        self.refresh_pending = False
-        process = await asyncio.create_subprocess_exec(
-            "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-            "-XPOST", "-d", "transform-header(sh -c '/usr/bin/fleet header')+reload-sync(fleet items)",
-            "http://localhost",
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await process.wait()
+            process = await asyncio.create_subprocess_exec(
+                "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
+                "-XPOST", "-d", "transform-header(sh -c '/usr/bin/fleet header')+reload-sync(fleet items)",
+                "http://localhost",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await process.wait()
+        finally:
+            self.refresh_pending = False
 
     async def wait_for_muster_idle(self):
         while True:

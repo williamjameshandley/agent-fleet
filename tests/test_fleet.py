@@ -12,6 +12,7 @@ import socket
 import threading
 import contextlib
 import io
+from dataclasses import replace
 from unittest import mock
 from pathlib import Path
 
@@ -86,8 +87,11 @@ class IdentityTests(unittest.TestCase):
                                return_value=subprocess.CompletedProcess([], 0)) as run:
                 ui.select()
 
-        run.assert_called_once()
-        self.assertIn("transform(fleet cursor)", run.call_args.args[0])
+        posted = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(len(posted), 2)
+        for request in posted:
+            self.assertIn("transform(fleet cursor)", request)
+            self.assertNotIn("reload-sync", request)
 
     def test_cursor_refuses_a_truncated_match_list(self):
         state = self.muster_state([{"text": "actor:first\tfirst"}], count=2)
@@ -166,6 +170,19 @@ class IdentityTests(unittest.TestCase):
 
         sleep.assert_awaited_once_with(2)
         self.assertEqual(execute.call_count, 2)
+
+    def test_a_failed_idle_check_does_not_latch_muster_refreshes_off(self):
+        fleet = Fleet()
+        fleet.refresh_pending = True
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "muster.sock").touch()
+            with mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
+                    mock.patch.object(Fleet, "wait_for_muster_idle",
+                                      side_effect=RuntimeError("no muster client")):
+                with self.assertRaises(RuntimeError):
+                    asyncio.run(fleet.refresh_muster())
+
+        self.assertFalse(fleet.refresh_pending)
 
     def test_real_muster_input_survives_reload_after_an_alan_watch_update(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -861,6 +878,13 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(
                 footer(),
                 "Enter open  c create  r rename  R refresh  x archive")
+
+    def test_column_header_counts_sessions_by_state(self):
+        from agent_fleet.ui import column_header
+        states = ["working", "working", "waiting", "needs-action"]
+        sessions = [replace(self.session("lovelace", f"${i}"), reported_state=state)
+                    for i, state in enumerate(states)]
+        self.assertIn("2 working  1 waiting  4 total", column_header(sessions))
 
     def test_claude_and_codex_use_distinct_provider_colours(self):
         self.assertNotEqual(AGENT_COLOUR["claude"], AGENT_COLOUR["codex"])
