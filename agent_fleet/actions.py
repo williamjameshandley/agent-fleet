@@ -1,11 +1,10 @@
-import os
 import subprocess
 import shlex
 import json
 import time
 from pathlib import Path
 
-from .config import hosts, ssh_environment
+from .config import hosts, local_host, ssh_environment
 from .remote import find
 from .daemon import commander_context as commander_projection, preview as pane_preview, snapshot
 from .protocol import decode
@@ -18,7 +17,7 @@ from .alan import native_identity_usable as alan_native_identity_usable
 
 
 def host_command(host, *command, capture_output=False, stdout=None):
-    argv = list(command) if host == os.uname().nodename else [
+    argv = list(command) if host == local_host() else [
         "ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(command)]
     return subprocess.run(argv, text=True, check=True, capture_output=capture_output,
                           stdout=stdout)
@@ -111,7 +110,7 @@ def rename(key):
                                      title="Rename session"))
     if name:
         if session.ref.server.kind == "alan":
-            if session.ref.server.host == os.uname().nodename:
+            if session.ref.server.host == local_host():
                 alan_rename(session.ref.session_id, name)
             else:
                 host_command(session.ref.server.host, "fleet", "alan-rename",
@@ -164,8 +163,8 @@ def refresh_local(key):
     if not key.startswith("alan:"):
         raise SystemExit("refresh requires an Alan-owned session")
     _, host, addr = key.split(":", 2)
-    if host != os.uname().nodename:
-        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+    if host != local_host():
+        raise SystemExit(f"identity is for {host}, not {local_host()}")
     alan_refresh(addr)
 
 
@@ -173,8 +172,8 @@ def refresh_check(key, native_id):
     if not key.startswith("alan:"):
         raise SystemExit("refresh requires an Alan-owned session")
     _, host, addr = key.split(":", 2)
-    if host != os.uname().nodename:
-        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+    if host != local_host():
+        raise SystemExit(f"identity is for {host}, not {local_host()}")
     if not alan_native_identity_usable(addr, native_id):
         raise SystemExit(f"actor {addr} has no usable current native identity")
 

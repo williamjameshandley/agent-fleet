@@ -6,7 +6,7 @@ import socket
 import subprocess
 import re
 
-from .config import RUNTIME, ssh_environment
+from .config import RUNTIME, local_host, ssh_environment
 from .tmux import inventory
 from .remote import find
 from .model import key_host
@@ -103,7 +103,7 @@ def show(key, slot=None):
 
 def command(key):
     host = key_host(key)
-    local = os.uname().nodename
+    local = local_host()
     attach = ["fleet", "attach", key]
     return attach if host == local else ["ssh", "-tt", "-o", "BatchMode=yes", host,
                                          shlex.join(attach)]
@@ -178,8 +178,8 @@ def serve(slot):
 def attach(key):
     if key.startswith("alan:"):
         _, host, addr = key.split(":", 2)
-        if host != os.uname().nodename:
-            raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+        if host != local_host():
+            raise SystemExit(f"identity is for {host}, not {local_host()}")
         actor = next((item for item in alan.actors() if item["addr"] == addr), None)
         if actor is None:
             raise SystemExit(f"Alan actor disappeared: {addr}")
@@ -194,8 +194,8 @@ def attach(key):
             return
         raise SystemExit(f"actor {addr} has no supported attachment")
     host = key_host(key)
-    if host != os.uname().nodename:
-        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+    if host != local_host():
+        raise SystemExit(f"identity is for {host}, not {local_host()}")
     current = [s for s in inventory(host) if s.ref.key == key]
     if len(current) != 1:
         raise SystemExit(f"session identity changed: {key}")

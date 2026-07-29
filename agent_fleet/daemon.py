@@ -8,7 +8,7 @@ import subprocess
 import hashlib
 import time
 
-from .config import HUB, RUNTIME, hosts, ssh_environment
+from .config import HUB, RUNTIME, hosts, local_host, ssh_environment
 from .protocol import decode_message, encode
 from .model import key_host
 
@@ -25,7 +25,7 @@ class Fleet:
 
     async def collect(self, host):
         command = ([sys.executable, "-m", "agent_fleet.cli", "events", "--host", host]
-                   if host == os.uname().nodename
+                   if host == local_host()
                    else ["ssh", "-T", "-o", "BatchMode=yes", host,
                          shlex.join(("fleet", "events", "--host", host))])
         while True:
@@ -154,7 +154,7 @@ class Fleet:
         return {**body, "revision": hashlib.sha256(canonical).hexdigest()}
 
     async def remote_json(self, host, *command):
-        argv = list(command) if host == os.uname().nodename.split(".", 1)[0] else [
+        argv = list(command) if host == local_host() else [
             "ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(command)]
         process = await asyncio.create_subprocess_exec(
             *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -243,7 +243,7 @@ def projection():
 
 
 def snapshot():
-    if os.uname().nodename.split(".", 1)[0] == HUB:
+    if local_host() == HUB:
         return projection()
     return subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", HUB,
                            "fleet projection"], text=True,
@@ -251,7 +251,7 @@ def snapshot():
 
 
 def preview(key, columns=0, lines=0):
-    if os.uname().nodename.split(".", 1)[0] != HUB:
+    if local_host() != HUB:
         raise RuntimeError("pane previews are served by the Lovelace Muster")
     return request(f"preview {key} {columns} {lines}")
 

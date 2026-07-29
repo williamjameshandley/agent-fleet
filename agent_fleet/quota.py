@@ -1,9 +1,8 @@
-import os
 import subprocess
 import sys
 import time
 
-from .config import RUNTIME, hosts
+from .config import RUNTIME, hosts, local_host
 
 
 def tmux(*args):
@@ -24,7 +23,7 @@ def read():
 
 
 def update():
-    if os.uname().nodename != hosts()[0]:
+    if local_host() != hosts()[0]:
         raise SystemExit("quota collection runs only on the first fleet host")
     errors = []
     for agent in ("claude", "codex"):
