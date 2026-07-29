@@ -132,12 +132,20 @@ def event_stream(host, consumer=None):
                 changed.put("quota" if any(Path(path) == quota_path for _, path in changes)
                             else "transcript")
         threading.Thread(target=transcripts, daemon=True).start()
+    probe = subprocess.run(["tmux", "-N", "list-sessions"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if probe.returncode:
+        raise RuntimeError("tmux server is not running")
     tmux = server()
     if not tmux.has_session("fleet@events"):
-        tmux.new_session("fleet@events", attach=False,
-                         window_command="sleep infinity")
-    process = subprocess.Popen(["tmux", "-C", "attach-session", "-f", "ignore-size",
-                                "-t", "fleet@events"], stdin=subprocess.PIPE,
+        created = subprocess.run(
+            ["tmux", "-N", "new-session", "-d", "-s", "fleet@events", "sleep infinity"],
+            text=True, capture_output=True)
+        if created.returncode:
+            raise RuntimeError(created.stderr.strip())
+    process = subprocess.Popen(["tmux", "-N", "-C", "attach-session",
+                                "-f", "ignore-size", "-t", "fleet@events"],
+                               stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, bufsize=1)
     assert process.stdout and process.stdin

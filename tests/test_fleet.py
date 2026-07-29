@@ -44,6 +44,27 @@ class IdentityTests(unittest.TestCase):
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
 
+    def test_event_collector_cannot_create_tmux_server(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = {
+                **os.environ,
+                "HOME": str(root / "home"),
+                "TMUX_TMPDIR": str(root / "tmux"),
+                "XDG_RUNTIME_DIR": str(root / "runtime"),
+                "PYTHONPATH": str(Path(__file__).parents[1]),
+            }
+            for path in ("home", "tmux", "runtime"):
+                (root / path).mkdir()
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from agent_fleet.tmux import event_stream; next(event_stream('fixture'))"],
+                text=True, capture_output=True, env=environment)
+            socket_path = root / "tmux" / f"tmux-{os.getuid()}" / "default"
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("tmux server is not running", result.stderr)
+            self.assertFalse(socket_path.exists())
+
     def muster_state(self, matches, count=None):
         state = json.dumps({"matches": matches,
                             "matchCount": len(matches) if count is None else count})
