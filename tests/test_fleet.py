@@ -32,6 +32,7 @@ from agent_fleet import viewer
 from agent_fleet import workstation
 from agent_fleet import tmux
 from agent_fleet import ui
+from agent_fleet import cli
 from agent_fleet.daemon import Fleet
 
 
@@ -169,7 +170,7 @@ class IdentityTests(unittest.TestCase):
                 "addr": "codex-one", "type": "codex", "state": "waiting",
                 "label": "needle row", "cwd": str(root), "created": 1,
                 "native": {"id": "native-one"},
-                "attachment": {"kind": "none"},
+                "attachment": {"kind": "tmux", "session": "fleet@codex-one"},
             }
             updated = {**initial, "label": "new needle"}
 
@@ -333,25 +334,39 @@ class IdentityTests(unittest.TestCase):
                     ["tmux", "kill-server"], env=environment,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    def test_alan_inventory_includes_python(self):
-        actors = alan_inventory("newton", [{
-            "addr": "python-deadbeef", "type": "python", "state": "live",
-            "label": "notebook", "cwd": "/work", "native": {"id": "kernel-1"},
-            "attachment": {"kind": "jupyter", "connection_file": "/run/kernel.json"},
-        }])
-        self.assertEqual(len(actors), 1)
-        self.assertEqual(actors[0].agent, "python")
-        self.assertEqual(actors[0].attachment["kind"], "jupyter")
-
-    def test_alan_inventory_includes_busy_headless_python_actor(self):
-        actors = alan_inventory("lovelace", [{
-            "addr": "python-1", "type": "python", "state": "busy",
-            "label": "analysis", "cwd": None, "native": None,
-            "attachment": {"kind": "none"},
-        }])
-        self.assertEqual(len(actors), 1)
-        self.assertEqual(actors[0].state, "working")
-        self.assertEqual(actors[0].attachment["kind"], "none")
+    def test_alan_inventory_preserves_the_presentation_backed_interface(self):
+        visible = {
+            "addr": "codex-current", "type": "codex", "state": "waiting",
+            "label": "current", "native": {"id": "thread-1"},
+            "attachment": {"kind": "tmux", "session": "fleet@codex-current"},
+        }
+        claude = {
+            "addr": "claude-current", "type": "claude", "state": "working",
+            "label": "claude", "native": {"id": "session-1"},
+            "attachment": {"kind": "tmux", "session": "fleet@claude-current"},
+        }
+        hidden = [
+            {"addr": "claude-home-1", "type": "claude", "state": "unavailable",
+             "label": "alan-home_1", "attachment": {"kind": "none"}},
+            {"addr": "claude-home-1b", "type": "claude", "state": "unavailable",
+             "label": "alan-home_1b", "attachment": {"kind": "none"}},
+            {"addr": "codex-headless", "type": "codex", "state": "waiting",
+             "attachment": {"kind": "none"}},
+            {"addr": "python-live", "type": "python", "state": "live",
+             "attachment": {"kind": "jupyter", "connection_file": "/run/kernel.json"}},
+            {"addr": "llm-live", "type": "llm", "state": "waiting",
+             "attachment": {"kind": "none"}},
+            {"addr": "codex-failed", "type": "codex", "state": "failed",
+             "attachment": visible["attachment"]},
+            {"addr": "claude-retired", "type": "claude", "state": "retired",
+             "attachment": claude["attachment"]},
+            {"addr": "codex-review", "type": "codex", "state": "waiting",
+             "profile": {"view": [], "net": "none"},
+             "attachment": visible["attachment"]},
+        ]
+        actors = alan_inventory("lovelace", [visible, *hidden, claude])
+        self.assertEqual([actor.ref.session_id for actor in actors],
+                         ["codex-current", "claude-current"])
 
     def test_alan_inventory_preserves_needs_action_and_human_activity(self):
         actor = alan_inventory("lovelace", [{
@@ -448,16 +463,16 @@ class IdentityTests(unittest.TestCase):
         descriptor = {
             "addr": "codex-1", "type": "codex", "state": "live",
             "label": "review", "cwd": "/work", "native": {"id": "thread-1"},
-            "attachment": {"kind": "none"}}
+            "attachment": actor.attachment}
         with mock.patch("agent_fleet.viewer.alan.actors",
                         return_value=[descriptor]), \
-             mock.patch("agent_fleet.viewer.alan.present",
-                        return_value=actor.attachment) as present, \
+             mock.patch("agent_fleet.viewer.alan.attachment",
+                        return_value=actor.attachment) as attachment, \
              mock.patch("agent_fleet.viewer.subprocess.run",
                         return_value=mock.Mock(stdout="thread-1\n")), \
              mock.patch("os.execvp") as execute:
             viewer.attach(actor.ref.key)
-        present.assert_called_once_with("codex-1")
+        attachment.assert_called_once_with("codex-1")
         execute.assert_called_once_with(
             "tmux", ["tmux", "attach-session", "-t", "fleet@codex-review-1"])
 
@@ -527,15 +542,24 @@ class IdentityTests(unittest.TestCase):
     def test_create_materializes_codex_as_an_alan_actor(self):
         host = os.uname().nodename
         with mock.patch("agent_fleet.actions.muster_input",
-                        side_effect=[host, "codex", "analysis.", "/work"]), \
+                        side_effect=[host, "codex", "analysis.", "/work"]) as prompt, \
              mock.patch("agent_fleet.actions.host_command") as run, \
              mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
-            run.return_value.stdout = "codex-deadbeef\n"
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, stdout="codex-deadbeef\n"),
+                subprocess.CompletedProcess([], 0, stdout='{"kind":"tmux"}\n'),
+            ]
             actions.create()
-        run.assert_called_once_with(
-            host, "alan-create", "codex", "analysis", "/work",
-            stdout=subprocess.PIPE)
+        self.assertEqual(
+            prompt.call_args_list[1],
+            mock.call("agent", ("codex", "claude"), context=host))
+        self.assertEqual(run.call_args_list, [
+            mock.call(host, "alan-create", "codex", "analysis", "/work",
+                      stdout=subprocess.PIPE),
+            mock.call(host, "fleet", "alan-present", "codex-deadbeef",
+                      stdout=subprocess.DEVNULL),
+        ])
         wait.assert_called_once_with(f"alan:{host}:codex-deadbeef")
         show.assert_called_once_with(f"alan:{host}:codex-deadbeef")
 
@@ -549,40 +573,64 @@ class IdentityTests(unittest.TestCase):
              "alan-create codex work /work"],
             text=True, check=True, capture_output=False, stdout=subprocess.PIPE)
 
-    def test_create_materializes_python_as_an_alan_actor(self):
+    def test_remote_present_leaves_failure_output_visible(self):
+        host = "newton" if os.uname().nodename != "newton" else "lovelace"
+        with mock.patch("agent_fleet.actions.subprocess.run") as run:
+            actions.host_command(host, "fleet", "alan-present", "codex-1",
+                                 stdout=subprocess.DEVNULL)
+        run.assert_called_once_with(
+            ["ssh", "-T", "-o", "BatchMode=yes", host,
+             "fleet alan-present codex-1"],
+            text=True, check=True, capture_output=False, stdout=subprocess.DEVNULL)
+
+    def test_create_uses_claudes_existing_provider_presentation(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
         with mock.patch("agent_fleet.actions.muster_input",
-                        side_effect=[host, "python", "notebook", "/work"]) as prompt, \
+                        side_effect=[host, "claude", "analysis", "/work"]) as prompt, \
              mock.patch("agent_fleet.actions.host_command") as run, \
              mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
-            run.return_value.stdout = "python-deadbeef\n"
+            run.return_value.stdout = "claude-deadbeef\n"
             actions.create()
         self.assertEqual(
             prompt.call_args_list[1],
-            mock.call("agent", ("python", "codex", "claude"), context=host))
+            mock.call("agent", ("codex", "claude"), context=host))
         run.assert_called_once_with(
-            host, "alan-create", "python", "notebook", "/work",
+            host, "alan-create", "claude", "analysis", "/work",
             stdout=subprocess.PIPE)
-        wait.assert_called_once_with(f"alan:{host}:python-deadbeef")
-        show.assert_called_once_with(f"alan:{host}:python-deadbeef")
+        wait.assert_called_once_with(f"alan:{host}:claude-deadbeef")
+        show.assert_called_once_with(f"alan:{host}:claude-deadbeef")
         self.assertNotIn('"tmux", "new-session"',
                          (Path(__file__).parents[1] / "agent_fleet/actions.py").read_text())
+
+    def test_alan_present_command_uses_the_canonical_client(self):
+        attachment = {"kind": "tmux", "session": "fleet@codex-work"}
+        output = io.StringIO()
+        with mock.patch.object(sys, "argv",
+                               ["fleet", "alan-present", "codex-1"]), \
+             mock.patch("agent_fleet.cli.alan_present",
+                        return_value=attachment) as present, \
+             contextlib.redirect_stdout(output):
+            cli.main()
+        present.assert_called_once_with("codex-1")
+        self.assertEqual(json.loads(output.getvalue()), attachment)
 
     def test_fleet_package_requires_the_canonical_alan_client(self):
         package = (Path(__file__).parents[1] / "PKGBUILD").read_text()
         self.assertIn(
-            "depends=('alan>=1:2.0.0.a11.r1785279801.gddf433c' ", package)
+            "depends=('alan>=1:2.0.0.a11.r1785282507.gee53cbf' ", package)
 
-    def test_projection_readiness_does_not_require_a_presentation(self):
+    def test_projection_readiness_waits_for_a_presented_actor(self):
         actor = alan_inventory("lovelace", [{
             "addr": "codex-1", "type": "codex", "state": "waiting",
-            "native": {"id": "thread-1"}, "attachment": {"kind": "none"},
+            "native": {"id": "thread-1"},
+            "attachment": {"kind": "tmux", "session": "fleet@codex-1"},
         }])[0]
-        with mock.patch("agent_fleet.actions.find", return_value=actor), \
+        with mock.patch("agent_fleet.actions.find",
+                        side_effect=[SystemExit(), actor]), \
              mock.patch("agent_fleet.actions.time.sleep") as sleep:
             actions.wait_for_projection(actor.ref.key, "thread-1")
-        sleep.assert_not_called()
+        sleep.assert_called_once_with(.1)
 
     def test_tmux_name_normalization_preserves_spaces(self):
         self.assertEqual(session_name(" Test session. "), "Test session")

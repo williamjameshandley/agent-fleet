@@ -80,7 +80,7 @@ def create_tab():
 
 def create():
     host = muster_input("host", hosts())
-    agent = muster_input("agent", ("python", "codex", "claude"),
+    agent = muster_input("agent", ("codex", "claude"),
                          context=host)
     name = session_name(muster_input("name", context=f"{host} · {agent}"))
     cwd = muster_input("directory", initial=str(Path.home()),
@@ -89,7 +89,11 @@ def create():
         raise SystemExit("session name is required")
     result = host_command(host, "alan-create", agent, name, cwd,
                           stdout=subprocess.PIPE)
-    key = f"alan:{host}:{result.stdout.strip()}"
+    addr = result.stdout.strip()
+    key = f"alan:{host}:{addr}"
+    if agent == "codex":
+        host_command(host, "fleet", "alan-present", addr,
+                     stdout=subprocess.DEVNULL)
     wait_for_projection(key)
     viewer.open_main(key)
 

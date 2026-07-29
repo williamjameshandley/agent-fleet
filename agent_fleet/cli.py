@@ -13,7 +13,7 @@ from .tmux import capture, event_stream, inventory, mutate
 from .config import hosts
 from .transcripts import history as transcript_history, resume, verify as transcript_verify
 from .alan import (actors as alan_actors, retire as alan_retire, resume as alan_resume,
-                   rename as alan_rename)
+                   rename as alan_rename, present as alan_present)
 
 
 def events(args):
@@ -122,6 +122,8 @@ def main():
     item = command("alan-retire", lambda a: alan_retire(a.addr))
     item.add_argument("addr")
     item = command("alan-resume", lambda a: print(alan_resume(a.addr)))
+    item.add_argument("addr")
+    item = command("alan-present", lambda a: print(json.dumps(alan_present(a.addr))))
     item.add_argument("addr")
     command("next-waiting", lambda _: actions.next_waiting())
     for name, fn in (("rename", actions.rename), ("archive", actions.archive_report),

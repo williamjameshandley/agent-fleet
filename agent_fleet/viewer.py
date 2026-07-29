@@ -183,9 +183,7 @@ def attach(key):
         actor = next((item for item in alan.actors() if item["addr"] == addr), None)
         if actor is None:
             raise SystemExit(f"Alan actor disappeared: {addr}")
-        attachment = (alan.present(addr)
-                      if actor.get("type") in {"python", "codex"}
-                      else alan.attachment(addr))
+        attachment = alan.attachment(addr)
         if attachment.get("kind") == "tmux":
             generation = subprocess.run(
                 ["tmux", "show-options", "-v", "-t", attachment["session"],

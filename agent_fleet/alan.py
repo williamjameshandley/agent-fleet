@@ -47,13 +47,15 @@ def inventory(host, actors):
     source = ServerRef(host, "", 0, 0, "alan")
     sessions = []
     for actor in actors:
-        if (actor.get("type") not in {"python", "claude", "codex"} or
+        if (actor.get("type") not in {"claude", "codex"} or
                 actor.get("profile") is not None):
             continue
         state = actor.get("state", "live")
-        if state in {"retired", "failed"}:
+        if state in {"retired", "failed", "unavailable"}:
             continue
         attachment = actor.get("attachment") or {"kind": "none"}
+        if attachment.get("kind") == "none":
+            continue
         reported_state = ("working" if state in {"busy", "working", "starting"} else
                           "needs-action" if state == "needs-action" else "waiting")
         sessions.append(Session(
