@@ -405,7 +405,7 @@ class IdentityTests(unittest.TestCase):
         ]
         actors = alan_inventory("lovelace", [visible, *hidden, claude])
         self.assertEqual([actor.ref.session_id for actor in actors],
-                         ["codex-current", "claude-current"])
+                         ["codex-current", "codex-review", "claude-current"])
 
     def test_alan_inventory_preserves_needs_action_and_human_activity(self):
         actor = alan_inventory("lovelace", [{

@@ -50,8 +50,7 @@ def inventory(host, actors):
     source = ServerRef(host, "", 0, 0, "alan")
     sessions = []
     for actor in actors:
-        if (actor.get("type") not in {"claude", "codex"} or
-                actor.get("profile") is not None):
+        if actor.get("type") not in {"claude", "codex"}:
             continue
         state = actor.get("state", "live")
         if state in {"retired", "failed", "unavailable"}:
