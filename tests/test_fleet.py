@@ -24,6 +24,7 @@ from agent_fleet.ui import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.tmux import split_key
 from agent_fleet.actions import next_waiting_key, session_name
 from agent_fleet import actions
+from agent_fleet import alan
 from agent_fleet.config import machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
 from agent_fleet.alan import Watcher as AlanWatcher
@@ -435,6 +436,16 @@ class IdentityTests(unittest.TestCase):
             alan_refresh("codex-1")
         refresh.assert_called_once_with("codex-1")
 
+    def test_alan_create_composes_spawn_and_presentation(self):
+        with mock.patch("agent_fleet.alan.loop.spawn",
+                        return_value="claude-1") as spawn, \
+             mock.patch("agent_fleet.alan.loop.present") as present:
+            self.assertEqual(
+                alan.create("claude", "analysis", "/work"),
+                "claude-1")
+        spawn.assert_called_once_with("claude", label="analysis", cwd="/work")
+        present.assert_called_once_with("claude-1")
+
     def test_alan_open_returns_at_alans_native_ready_boundary(self):
         archived = {"addr": "codex-1", "type": "codex", "state": "retired",
                     "native": {"id": "thread-1"}, "attachment": {"kind": "none"}}
@@ -590,7 +601,7 @@ class IdentityTests(unittest.TestCase):
             prompt.call_args_list[1],
             mock.call("agent", ("codex", "claude"), context=host))
         run.assert_called_once_with(
-            host, "alan-create", "--present", "codex", "analysis", "/work",
+            host, "fleet", "actor-create", "codex", "analysis", "/work",
             stdout=subprocess.PIPE)
         wait.assert_called_once_with(f"alan:{host}:codex-deadbeef")
         show.assert_called_once_with(f"alan:{host}:codex-deadbeef")
@@ -598,12 +609,12 @@ class IdentityTests(unittest.TestCase):
     def test_remote_creator_is_batch_mode_and_leaves_failure_output_visible(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
         with mock.patch("agent_fleet.actions.subprocess.run") as run:
-            actions.host_command(host, "alan-create", "--present", "codex",
+            actions.host_command(host, "fleet", "actor-create", "codex",
                                  "work tree;safe", "/work dir/$literal",
                                  stdout=subprocess.PIPE)
         run.assert_called_once_with(
             ["ssh", "-T", "-o", "BatchMode=yes", host,
-             "alan-create --present codex 'work tree;safe' '/work dir/$literal'"],
+             "fleet actor-create codex 'work tree;safe' '/work dir/$literal'"],
             text=True, check=True, capture_output=False, stdout=subprocess.PIPE)
 
     def test_create_uses_claudes_existing_provider_presentation(self):
@@ -619,7 +630,7 @@ class IdentityTests(unittest.TestCase):
             prompt.call_args_list[1],
             mock.call("agent", ("codex", "claude"), context=host))
         run.assert_called_once_with(
-            host, "alan-create", "claude", "analysis", "/work",
+            host, "fleet", "actor-create", "claude", "analysis", "/work",
             stdout=subprocess.PIPE)
         wait.assert_called_once_with(f"alan:{host}:claude-deadbeef")
         show.assert_called_once_with(f"alan:{host}:claude-deadbeef")

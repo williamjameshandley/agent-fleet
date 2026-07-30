@@ -103,8 +103,8 @@ Fleet displays and creates user-facing Python, Codex and Claude actors. Direct
 `llm` and reviewer actors remain outside the session UI. There is no native
 Alan Gemini actor. Already-running standalone Gemini terminals remain ordinary
 legacy tmux rows.
-Muster collects the creation fields and invokes that host's local
-`alan-create`; Alan owns creation and returns only after native readiness.
+Muster collects the creation fields and asks that host's Fleet process to call
+Alan's canonical Python `spawn` and `present` operations.
 Ordinary shell sessions remain directly available through tmux rather than
 through Fleet's creator. Refresh replaces an idle Alan Claude or Codex provider
 at the same actor and vendor identity; Fleet does not bare-resume standalone

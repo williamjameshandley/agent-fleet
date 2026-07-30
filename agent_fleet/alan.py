@@ -76,6 +76,12 @@ def actors():
     return loop.list()
 
 
+def create(kind, label, cwd):
+    addr = loop.spawn(kind, label=label, cwd=cwd)
+    loop.present(addr)
+    return addr
+
+
 def retire(addr):
     loop.retire(addr)
 

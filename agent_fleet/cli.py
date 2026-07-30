@@ -12,8 +12,8 @@ from .quota import read as quota_read, update as quota_update
 from .tmux import capture, event_stream, inventory, mutate
 from .config import hosts
 from .transcripts import history as transcript_history, resume, verify as transcript_verify
-from .alan import (actors as alan_actors, retire as alan_retire, resume as alan_resume,
-                   rename as alan_rename)
+from .alan import (actors as alan_actors, create as alan_create, retire as alan_retire,
+                   resume as alan_resume, rename as alan_rename)
 
 
 def events(args):
@@ -118,6 +118,10 @@ def main():
     item = command("alan-rename", lambda a: alan_rename(a.addr, a.label))
     item.add_argument("addr")
     item.add_argument("label")
+    item = command("actor-create", lambda a: print(alan_create(a.kind, a.label, a.cwd)))
+    item.add_argument("kind", choices=("claude", "codex"))
+    item.add_argument("label")
+    item.add_argument("cwd")
     command("alan-actors", lambda _: print(json.dumps(alan_actors())))
     item = command("alan-retire", lambda a: alan_retire(a.addr))
     item.add_argument("addr")
