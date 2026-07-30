@@ -2,10 +2,14 @@ import asyncio
 import hashlib
 import io
 import json
+import tempfile
+import threading
 import unittest
-from unittest import mock
+from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
+from agent_fleet import alan
 from agent_fleet.commander import validate_proposal
 from agent_fleet import commander_client
 from agent_fleet.commander_client import related, render
@@ -174,6 +178,74 @@ class ProposalTests(unittest.TestCase):
         peer.assert_called_once_with()
         current_end.assert_called_once_with("socket-peer")
         self.assertEqual(request.call_args.args[0]["kind"], "commander_request")
+
+
+class CommanderActorTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.environment = mock.patch.dict(
+            "os.environ", {"XDG_CONFIG_HOME": self.tempdir.name}
+        )
+        self.environment.start()
+
+    def tearDown(self):
+        self.environment.stop()
+        self.tempdir.cleanup()
+
+    def test_first_request_creates_and_reuses_an_ordinary_actor(self):
+        with self.subTest("first use"), \
+             mock.patch.object(alan.loop, "spawn", return_value="llm-commander") as spawn, \
+             mock.patch.object(alan.loop, "commander_request",
+                               return_value={"envelope_id": "llm-commander#0"}) as request:
+            alan.commander_request({"kind": "commander_request"})
+
+        spawn.assert_called_once_with("llm", personality="commander")
+        request.assert_called_once_with("llm-commander", {"kind": "commander_request"})
+
+        with mock.patch.object(alan.loop, "spawn") as spawn, \
+             mock.patch.object(alan.loop, "commander_request") as request:
+            alan.commander_request({"kind": "commander_request"})
+
+        spawn.assert_not_called()
+        request.assert_called_once_with("llm-commander", {"kind": "commander_request"})
+
+    def test_operator_supplied_actor_is_used(self):
+        path = Path(self.tempdir.name) / "agent-fleet" / "commander-actor"
+        path.parent.mkdir()
+        path.write_text("llm-operator\n")
+
+        with mock.patch.object(alan.loop, "spawn") as spawn:
+            self.assertEqual(alan.commander_actor(), "llm-operator")
+
+        spawn.assert_not_called()
+
+    def test_concurrent_first_use_creates_one_actor(self):
+        creating = threading.Event()
+        release = threading.Event()
+        results = []
+
+        def spawn(*_args, **_kwargs):
+            creating.set()
+            release.wait()
+            return "llm-commander"
+
+        def resolve():
+            results.append(alan.commander_actor())
+
+        with mock.patch.object(alan.loop, "spawn", side_effect=spawn) as create:
+            first = threading.Thread(target=resolve)
+            second = threading.Thread(target=resolve)
+            first.start()
+            self.assertTrue(creating.wait(1))
+            second.start()
+            release.set()
+            first.join(1)
+            second.join(1)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(results, ["llm-commander", "llm-commander"])
+        create.assert_called_once_with("llm", personality="commander")
 
 
 if __name__ == "__main__":

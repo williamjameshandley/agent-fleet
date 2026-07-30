@@ -1,5 +1,8 @@
+import fcntl
+import os
 import threading
 import time
+from pathlib import Path
 
 import loop
 
@@ -121,4 +124,23 @@ def peer():
 
 
 def commander_request(request):
-    return loop.commander_request(request)
+    return loop.commander_request(commander_actor(), request)
+
+
+def commander_actor():
+    config = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    path = config / "agent-fleet" / "commander-actor"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as address_file:
+        fcntl.flock(address_file, fcntl.LOCK_EX)
+        address_file.seek(0)
+        addr = address_file.read().strip()
+        if addr:
+            return addr
+        addr = loop.spawn("llm", personality="commander")
+        address_file.seek(0)
+        address_file.truncate()
+        address_file.write(addr + "\n")
+        address_file.flush()
+        os.fsync(address_file.fileno())
+        return addr
