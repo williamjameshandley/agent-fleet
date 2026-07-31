@@ -138,6 +138,18 @@ def test_alan_claude_transcript_uses_native_identity_and_cwd(tmp_path, monkeypat
     assert native_transcript(session).path == path
 
 
+def test_native_evidence_uses_the_recorded_non_default_path(tmp_path):
+    path = tmp_path / "private-corpus" / "rollout-thread-1.jsonl"
+    path.parent.mkdir()
+    path.write_text("{}\n")
+    item = transcripts.native_evidence({
+        "kind": "codex",
+        "thread_id": "thread-1",
+        "path": str(path),
+    })
+    assert item.path == path
+
+
 def test_preview_renders_recent_native_conversation(tmp_path, monkeypatch):
     path = tmp_path / "rollout-thread-1.jsonl"
     path.write_text("".join(json.dumps(event) + "\n" for event in [
@@ -146,7 +158,7 @@ def test_preview_renders_recent_native_conversation(tmp_path, monkeypatch):
         {"type": "event_msg", "payload": {
             "type": "agent_message", "message": "working on it"}},
     ]))
-    native = type("Native", (), {"path": path})()
+    native = transcripts.transcript("codex", path)
     monkeypatch.setattr(transcripts, "find", lambda session_id, agent: native)
 
     assert preview("codex", "thread-1", columns=80, lines=20) == (
@@ -158,7 +170,7 @@ def test_claude_preview_keeps_only_the_last_eight_messages(tmp_path, monkeypatch
     path.write_text("".join(json.dumps({
         "type": "user", "message": {"content": f"message {index}"}}) + "\n"
         for index in range(10)))
-    native = type("Native", (), {"path": path})()
+    native = transcripts.transcript("claude", path)
     monkeypatch.setattr(transcripts, "find", lambda session_id, agent: native)
 
     rendered = preview("claude", "session-1")

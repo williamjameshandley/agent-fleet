@@ -13,8 +13,6 @@ from .protocol import decode_message
 from . import viewer
 from . import workstation
 from .alan import rename as alan_rename
-from .alan import refresh as alan_refresh
-from .alan import native_identity_usable as alan_native_identity_usable
 
 
 def host_command(host, *command, capture_output=False, stdout=None):
@@ -90,7 +88,7 @@ def create():
     result = host_command(host, "fleet", "actor-create", agent, name, cwd,
                           stdout=subprocess.PIPE)
     addr = result.stdout.strip()
-    key = f"alan:{host}:{addr}"
+    key = f"alan:{addr}"
     wait_for_projection(key)
     viewer.open_main(key)
 
@@ -157,25 +155,6 @@ def archive_report(key):
         raise SystemExit(reason)
 
 
-def refresh_local(key):
-    if not key.startswith("alan:"):
-        raise SystemExit("refresh requires an Alan-owned session")
-    _, host, addr = key.split(":", 2)
-    if host != os.uname().nodename:
-        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
-    alan_refresh(addr)
-
-
-def refresh_check(key, native_id):
-    if not key.startswith("alan:"):
-        raise SystemExit("refresh requires an Alan-owned session")
-    _, host, addr = key.split(":", 2)
-    if host != os.uname().nodename:
-        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
-    if not alan_native_identity_usable(addr, native_id):
-        raise SystemExit(f"actor {addr} has no usable current native identity")
-
-
 def wait_for_projection(key, native_id=None):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -189,80 +168,6 @@ def wait_for_projection(key, native_id=None):
             return
         time.sleep(.1)
     raise RuntimeError(f"Fleet projection did not restore {key}")
-
-
-def refresh(key):
-    session = find(key)
-    shown = [slot for slot, source in viewer.slots() if source == key]
-    try:
-        host_command(session.ref.server.host, "fleet", "refresh-local", key,
-                     capture_output=True)
-    except subprocess.CalledProcessError as failure:
-        try:
-            host_command(session.ref.server.host, "fleet", "refresh-check", key,
-                         session.transcript_id, capture_output=True)
-        except subprocess.CalledProcessError:
-            pass
-        else:
-            for slot in shown:
-                viewer.request(slot, key)
-        raise failure
-    else:
-        wait_for_projection(key, session.transcript_id)
-        for slot in shown:
-            viewer.request(slot, key)
-
-
-def refresh_report(key):
-    try:
-        refresh(key)
-    except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
-        reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
-                  and error.stderr else str(error))
-        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
-                        f"Refresh failed: {reason}"])
-        raise SystemExit(reason)
-
-
-def refresh_all():
-    sessions, _, unavailable = decode_message(snapshot())
-    failed = False
-    for session in sorted(sessions, key=lambda item: item.ref.key):
-        key = session.ref.key
-        reason = None
-        if session.ref.server.host in unavailable:
-            reason = "unavailable"
-        elif session.agent not in {"claude", "codex"}:
-            reason = f"unsupported-{session.agent}"
-        elif session.state != "waiting":
-            reason = session.state
-        elif session.windows != 1:
-            reason = f"windows-{session.windows}"
-        elif not session.transcript_id:
-            reason = "no-durable-identity"
-        if reason:
-            print(f"{key}\tskipped: {reason}")
-            continue
-        try:
-            refresh(key)
-        except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
-            detail = (error.stderr.strip()
-                      if isinstance(error, subprocess.CalledProcessError) and error.stderr
-                      else str(error))
-            detail = " ".join(detail.split())
-            print(f"{key}\tfailed: {detail}")
-            failed = True
-        else:
-            print(f"{key}\trefreshed")
-    if failed:
-        raise SystemExit(1)
-
-
-def refresh_command(key, all_sessions):
-    if all_sessions:
-        refresh_all()
-    else:
-        refresh_report(key)
 
 
 def next_waiting_key(sessions, active):
@@ -299,13 +204,13 @@ def history():
         result = host_command(host, "fleet", "alan-actors", capture_output=True)
         for actor in json.loads(result.stdout):
             native_id = (actor.get("native") or {}).get("id")
-            identity = (host, actor.get("type"), native_id)
-            if (actor.get("type") in {"claude", "codex"} and native_id and
-                    actor.get("state") in {"retired", "failed"}):
+            identity = (host, actor.get("kind"), native_id)
+            if (actor.get("kind") in {"claude", "codex"} and native_id and
+                    actor.get("state") in {"retired", "unavailable"}):
                 authorities.add(identity)
-                key = f'alan:{host}:{actor["addr"]}'
+                key = f'alan:{actor["addr"]}'
                 mtime = max(actor.get("human_activity", 0), actor.get("created", 0))
-                rows.append((mtime, key, host, actor["type"],
+                rows.append((mtime, key, host, actor["kind"],
                              actor.get("label") or actor["addr"], actor.get("cwd") or ""))
         result = host_command(host, "fleet", "transcripts", "--limit", "100",
                               capture_output=True)
@@ -320,7 +225,8 @@ def history():
 
 def open_history(key):
     if key.startswith("alan:"):
-        _, host, addr = key.split(":", 2)
+        addr = key.removeprefix("alan:")
+        host = addr.rsplit("@", 1)[1]
         host_command(host, "fleet", "alan-resume", addr, capture_output=True)
         wait_for_projection(key)
         viewer.open_main(key)

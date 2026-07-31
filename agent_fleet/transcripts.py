@@ -125,10 +125,14 @@ def event_text(agent, event, role):
 
 
 def preview(agent, session_id, columns=0, lines=0):
+    return render_preview(find(session_id, agent), columns, lines)
+
+
+def render_preview(item, columns=0, lines=0):
     messages = deque()
-    for event in reverse_events(find(session_id, agent).path):
+    for event in reverse_events(item.path):
         for role in ("user", "assistant"):
-            if text := event_text(agent, event, role):
+            if text := event_text(item.agent, event, role):
                 messages.appendleft((role, text.strip()))
                 break
         if len(messages) == 8:
@@ -144,6 +148,13 @@ def preview(agent, session_id, columns=0, lines=0):
     if lines:
         rendered = "\n".join(rendered.splitlines()[-lines:])
     return rendered + ("\n" if rendered else "")
+
+
+def native_evidence(native):
+    path = Path(native["path"])
+    if not path.exists():
+        raise RuntimeError(f"{native['kind']} native evidence disappeared: {path}")
+    return transcript(native["kind"], path)
 
 
 def reverse_events(path):
@@ -202,8 +213,8 @@ def native_transcript(session):
         return transcript("claude", path) if path.exists() else None
     if session.agent == "codex":
         matches = list(CODEX.glob(f"*/*/*/rollout-*{session.transcript_id}.jsonl"))
-        if matches:
-            return transcript("codex", max(matches, key=lambda path: path.stat().st_mtime))
+        if len(matches) == 1:
+            return transcript("codex", matches[0])
     return None
 
 

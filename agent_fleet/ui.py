@@ -54,8 +54,8 @@ def rows(include_header=True):
         marker = ("?" if session.ref.server.host in unavailable else
                   {"needs-action": "!", "working": "*", "waiting": ".",
                    "finished": "-"}[session.state])
-        agent = {"claude": "C", "codex": "X", "python": "P", "gemini": "G",
-                 "multiple": "M", "shell": ""}[session.agent]
+        agent = {"codex": "X", "shell": ""}.get(
+            session.agent, session.agent[:1].upper())
         summary = " ".join((session.summary or session.title).split())
         summary = re.sub(r"^[\u2800-\u28ff✳●*]+\s*", "", summary)
         room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 20 - 1)
@@ -106,8 +106,8 @@ def muster():
         f"--footer={footer()}",
         "--footer-border=bottom",
         "--bind=start:unbind(esc)",
-        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k)+rebind(esc)",
-        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k)",
+        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,d,x,j,k)+rebind(esc)",
+        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,d,x,j,k)",
         "--bind=j:down,k:up",
         "--bind=load:transform(fleet cursor)+unbind(load)",
         "--bind=enter:execute-silent(fleet show --slot main {1})",
@@ -115,7 +115,6 @@ def muster():
         "--bind=double-click:execute-silent(fleet show --slot main {1})",
         "--bind=c:execute-silent(fleet create-tab)",
         "--bind=r:execute-silent(fleet rename-tab {1})",
-        "--bind=R:execute-silent(fleet refresh {1})+reload-sync(fleet items)",
         "--bind=x:execute-silent(fleet archive {1})+reload-sync(fleet items)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:history)",
@@ -135,7 +134,7 @@ def header():
 
 
 def footer():
-    hints = ("Enter open  c create  r rename  R refresh  x archive")
+    hints = ("Enter open  c create  r rename  x archive")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)

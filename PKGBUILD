@@ -44,6 +44,6 @@ package() {
   install -Dm644 "$startdir/fleet.service" "$pkgdir/usr/lib/systemd/user/fleet.service"
   install -Dm644 "$startdir/fleet-quota.service" "$pkgdir/usr/lib/systemd/user/fleet-quota.service"
   install -Dm644 "$startdir/fleet-quota.timer" "$pkgdir/usr/lib/systemd/user/fleet-quota.timer"
-  install -Dm644 "$startdir/personas/commander.md" "$pkgdir/usr/share/alan/personas/commander.md"
+  install -Dm644 "$startdir/presets/commander.md" "$pkgdir/usr/share/alan/presets/commander.md"
   install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

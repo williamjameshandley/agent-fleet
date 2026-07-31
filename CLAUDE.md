@@ -5,13 +5,15 @@ across machines, operable with one hand and eventually none.
 
 ## The source is the view
 
-- A viewer attaches to the requested tmux terminal session, including standalone
-  vendor terminals, or Alan Claude/Codex actor. There is no Main
+- A viewer attaches to the requested tmux terminal session or Fleet's
+  conversational REPL for an Alan actor. There is no Main
   mirror, linked observer, copied window, numbered join or parallel ordering.
 - tmux owns terminal sessions, windows, panes and focus. Alan owns actor
-  lifecycle, mailboxes and native attachment descriptors. Fleet has no topology DB.
+  lifecycle and append-only operation streams. Fleet derives actor state and
+  native-evidence references from Alan's observation graph and owns labels and
+  presentation. Fleet has no topology DB.
 - Canonical identity is a tagged source reference: host, socket, server PID,
-  server start time and tmux object ID; or Alan host and actor address. Names,
+  server start time and tmux object ID; or an Alan host-bound actor address. Names,
   indices and rows are never identity.
 - Agent status and summaries are derived, disposable projections.
 - fzf renders and selects stable IDs. It is not authoritative state.

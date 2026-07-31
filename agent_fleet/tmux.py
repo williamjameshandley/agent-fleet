@@ -15,9 +15,10 @@ from .model import ServerRef, Session, SessionRef
 from .agent import observe
 from .config import RUNTIME
 from .alan import Watcher as AlanWatcher, inventory as alan_inventory
+from . import alan
+from .transcripts import native_evidence, render_preview
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
-_alan_attachments = {}
 
 
 def server():
@@ -53,24 +54,19 @@ def mutate(key, operation, arguments):
 
 def capture(key, columns=0, lines=0):
     if key.startswith("alan:"):
-        _, host, addr = key.split(":", 2)
-        if host != os.uname().nodename:
-            raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
-        attachment = _alan_attachments.get(addr)
-        if attachment is None:
+        addr = key.removeprefix("alan:")
+        actor = next((item for item in alan.actors()
+                      if item["addr"] == addr), None)
+        if actor is None:
             raise RuntimeError(f"Alan actor disappeared: {addr}")
-        if attachment.get("kind") != "tmux":
-            raise RuntimeError(f"Alan actor {addr} has no tmux presentation")
-        tmux = server()
-        name = attachment["session"]
-        generation = attachment.get("generation", "")
-        if tmux.cmd("show-options", "-v", "-t", name,
-                    "@fleet_generation").stdout != [generation]:
-            raise RuntimeError(f"stale Alan presentation: {addr}")
-        session = next((item for item in tmux.sessions if item.session_name == name), None)
-        if session is None:
-            raise RuntimeError(f"Alan presentation disappeared: {addr}")
-        return capture_pane(session, columns, lines)
+        native = actor.get("native")
+        if actor["kind"] in {"claude", "codex"} and native:
+            return render_preview(
+                native_evidence(native),
+                columns,
+                lines,
+            )
+        return alan.preview(addr, columns, lines)
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:
         raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
@@ -171,11 +167,6 @@ def event_stream(host, consumer=None):
             if alan.error and alan.error != alan_error:
                 print(alan.error, file=sys.stderr, flush=True)
             alan_error = alan.error
-            global _alan_attachments
-            _alan_attachments = {
-                actor["addr"]: actor.get("attachment") or {"kind": "none"}
-                for actor in alan.actors
-                if actor.get("type") in {"python", "claude", "codex"}}
             current = inventory(host) + alan_inventory(host, alan.actors)
             try:
                 current = observe(current)
@@ -190,7 +181,7 @@ def event_stream(host, consumer=None):
                            for session in current]
             serial = tuple(current)
             if serial != previous or force:
-                yield current
+                yield current, alan.graph
                 previous = serial
                 force = False
             if consumer and consumer.is_set():

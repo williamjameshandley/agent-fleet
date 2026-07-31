@@ -6,6 +6,7 @@ import threading
 
 from . import actions, ui, viewer, workstation
 from .commander_client import run as commander
+from .presentation import run as actor_view
 from .daemon import Fleet, projection
 from .protocol import encode
 from .quota import read as quota_read, update as quota_update
@@ -38,9 +39,9 @@ def events(args):
             consumer.set()
 
     threading.Thread(target=requests, daemon=True).start()
-    for sessions in event_stream(args.host, consumer):
+    for sessions, graph in event_stream(args.host, consumer):
         usage = quota_read() if args.host == hosts()[0] else {}
-        emit(encode(sessions, usage))
+        emit(encode(sessions, usage, graph=graph))
 
 
 def snapshot(args):
@@ -81,15 +82,6 @@ def main():
     item.add_argument("name")
     item = command("open-history", lambda a: actions.open_history_report(a.key))
     item.add_argument("key")
-    item = command("refresh", lambda a: actions.refresh_command(a.key, a.all_sessions))
-    target = item.add_mutually_exclusive_group(required=True)
-    target.add_argument("key", nargs="?")
-    target.add_argument("--all", dest="all_sessions", action="store_true")
-    item = command("refresh-local", lambda a: actions.refresh_local(a.key))
-    item.add_argument("key")
-    item = command("refresh-check", lambda a: actions.refresh_check(a.key, a.native_id))
-    item.add_argument("key")
-    item.add_argument("native_id")
     item = command("arrive", lambda a: actions.arrive(a.profile, a.available))
     item.add_argument("profile", choices=("laptop", "home", "office"))
     item.add_argument("--available", action="store_true")
@@ -111,6 +103,8 @@ def main():
     item.add_argument("--slot")
     item = command("attach", lambda a: viewer.attach(a.key))
     item.add_argument("key")
+    item = command("actor-view", lambda a: actor_view(a.actor))
+    item.add_argument("actor")
     command("create", lambda _: actions.create())
     command("create-tab", lambda _: actions.create_tab())
     item = command("rename-tab", lambda a: actions.rename_tab(a.key))

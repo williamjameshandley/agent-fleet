@@ -10,7 +10,7 @@ from .config import RUNTIME, ssh_environment
 from .tmux import inventory
 from .remote import find
 from .model import key_host
-from . import alan, workstation
+from . import workstation
 
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -177,22 +177,9 @@ def serve(slot):
 
 def attach(key):
     if key.startswith("alan:"):
-        _, host, addr = key.split(":", 2)
-        if host != os.uname().nodename:
-            raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
-        actor = next((item for item in alan.actors() if item["addr"] == addr), None)
-        if actor is None:
-            raise SystemExit(f"Alan actor disappeared: {addr}")
-        attachment = alan.attachment(addr)
-        if attachment.get("kind") == "tmux":
-            generation = subprocess.run(
-                ["tmux", "show-options", "-v", "-t", attachment["session"],
-                 "@fleet_generation"], text=True, capture_output=True).stdout.strip()
-            if generation != attachment.get("generation"):
-                raise SystemExit(f"stale actor presentation: {addr}")
-            os.execvp("tmux", ["tmux", "attach-session", "-t", attachment["session"]])
-            return
-        raise SystemExit(f"actor {addr} has no supported attachment")
+        actor = key.removeprefix("alan:")
+        os.execvp("fleet", ["fleet", "actor-view", actor])
+        return
     host = key_host(key)
     if host != os.uname().nodename:
         raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")

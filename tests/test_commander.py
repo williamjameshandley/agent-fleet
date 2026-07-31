@@ -9,10 +9,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import networkx as nx
+
 from agent_fleet import alan
 from agent_fleet.commander import validate_proposal
 from agent_fleet import commander_client
-from agent_fleet.commander_client import related, render
+from agent_fleet.commander_client import render
 from agent_fleet.daemon import Fleet
 
 
@@ -124,67 +126,37 @@ class ProposalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_proposal(bad, self.request)
 
-    def test_mailbox_composition_uses_request_parentage(self):
-        root = "llm-actor#7"
-        self.assertTrue(related({"id": root}, root))
-        self.assertTrue(related({"id": "will#2", "parent": root}, root))
-        self.assertTrue(related({"id": "llm-actor#8", "parent": root}, root))
-        self.assertFalse(related({"id": "will#3", "parent": "llm-actor#6"}, root))
-
-    def test_response_shapes_render_and_terminate_only_at_the_boundary(self):
+    def test_output_renders_only_a_validated_proposal(self):
         proposal = {"type": "archive", "request_id": "r1",
                     "snapshot_revision": "abc", "source": "source-1"}
-        envelopes = [
-            {"payload": {"kind": "message", "text": "Explanation."}},
-            {"payload": {"kind": "message", "text": json.dumps(proposal)}},
-            {"payload": {"kind": "finished"}},
-        ]
-
         with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
-            terminal = [render(envelope, self.request) for envelope in envelopes]
-
-        self.assertEqual(terminal, [False, False, True])
-        self.assertIn("Explanation.", stdout.getvalue())
+            render({"status": "ok", "value": json.dumps(proposal)}, self.request)
         self.assertIn('"type": "archive"', stdout.getvalue())
 
         with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
-            self.assertTrue(render(
-                {"payload": {"kind": "error", "of": "provider", "reason": "failed"}},
-                self.request))
-        self.assertEqual(stdout.getvalue(), "provider: failed\n")
+            render({"status": "error", "error": "provider failed"}, self.request)
+        self.assertEqual(stdout.getvalue(), "provider failed\n")
 
-    def test_exchange_tails_the_socket_peer_identity(self):
-        class Thread:
-            def __init__(self, target, args, daemon):
-                self.args = args
-
-            def start(self):
-                output = self.args[2]
-                output.put({"id": "socket-peer#0", "parent": "llm-1#0",
-                            "payload": {"kind": "finished"}})
-
+    def test_exchange_uses_send_and_observation(self):
         with mock.patch.object(commander_client, "commander_context", return_value=json.dumps({})), \
-             mock.patch.object(commander_client.alan, "peer",
-                               return_value="socket-peer") as peer, \
-             mock.patch.object(commander_client, "current_end",
-                               return_value=-1) as current_end, \
-             mock.patch.object(commander_client.alan, "commander_request",
-                               return_value={"addr": "llm-1",
-                                             "envelope_id": "llm-1#0"}) as request, \
-             mock.patch.object(commander_client.threading, "Thread", Thread), \
-             mock.patch.dict("os.environ", {"USER": "wrong", "LOGNAME": "wrong"}):
+             mock.patch.object(commander_client.alan, "commander_actor",
+                               return_value="llm-1@newton"), \
+             mock.patch.object(commander_client.loop, "send",
+                               return_value={"input": "llm-1@newton#1"}) as send, \
+             mock.patch.object(commander_client.alan, "wait_output",
+                               return_value={"status": "ok", "value": "done"}), \
+             mock.patch.object(commander_client, "render") as render_output:
             commander_client.exchange("status")
 
-        peer.assert_called_once_with()
-        current_end.assert_called_once_with("socket-peer")
-        self.assertEqual(request.call_args.args[0]["kind"], "commander_request")
-
+        self.assertEqual(send.call_args.args[0], "llm-1@newton")
+        self.assertEqual(send.call_args.args[1]["kind"], "message")
+        render_output.assert_called_once()
 
 class CommanderActorTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.environment = mock.patch.dict(
-            "os.environ", {"XDG_CONFIG_HOME": self.tempdir.name}
+            "os.environ", {"XDG_STATE_HOME": self.tempdir.name}
         )
         self.environment.start()
 
@@ -192,47 +164,58 @@ class CommanderActorTests(unittest.TestCase):
         self.environment.stop()
         self.tempdir.cleanup()
 
+    @staticmethod
+    def graph(*actors):
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = list(actors)
+        return graph
+
     def test_first_request_creates_and_reuses_an_ordinary_actor(self):
-        with self.subTest("first use"), \
-             mock.patch.object(alan.loop, "spawn", return_value="llm-commander") as spawn, \
-             mock.patch.object(alan.loop, "commander_request",
-                               return_value={"envelope_id": "llm-commander#0"}) as request:
-            alan.commander_request({"kind": "commander_request"})
+        with mock.patch.object(alan.loop, "observe", return_value=self.graph()), \
+             mock.patch.object(alan.loop, "spawn",
+                               return_value="llm-commander@newton") as spawn:
+            self.assertEqual(alan.commander_actor(), "llm-commander@newton")
+        spawn.assert_called_once_with({"kind": "llm", "preset": "commander"})
 
-        spawn.assert_called_once_with("llm", personality="commander")
-        request.assert_called_once_with("llm-commander", {"kind": "commander_request"})
-
-        with mock.patch.object(alan.loop, "spawn") as spawn, \
-             mock.patch.object(alan.loop, "commander_request") as request:
-            alan.commander_request({"kind": "commander_request"})
-
+        existing = {"addr": "llm-commander@newton", "preset": "commander"}
+        with mock.patch.object(alan.loop, "observe",
+                               return_value=self.graph(existing)), \
+             mock.patch.object(alan.loop, "spawn") as spawn:
+            self.assertEqual(alan.commander_actor(), "llm-commander@newton")
         spawn.assert_not_called()
-        request.assert_called_once_with("llm-commander", {"kind": "commander_request"})
 
-    def test_operator_supplied_actor_is_used(self):
-        path = Path(self.tempdir.name) / "agent-fleet" / "commander-actor"
-        path.parent.mkdir()
-        path.write_text("llm-operator\n")
+    def test_multiple_commanders_fail_visibly(self):
+        current = self.graph(
+            {"addr": "llm-first@newton", "preset": "commander"},
+            {"addr": "llm-second@newton", "preset": "commander"},
+        )
 
-        with mock.patch.object(alan.loop, "spawn") as spawn:
-            self.assertEqual(alan.commander_actor(), "llm-operator")
-
-        spawn.assert_not_called()
+        with mock.patch.object(alan.loop, "observe", return_value=current):
+            with self.assertRaisesRegex(RuntimeError, "multiple Commander actors"):
+                alan.commander_actor()
 
     def test_concurrent_first_use_creates_one_actor(self):
         creating = threading.Event()
         release = threading.Event()
         results = []
+        created = []
 
         def spawn(*_args, **_kwargs):
             creating.set()
             release.wait()
-            return "llm-commander"
+            created.append(True)
+            return "llm-commander@newton"
+
+        def observe():
+            actors = ([{"addr": "llm-commander@newton", "preset": "commander"}]
+                      if created else [])
+            return self.graph(*actors)
 
         def resolve():
             results.append(alan.commander_actor())
 
-        with mock.patch.object(alan.loop, "spawn", side_effect=spawn) as create:
+        with mock.patch.object(alan.loop, "observe", side_effect=observe), \
+             mock.patch.object(alan.loop, "spawn", side_effect=spawn) as create:
             first = threading.Thread(target=resolve)
             second = threading.Thread(target=resolve)
             first.start()
@@ -244,8 +227,8 @@ class CommanderActorTests(unittest.TestCase):
 
         self.assertFalse(first.is_alive())
         self.assertFalse(second.is_alive())
-        self.assertEqual(results, ["llm-commander", "llm-commander"])
-        create.assert_called_once_with("llm", personality="commander")
+        self.assertEqual(results, ["llm-commander@newton", "llm-commander@newton"])
+        create.assert_called_once_with({"kind": "llm", "preset": "commander"})
 
 
 if __name__ == "__main__":

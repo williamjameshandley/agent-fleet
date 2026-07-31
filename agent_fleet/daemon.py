@@ -8,14 +8,17 @@ import subprocess
 import hashlib
 import time
 
+import networkx as nx
+
 from .config import HUB, RUNTIME, hosts, ssh_environment
-from .protocol import decode_message, encode
+from .protocol import decode_graph, decode_message, encode
 from .model import key_host
 
 
 class Fleet:
     def __init__(self):
         self.sessions = {}
+        self.graphs = {}
         self.usage = {}
         self.unavailable = set(hosts())
         self.refresh_pending = False
@@ -55,6 +58,7 @@ class Fleet:
                         continue
                     sessions, usage, _ = decode_message(raw)
                     self.sessions[host] = sessions
+                    self.graphs[host] = decode_graph(raw)
                     self.unavailable.discard(host)
                     if host == hosts()[0] and usage:
                         self.usage = usage
@@ -67,6 +71,7 @@ class Fleet:
                 if not drain.done():
                     drain.cancel()
                 self.processes.pop(host, None)
+                self.graphs.pop(host, None)
                 for number, (owner, future) in list(self.previews.items()):
                     if owner == host:
                         future.set_exception(RuntimeError(f"{host} disconnected"))
@@ -116,7 +121,7 @@ class Fleet:
         request = (await reader.readline()).decode().rstrip()
         if request == "snapshot":
             payload = encode([s for group in self.sessions.values() for s in group], self.usage,
-                             sorted(self.unavailable))
+                             sorted(self.unavailable), self.composed_graph())
         elif request.startswith("preview "):
             key, columns, lines = request.removeprefix("preview ").rsplit(" ", 2)
             payload = await self.preview(key, int(columns), int(lines))
@@ -129,6 +134,18 @@ class Fleet:
         writer.write(payload.encode())
         await writer.drain()
         writer.close()
+
+    def composed_graph(self):
+        graphs = [graph for graph in self.graphs.values() if graph is not None]
+        if not graphs:
+            return nx.MultiDiGraph()
+        result = nx.compose_all(graphs)
+        result.graph["actors"] = [
+            actor
+            for graph in graphs
+            for actor in graph.graph.get("actors", [])
+        ]
+        return result
 
     async def commander_context(self):
         sessions = sorted(
@@ -181,12 +198,12 @@ class Fleet:
         for host, observation in zip(source_hosts, observations):
             for actor in observation["actors"]:
                 native_id = (actor.get("native") or {}).get("id")
-                identity = host, actor.get("type"), native_id
-                if (actor.get("type") in {"claude", "codex"} and native_id and
-                        actor.get("state") in {"retired", "failed"}):
+                identity = host, actor.get("kind"), native_id
+                if (actor.get("kind") in {"claude", "codex"} and native_id and
+                        actor.get("state") in {"retired", "unavailable"}):
                     authorities.add(identity)
-                    entries.append({"key": f'alan:{host}:{actor["addr"]}', "host": host,
-                                    "agent": actor["type"],
+                    entries.append({"key": f'alan:{actor["addr"]}', "host": host,
+                                    "agent": actor["kind"],
                                     "name": actor.get("label") or actor["addr"],
                                     "cwd": actor.get("cwd") or "",
                                     "mtime": max(actor.get("human_activity", 0),
