@@ -34,7 +34,7 @@ class Fleet:
         while True:
             process = await asyncio.create_subprocess_exec(*command,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
+                stderr=asyncio.subprocess.PIPE, limit=sys.maxsize)
             self.processes[host] = process
             errors = []
 

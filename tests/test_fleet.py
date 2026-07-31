@@ -317,7 +317,7 @@ class IdentityTests(unittest.TestCase):
             def observed(active):
                 nodes = [
                     {"id": f"{addr}#0", "stream": addr, "op": "create",
-                     "time": "2026-07-30T12:00:00Z"},
+                     "time": "2026-07-30T12:00:00Z", "evidence": "x" * 65536},
                 ]
                 if active:
                     nodes.extend([
