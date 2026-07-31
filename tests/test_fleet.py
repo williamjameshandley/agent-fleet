@@ -627,7 +627,7 @@ class IdentityTests(unittest.TestCase):
     def test_fleet_package_requires_the_canonical_alan_client(self):
         package = (Path(__file__).parents[1] / "PKGBUILD").read_text()
         self.assertIn(
-            "depends=('alan>=1:2.0.0.a11.r1785330889.g64ac36c' ", package)
+            "depends=('alan>=1:3.0.0.a1' ", package)
 
     def test_projection_readiness_waits_for_actor_native_evidence(self):
         actor = alan_inventory("lovelace", [{
