@@ -224,33 +224,9 @@ def preview(key, columns=0, lines=0):
 
 
 def history():
-    live = {(session.ref.server.host, session.agent, session.transcript_id)
-            for session in decode(snapshot()) if session.transcript_id}
-    authorities = set(live)
-    rows = []
-    for host in hosts():
-        result = host_command(host, "fleet", "alan-actors", capture_output=True)
-        for actor in json.loads(result.stdout):
-            native_id = (actor.get("native") or {}).get("id")
-            identity = (host, actor.get("kind"), native_id)
-            retained = (actor.get("kind") == "llm" or
-                        actor.get("kind") in {"claude", "codex"} and native_id)
-            if retained and actor.get("state") in {"retired", "unavailable"}:
-                if native_id:
-                    authorities.add(identity)
-                key = f'alan:{actor["addr"]}'
-                mtime = max(actor.get("human_activity", 0), actor.get("created", 0))
-                rows.append((mtime, key, host, actor["kind"],
-                             actor.get("label") or actor["addr"], actor.get("cwd") or ""))
-        result = host_command(host, "fleet", "transcripts", "--limit", "100",
-                              capture_output=True)
-        for item in json.loads(result.stdout):
-            if (host, item["agent"], item["session_id"]) not in authorities:
-                key = f'{host}:{item["agent"]}:{item["session_id"]}'
-                rows.append((item["mtime"], key, host, item["agent"],
-                             item["name"], item["cwd"]))
-    for _, key, host, agent, name, cwd in sorted(rows, reverse=True):
-        print("\t".join((key, host, agent, name, cwd)))
+    entries = json.loads(commander_projection())["history"]
+    for item in sorted(entries, key=lambda row: row["mtime"], reverse=True):
+        print("\t".join((item[key] for key in ("key", "host", "agent", "name", "cwd"))))
 
 
 def open_history(key):

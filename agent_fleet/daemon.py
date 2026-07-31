@@ -184,9 +184,9 @@ class Fleet:
         return json.loads(stdout)
 
     async def history_observation(self, host):
-        actors, transcripts = await asyncio.gather(
-            self.remote_json(host, "fleet", "alan-actors"),
-            self.remote_json(host, "fleet", "transcripts", "--limit", "100"))
+        actors = [] if self.graphs.get(host) is None else await self.remote_json(
+            host, "fleet", "alan-actors")
+        transcripts = await self.remote_json(host, "fleet", "transcripts", "--limit", "100")
         return {"host": host, "actors": actors, "transcripts": transcripts}
 
     @staticmethod
@@ -199,9 +199,11 @@ class Fleet:
             for actor in observation["actors"]:
                 native_id = (actor.get("native") or {}).get("id")
                 identity = host, actor.get("kind"), native_id
-                if (actor.get("kind") in {"claude", "codex"} and native_id and
-                        actor.get("state") in {"retired", "unavailable"}):
-                    authorities.add(identity)
+                retained = (actor.get("kind") == "llm" or
+                            actor.get("kind") in {"claude", "codex"} and native_id)
+                if retained and actor.get("state") in {"retired", "unavailable"}:
+                    if native_id:
+                        authorities.add(identity)
                     entries.append({"key": f'alan:{actor["addr"]}', "host": host,
                                     "agent": actor["kind"],
                                     "name": actor.get("label") or actor["addr"],

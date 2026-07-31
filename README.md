@@ -94,8 +94,8 @@ transcripts by recency, so pairing within such a group can swap; all sessions
 still resume.
 
 Host aliases come from `~/.config/agent-fleet/hosts`. Routing and credentials
-belong to OpenSSH configuration. Machine labels are ASCII (`N L B T OE`), so
-Fleet has no icon-font dependency.
+belong to OpenSSH configuration. Machine labels are single-cell (`N L B T Œ`),
+so Fleet has no icon-font dependency.
 
 Fleet consumes the canonical `loop` client, which resolves the personal Alan
 socket from `LOOP_SOCKET` or the user's XDG state directory. An unavailable

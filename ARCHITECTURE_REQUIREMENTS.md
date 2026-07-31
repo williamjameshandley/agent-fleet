@@ -64,7 +64,7 @@ a row drops into the real session for keyboard, mouse or voice input.
   interstitials, resolves the new canonical actor identity, and immediately
   displays it in privileged Main. A blank directory means the source host's
   home directory, not Fleet's own working directory.
-- Exact machine labels are `N`, `L`, `B`, `T`, `OE`; no icon font is required.
+- Exact machine labels are `N`, `L`, `B`, `T`, `Œ`; no icon font is required.
 
 ## Projection and actor presentation
 

@@ -738,40 +738,24 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("10", command[4])
 
     def test_history_keeps_retained_alan_actor_and_suppresses_transcript_fallback(self):
-        actor = {"addr": "codex-1@lovelace", "kind": "codex", "state": "retired",
-                 "label": "work", "cwd": "/work", "created": 10,
-                 "human_activity": 20, "native": {"id": "thread-1"}}
-
-        def command(_host, _fleet, operation, *args, **_kwargs):
-            payload = ([actor] if operation == "alan-actors" else [{
-                "agent": "codex", "session_id": "thread-1", "mtime": 20,
-                "name": "duplicate", "cwd": "/work"}])
-            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload))
-
+        context = {"history": [{
+            "key": "alan:codex-1@lovelace", "host": "lovelace",
+            "agent": "codex", "name": "work", "cwd": "/work", "mtime": 20}]}
         output = io.StringIO()
-        with mock.patch("agent_fleet.actions.hosts", return_value=["lovelace"]), \
-             mock.patch("agent_fleet.actions.snapshot",
-                        return_value='{"version":1,"sessions":[],"usage":{},"unavailable":[]}'), \
-             mock.patch("agent_fleet.actions.host_command", side_effect=command), \
+        with mock.patch("agent_fleet.actions.commander_projection",
+                        return_value=json.dumps(context)), \
              contextlib.redirect_stdout(output):
             actions.history()
         self.assertEqual(output.getvalue().splitlines(), [
             "alan:codex-1@lovelace\tlovelace\tcodex\twork\t/work"])
 
     def test_history_keeps_retired_bare_language_actor_without_native_identity(self):
-        actor = {"addr": "llm-1@lovelace", "kind": "llm", "state": "retired",
-                 "label": "review", "cwd": "/work", "created": 10,
-                 "human_activity": 20}
-
-        def command(_host, _fleet, operation, *args, **_kwargs):
-            payload = [actor] if operation == "alan-actors" else []
-            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload))
-
+        context = {"history": [{
+            "key": "alan:llm-1@lovelace", "host": "lovelace",
+            "agent": "llm", "name": "review", "cwd": "/work", "mtime": 20}]}
         output = io.StringIO()
-        with mock.patch("agent_fleet.actions.hosts", return_value=["lovelace"]), \
-             mock.patch("agent_fleet.actions.snapshot",
-                        return_value='{"version":1,"sessions":[],"usage":{},"unavailable":[]}'), \
-             mock.patch("agent_fleet.actions.host_command", side_effect=command), \
+        with mock.patch("agent_fleet.actions.commander_projection",
+                        return_value=json.dumps(context)), \
              contextlib.redirect_stdout(output):
             actions.history()
         self.assertEqual(output.getvalue().splitlines(), [
@@ -796,21 +780,12 @@ class IdentityTests(unittest.TestCase):
             mock.call("main", session.ref.key), mock.call("right", session.ref.key)])
 
     def test_retained_unavailable_actor_remains_the_native_history_authority(self):
-        actor = {"addr": "codex-1@lovelace", "kind": "codex", "state": "unavailable",
-                 "label": "work", "cwd": "/work", "created": 10,
-                 "human_activity": 20, "native": {"id": "thread-1"}}
-
-        def command(_host, _fleet, operation, *args, **_kwargs):
-            payload = ([actor] if operation == "alan-actors" else [{
-                "agent": "codex", "session_id": "thread-1", "mtime": 20,
-                "name": "work", "cwd": "/work"}])
-            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload))
-
+        context = {"history": [{
+            "key": "alan:codex-1@lovelace", "host": "lovelace",
+            "agent": "codex", "name": "work", "cwd": "/work", "mtime": 20}]}
         output = io.StringIO()
-        with mock.patch("agent_fleet.actions.hosts", return_value=["lovelace"]), \
-             mock.patch("agent_fleet.actions.snapshot",
-                        return_value='{"version":1,"sessions":[],"usage":{},"unavailable":[]}'), \
-             mock.patch("agent_fleet.actions.host_command", side_effect=command), \
+        with mock.patch("agent_fleet.actions.commander_projection",
+                        return_value=json.dumps(context)), \
              contextlib.redirect_stdout(output):
             actions.history()
         self.assertEqual(output.getvalue().splitlines(), [

@@ -83,6 +83,37 @@ class CommanderContextTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_history_uses_no_alan_query_when_the_graph_is_absent(self):
+        fleet = Fleet()
+        fleet.graphs = {"turing": None}
+
+        async def remote(host, *command):
+            self.assertEqual((host, command),
+                             ("turing", ("fleet", "transcripts", "--limit", "100")))
+            return [{"agent": "codex", "session_id": "thread-1"}]
+
+        fleet.remote_json = remote
+        self.assertEqual(asyncio.run(fleet.history_observation("turing")), {
+            "host": "turing", "actors": [],
+            "transcripts": [{"agent": "codex", "session_id": "thread-1"}],
+        })
+
+    def test_history_retains_bare_language_actor_and_native_actor_authority(self):
+        observations = [{"actors": [
+            {"addr": "llm-review@lovelace", "kind": "llm", "state": "retired",
+             "label": "review", "cwd": "/work", "created": 2,
+             "human_activity": 3},
+            {"addr": "codex-work@lovelace", "kind": "codex", "state": "retired",
+             "label": "work", "cwd": "/work", "created": 2,
+             "human_activity": 4, "native": {"id": "thread-1"}},
+        ], "transcripts": [{
+            "agent": "codex", "session_id": "thread-1", "mtime": 4,
+            "name": "duplicate", "cwd": "/work",
+        }]}]
+        history = Fleet.history_entries([], ["lovelace"], observations)
+        self.assertEqual([item["key"] for item in history], [
+            "alan:codex-work@lovelace", "alan:llm-review@lovelace"])
+
 
 class ProposalTests(unittest.TestCase):
     def setUp(self):
