@@ -3,10 +3,12 @@ import os
 import threading
 import time
 import textwrap
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 import loop
+import networkx as nx
 
 from .model import ServerRef, Session, SessionRef
 
@@ -131,6 +133,59 @@ def inventory(host, actor_descriptors):
             actor["human_activity"], actor.get("active_evaluation") or "",
             actor["evaluation_started"]))
     return sessions
+
+
+def project(sessions, graph, show_language=False, show_python=False):
+    descriptors = {actor["addr"]: actor for actor in graph.graph.get("actors", [])}
+    ancestry = nx.DiGraph()
+    ancestry.add_nodes_from(descriptors)
+    for source, target, relation in graph.edges(keys=True):
+        if relation != "spawn":
+            continue
+        child = graph.nodes[target]["stream"]
+        parent = graph.nodes[source].get("stream") or source.rsplit("#", 1)[0]
+        ancestry.add_edge(parent, child)
+
+    actor_sessions = {
+        session.ref.session_id: session
+        for session in sessions
+        if session.ref.server.kind == "alan"
+    }
+    roots = {}
+    for actor in actor_sessions:
+        candidates = [
+            node for node in nx.ancestors(ancestry, actor) | {actor}
+            if ancestry.in_degree(node) == 0
+        ]
+        [root] = candidates
+        roots[actor] = root if root in descriptors else None
+
+    result = []
+    for session in sessions:
+        if session.ref.server.kind != "alan":
+            result.append(session)
+            continue
+        actor = session.ref.session_id
+        descriptor = descriptors[actor]
+        if roots[actor] != actor or descriptor.get("preset") == "commander" or (
+            descriptor["kind"] == "python" and not show_python
+        ):
+            continue
+        result.append(session)
+        for descendant in sessions:
+            if descendant.ref.server.kind != "alan":
+                continue
+            child = descendant.ref.session_id
+            if child == actor or roots[child] != actor:
+                continue
+            kind = descriptors[child]["kind"]
+            if descriptors[child].get("preset") == "commander":
+                continue
+            if (kind == "python" and show_python) or (
+                kind in {"llm", "claude", "codex"} and show_language
+            ):
+                result.append(replace(descendant, name="  ↳ " + descendant.name))
+    return result
 
 
 def create(kind, name, cwd):

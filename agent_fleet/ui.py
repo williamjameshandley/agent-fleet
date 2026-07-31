@@ -8,8 +8,8 @@ import textwrap
 
 from .config import RUNTIME, machine
 from .daemon import snapshot
-from .protocol import decode_message
-from . import viewer
+from .protocol import decode_graph, decode_message
+from . import alan, viewer
 
 
 STATE_ORDER = {"working": 0, "needs-action": 1, "waiting": 2, "finished": 3}
@@ -71,11 +71,37 @@ def rows(include_header=True):
 
 
 def ordered():
-    sessions, usage, unavailable = decode_message(snapshot())
+    raw = snapshot()
+    sessions, usage, unavailable = decode_message(raw)
     sessions.sort(key=lambda s: (s.ref.server.host in unavailable,
                                  STATE_ORDER.get(s.state, 2),
                                  -recency(s), s.ref.key))
+    graph = decode_graph(raw)
+    if graph is not None:
+        sessions = alan.project(
+            sessions,
+            graph,
+            show_language=option("@fleet_show_language"),
+            show_python=option("@fleet_show_python"),
+        )
     return sessions, usage, unavailable
+
+
+def option(name):
+    result = subprocess.run(
+        ["tmux", "show-options", "-qv", "-t", "=fleet@muster", name],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "1"
+
+
+def toggle(kind):
+    name = {"language": "@fleet_show_language", "python": "@fleet_show_python"}[kind]
+    subprocess.run(
+        ["tmux", "set-option", "-t", "=fleet@muster", name, "0" if option(name) else "1"],
+        check=True,
+    )
 
 
 def recency(session):
@@ -106,8 +132,8 @@ def muster():
         f"--footer={footer()}",
         "--footer-border=bottom",
         "--bind=start:unbind(esc)",
-        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,d,x,j,k)+rebind(esc)",
-        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,d,x,j,k)",
+        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,d,x,j,k,l,p)+rebind(esc)",
+        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,d,x,j,k,l,p)",
         "--bind=j:down,k:up",
         "--bind=load:transform(fleet cursor)+unbind(load)",
         "--bind=enter:execute-silent(fleet show --slot main {1})",
@@ -116,6 +142,8 @@ def muster():
         "--bind=c:execute-silent(fleet create-tab)",
         "--bind=r:execute-silent(fleet rename-tab {1})",
         "--bind=x:execute-silent(fleet archive {1})+reload-sync(fleet items)",
+        "--bind=l:execute-silent(fleet toggle language)+reload-sync(fleet items)",
+        "--bind=p:execute-silent(fleet toggle python)+reload-sync(fleet items)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--preview=fleet preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
@@ -134,7 +162,7 @@ def header():
 
 
 def footer():
-    hints = ("Enter open  c create  r rename  x archive")
+    hints = ("Enter open  c create  r rename  x archive  l agents  p python")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)

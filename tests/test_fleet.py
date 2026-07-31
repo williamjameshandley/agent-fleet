@@ -870,7 +870,54 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("change-prompt(Search: )", source)
         self.assertIn("c:execute-silent(fleet create-tab)", source)
         self.assertIn("r:execute-silent(fleet rename-tab {1})", source)
+        self.assertIn("l:execute-silent(fleet toggle language)", source)
+        self.assertIn("p:execute-silent(fleet toggle python)", source)
         self.assertIn('"--footer-border=bottom"', source)
+
+    def test_muster_controls_independently_project_language_and_python(self):
+        root = "codex-root@newton"
+        language = "claude-child@newton"
+        python = "python-child@newton"
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [
+            {"addr": root, "kind": "codex"},
+            {"addr": language, "kind": "claude"},
+            {"addr": python, "kind": "python"},
+        ]
+        graph.add_node(f"{root}#0", stream=root, op="create")
+        for position, child in enumerate((language, python), 1):
+            source = f"{root}#{position}"
+            graph.add_node(source, stream=root, op="spawn")
+            graph.add_node(f"{child}#0", stream=child, op="create", spawn=source)
+            graph.add_edge(source, f"{child}#0", key="spawn")
+        sessions = [
+            Session(SessionRef(ServerRef("newton", "", 0, 0, "alan"), actor),
+                    actor, 1, 0, 0, 1, "alan", "", "/work", kind, "waiting")
+            for actor, kind in ((root, "codex"), (language, "claude"), (python, "python"))
+        ]
+        raw = encode(sessions, graph=graph)
+
+        def projected(language_visible, python_visible):
+            values = {
+                "@fleet_show_language": language_visible,
+                "@fleet_show_python": python_visible,
+            }
+            with mock.patch.object(ui, "snapshot", return_value=raw), \
+                 mock.patch.object(ui, "option", side_effect=values.__getitem__):
+                return [item.ref.session_id for item in ui.ordered()[0]]
+
+        self.assertEqual(projected(False, False), [root])
+        self.assertEqual(projected(True, False), [root, language])
+        self.assertEqual(projected(False, True), [root, python])
+
+    def test_toggle_changes_the_named_muster_tmux_option(self):
+        with mock.patch.object(ui, "option", return_value=False), \
+             mock.patch.object(ui.subprocess, "run") as run:
+            ui.toggle("language")
+        run.assert_called_once_with(
+            ["tmux", "set-option", "-t", "=fleet@muster", "@fleet_show_language", "1"],
+            check=True,
+        )
 
     def test_footer_contains_only_action_hints(self):
         from agent_fleet.ui import footer
@@ -878,7 +925,7 @@ class IdentityTests(unittest.TestCase):
                         return_value=os.terminal_size((100, 24))):
             self.assertEqual(
                 footer(),
-                "Enter open  c create  r rename  x archive")
+                "Enter open  c create  r rename  x archive  l agents  p python")
 
     def test_column_header_counts_sessions_by_state(self):
         from agent_fleet.ui import column_header

@@ -5,6 +5,7 @@ from unittest import mock
 import networkx as nx
 
 from agent_fleet import alan
+from agent_fleet.model import ServerRef, Session, SessionRef
 
 
 def graph(*operations, state="live"):
@@ -193,3 +194,97 @@ def test_observation_failure_is_visible_and_clears_projection():
     assert watcher.actors == []
     assert watcher.graph is None
     assert watcher.error == "Alan unavailable: closed"
+
+
+def actor_session(addr, kind):
+    host = addr.rsplit("@", 1)[1]
+    return Session(
+        SessionRef(ServerRef(host, "", 0, 0, "alan"), addr),
+        addr.split("@", 1)[0], 1, 0, 0, 1, "alan", "", "/work", kind, "waiting",
+    )
+
+
+def test_projection_derives_roots_and_reveals_descendants_by_class():
+    root = "codex-root@newton"
+    language = "claude-child@lovelace"
+    python = "python-child@newton"
+    nested = "codex-nested@lovelace"
+    commander = "llm-commander@newton"
+    nested_commander = "llm-nested-commander@lovelace"
+    direct_python = "python-root@newton"
+    missing = "codex-missing-child@lovelace"
+    current = nx.MultiDiGraph()
+    current.graph["actors"] = [
+        {"addr": root, "kind": "codex"},
+        {"addr": language, "kind": "claude"},
+        {"addr": python, "kind": "python"},
+        {"addr": nested, "kind": "codex"},
+        {"addr": commander, "kind": "llm", "preset": "commander"},
+        {"addr": nested_commander, "kind": "llm", "preset": "commander"},
+        {"addr": direct_python, "kind": "python"},
+        {"addr": missing, "kind": "codex"},
+    ]
+    for actor in (root, language, python, nested, commander, nested_commander,
+                  direct_python, missing):
+        current.add_node(f"{actor}#0", stream=actor, op="create")
+    for parent, child, position in (
+        (root, language, 1),
+        (root, python, 2),
+        (language, nested, 1),
+        (root, nested_commander, 3),
+    ):
+        source = f"{parent}#{position}"
+        current.add_node(source, stream=parent, op="spawn")
+        current.add_edge(source, f"{child}#0", key="spawn")
+    current.add_edge("codex-offline@turing#7", f"{missing}#0", key="spawn")
+
+    standalone = Session(
+        SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$1"),
+        "standalone", 1, 0, 0, 1, "codex", "", "/work",
+    )
+    sessions = [standalone] + [
+        actor_session(actor, next(item["kind"] for item in current.graph["actors"]
+                                  if item["addr"] == actor))
+        for actor in (root, language, python, nested, commander, nested_commander,
+                      direct_python, missing)
+    ]
+
+    assert [item.ref.key for item in alan.project(sessions, current)] == [
+        standalone.ref.key, f"alan:{root}",
+    ]
+    assert [item.ref.key for item in alan.project(
+        sessions, current, show_language=True
+    )] == [
+        standalone.ref.key, f"alan:{root}", f"alan:{language}", f"alan:{nested}",
+    ]
+    assert [item.ref.key for item in alan.project(
+        sessions, current, show_python=True
+    )] == [
+        standalone.ref.key, f"alan:{root}", f"alan:{python}", f"alan:{direct_python}",
+    ]
+
+
+def test_projection_composes_spawn_ancestry_from_separate_hosts():
+    parent = "codex-parent@newton"
+    child = "claude-child@lovelace"
+    source = f"{parent}#1"
+    target = f"{child}#0"
+
+    newton = nx.MultiDiGraph()
+    newton.graph["actors"] = [{"addr": parent, "kind": "codex"}]
+    newton.add_node(f"{parent}#0", stream=parent, op="create")
+    newton.add_node(source, stream=parent, op="spawn")
+
+    lovelace = nx.MultiDiGraph()
+    lovelace.graph["actors"] = [{"addr": child, "kind": "claude"}]
+    lovelace.add_node(target, stream=child, op="create", spawn=source)
+    lovelace.add_edge(source, target, key="spawn")
+
+    current = nx.compose(newton, lovelace)
+    current.graph["actors"] = newton.graph["actors"] + lovelace.graph["actors"]
+    sessions = [actor_session(parent, "codex"), actor_session(child, "claude")]
+
+    assert [item.ref.key for item in alan.project(sessions, current)] == [f"alan:{parent}"]
+    assert [item.ref.key for item in alan.project(
+        sessions, current, show_language=True
+    )] == [f"alan:{parent}", f"alan:{child}"]

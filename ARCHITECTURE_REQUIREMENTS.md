@@ -66,6 +66,36 @@ a row drops into the real session for keyboard, mouse or voice input.
   home directory, not Fleet's own working directory.
 - Exact machine labels are `N`, `L`, `B`, `T`, `OE`; no icon font is required.
 
+## Projection and actor presentation
+
+- Muster is a view of ongoing work, not a process inventory. Its default rows
+  are standalone native Claude/Codex sessions and direct-root Alan actors,
+  excluding actors identified by Fleet's existing infrastructure roles. Python
+  is never shown by default.
+- Alan's operation graph is the sole authority for spawn ancestry. Fleet derives
+  each descendant's immediate creator and causal root from `spawn` edges; it does
+  not store parent identifiers or an actor catalogue.
+- Spawned language actors and Python actors are folded beneath their causal root.
+  Muster has independent ephemeral controls to reveal each class. Revealed rows
+  remain grouped with their root rather than entering the global top-level sort.
+- An incomplete cross-host graph never becomes guessed ancestry. A proven
+  descendant whose chain cannot currently reach a root stays folded until the
+  missing host returns; the ordinary host-unavailable indication explains why.
+- Selecting an actor opens its real conversational interface. Codex uses its
+  native TUI attached to the actor's app server; Python uses `jupyter console`
+  attached to the actor's existing kernel; Claude uses its native resumed TUI
+  once its prompt, completion, failure and interrupt lifecycle has been proven
+  to map completely onto Alan operations. A bare-model actor temporarily keeps
+  the minimal Fleet presenter until its own interface exists.
+- Native presentation does not create a second conversation or bypass Alan.
+  Input and terminal output from the native interface become the same actor's
+  ordinary durable `input`, `evaluation` and `output` operations. Provider JSONL
+  and IPython history remain the authoritative native evidence referenced by
+  those operations.
+- Fleet does not implement another terminal REPL for a provider that already has
+  one. The minimal actor presenter has no compatibility role and is removed from
+  actor kinds once their native presentation is complete.
+
 ## State and identity
 
 - Each tmux server is authoritative for live topology.
@@ -78,6 +108,8 @@ a row drops into the real session for keyboard, mouse or voice input.
   Disposable projections live in memory, while workstation profile markers live
   in that workstation's tmux global options. Placement comes from i3 and viewer
   registrations.
+- Fold controls are disposable state of the current Muster tmux session. They are not
+  durable actor state and do not affect the operation graph.
 
 ## Performance and transport
 
