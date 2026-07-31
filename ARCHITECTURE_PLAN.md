@@ -74,18 +74,14 @@ metadata.
    cannot start another active turn rather than adding a second queue. Prove
    normal completion, error, interrupt, restart and cross-host attachment at the
    installed boundary.
-5. Give Claude one actor-specific native interactive session using its durable
-   session ID and actor-scoped settings. Headless Alan evaluations run bare so
-   interactive hooks cannot duplicate them. The interactive boundary may replace
-   the generic presenter only after real tests prove that `UserPromptSubmit`,
-   normal `Stop`, API failure, user interrupt and session exit each produce one
-   complete Alan operation chain. Claude's documented omission of `Stop` on user
-   interrupt is a known acceptance question: determine the native event that
-   closes that turn, or amend the architecture explicitly rather than adding a
-   guessed timeout, next-prompt repair or incomplete-evaluation fallback.
-6. Remove the generic actor presenter for Codex, Python and any Claude path that
-   passes the native lifecycle gate. Retain it only for the temporary bare-model
-   interface. Update the constitution and README so the source interface, graph
+5. Retain the generic Claude presenter. A controlled native session proved that
+   normal completion emits matching `UserPromptSubmit` and `Stop` prompt IDs and
+   that API failure emits a matching `StopFailure` after provider retries and
+   process exit emits `SessionEnd`. Ctrl-C emits no terminal hook for the
+   interrupted prompt. Do not infer completion from a timeout, later prompt, or
+   session exit.
+6. Remove the generic actor presenter for Codex and Python. Retain it for Claude
+   and the temporary bare-model interface. Update the constitution and README so the source interface, graph
    projection and folded controls are the documented product rather than hidden
    implementation knowledge.
 7. Run unit, protocol and installed acceptance tests on Lovelace and one remote

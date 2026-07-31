@@ -6,8 +6,9 @@ across machines, operable with one hand and eventually none.
 ## The source is the view
 
 - A viewer attaches to the requested tmux terminal session or the actor's native
-  provider/kernel interface. Only a bare-model actor without its own interface
-  uses Fleet's minimal conversational presenter. There is no Main
+  provider/kernel interface. Claude and bare-model actors use Fleet's minimal
+  conversational presenter because Claude's hooks do not expose a terminal event
+  for an interrupted prompt. There is no Main
   mirror, linked observer, copied window, numbered join or parallel ordering.
 - tmux owns terminal sessions, windows, panes and focus. Alan owns actor
   lifecycle and append-only operation streams. Fleet derives actor state and

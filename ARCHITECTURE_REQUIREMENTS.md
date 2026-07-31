@@ -83,10 +83,10 @@ a row drops into the real session for keyboard, mouse or voice input.
   missing host returns; the ordinary host-unavailable indication explains why.
 - Selecting an actor opens its real conversational interface. Codex uses its
   native TUI attached to the actor's app server; Python uses `jupyter console`
-  attached to the actor's existing kernel; Claude uses its native resumed TUI
-  once its prompt, completion, failure and interrupt lifecycle has been proven
-  to map completely onto Alan operations. A bare-model actor temporarily keeps
-  the minimal Fleet presenter until its own interface exists.
+  attached to the actor's existing kernel. Claude and bare-model actors retain
+  the minimal Fleet presenter. Claude's native hooks identify normal completion
+  but expose no terminal event correlated to a user-interrupted prompt, so a
+  native Claude TUI cannot close Alan's evaluation without inference.
 - Native presentation does not create a second conversation or bypass Alan.
   Input and terminal output from the native interface become the same actor's
   ordinary durable `input`, `evaluation` and `output` operations. Provider JSONL
