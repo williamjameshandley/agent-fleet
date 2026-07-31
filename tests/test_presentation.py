@@ -91,7 +91,7 @@ def test_full_codex_console_resumes_the_actor_thread(tmp_path):
     execute.assert_called_once_with(
         "codex",
         ["codex", "resume", "--remote", "unix:///runtime/alan/codex/hash/codex.sock",
-         "thread-1"],
+         "thread-1", "--no-alt-screen"],
     )
 
 

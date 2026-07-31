@@ -32,7 +32,8 @@ def codex_console(actor, descriptor):
     if descriptor["capabilities"] == "full":
         os.execvp(
             "codex",
-            ["codex", "resume", "--remote", f"unix://{socket}", thread_id],
+            ["codex", "resume", "--remote", f"unix://{socket}", thread_id,
+             "--no-alt-screen"],
         )
         return
 
