@@ -210,6 +210,21 @@ class IdentityTests(unittest.TestCase):
                          "codex-a@newton")
         self.assertEqual(ref.key, "alan:codex-a@newton")
 
+    def test_python_actor_attaches_the_standard_jupyter_console(self):
+        host = os.uname().nodename
+        actor = f"python-a@{host}"
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.dict(os.environ, {"LOOP_STORE_DIR": directory}), \
+             mock.patch.object(alan, "actors", return_value=[{
+                 "addr": actor, "kind": "python", "state": "waiting",
+             }]), \
+             mock.patch.object(viewer.presentation, "python_console") as present:
+            viewer.attach(f"alan:{actor}")
+        present.assert_called_once_with(
+            actor,
+            Path(directory) / "actors" / actor / "native" / "kernel.json",
+        )
+
     def test_preview_daemon_rejects_stale_and_malformed_keys_before_dispatch(self):
         fleet = Fleet()
         fleet.sessions = {"lovelace": [self.session("lovelace")]}
@@ -973,10 +988,14 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('"rofi", "-dmenu"', workstation_source)
 
     def test_alan_attachment_execs_the_fleet_owned_repl(self):
-        with mock.patch("agent_fleet.viewer.os.execvp") as execute:
-            viewer.attach("alan:codex-1@newton")
+        actor = f"codex-1@{os.uname().nodename}"
+        with mock.patch.object(alan, "actors", return_value=[{
+                 "addr": actor, "kind": "codex", "state": "waiting",
+             }]), \
+             mock.patch("agent_fleet.viewer.os.execvp") as execute:
+            viewer.attach(f"alan:{actor}")
         execute.assert_called_once_with(
-            "fleet", ["fleet", "actor-view", "codex-1@newton"])
+            "fleet", ["fleet", "actor-view", actor])
 
     def test_alan_preview_is_derived_from_native_evidence(self):
         actor = {

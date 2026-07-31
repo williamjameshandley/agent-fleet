@@ -1,6 +1,24 @@
 import loop
+from jupyter_console.app import ZMQTerminalIPythonApp
 
 from . import alan
+
+
+class PythonConsole(ZMQTerminalIPythonApp):
+    actor = None
+
+    def handle_sigint(self, *args):
+        if self.shell._executing:
+            loop.control(self.actor, "interrupt")
+        else:
+            super().handle_sigint(*args)
+
+
+def python_console(actor, connection_file):
+    console = PythonConsole.instance()
+    console.actor = actor
+    console.initialize(["--existing", str(connection_file)])
+    console.start()
 
 
 def run(actor):
@@ -19,10 +37,7 @@ def run(actor):
             return
         if not text:
             continue
-        payload = ({"kind": "exec", "code": text}
-                   if descriptor["kind"] == "python"
-                   else {"kind": "message", "text": text})
-        result = loop.send(actor, payload)
+        result = loop.send(actor, {"kind": "message", "text": text})
         try:
             output = alan.wait_output(result["input"])
         except KeyboardInterrupt:

@@ -56,6 +56,10 @@ metadata.
    actor kernel. Prove on an installed actor that a console cell appears in
    IPython history and exactly one Alan `input → evaluation → output` chain, and
    that an Alan-sent cell remains visible in the same console and namespace.
+   Since Jupyter Console cannot interrupt an `--existing` kernel, subclass only
+   its executing-state SIGINT handler to call Alan's existing `control` operation;
+   retain Jupyter's terminal, input, rendering and kernel implementation. Prove
+   idle SIGINT still delegates upstream without emitting Alan control.
    Exercise both full and read capability grades without weakening the kernel
    boundary. Assert exact operation deltas and references for success,
    exception, interrupt, and Alan-originated execution without a duplicate

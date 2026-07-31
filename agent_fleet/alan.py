@@ -194,6 +194,13 @@ def create(kind, name, cwd):
     return addr
 
 
+def native_dir(actor):
+    state = Path(os.environ.get("LOOP_STORE_DIR",
+                               Path(os.environ.get("XDG_STATE_HOME",
+                                                   Path.home() / ".local/state")) / "alan"))
+    return state / "actors" / actor / "native"
+
+
 def retire(addr):
     loop.control(addr, "retire")
 

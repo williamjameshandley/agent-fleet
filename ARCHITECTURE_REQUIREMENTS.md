@@ -92,6 +92,9 @@ a row drops into the real session for keyboard, mouse or voice input.
   ordinary durable `input`, `evaluation` and `output` operations. Provider JSONL
   and IPython history remain the authoritative native evidence referenced by
   those operations.
+- Python presentation is Jupyter Console, with only its unsupported
+  `--existing`-kernel SIGINT path adapted to Alan's existing interrupt control.
+  Fleet does not implement a terminal or Jupyter client.
 - Fleet does not implement another terminal REPL for a provider that already has
   one. The minimal actor presenter has no compatibility role and is removed from
   actor kinds once their native presentation is complete.

@@ -10,7 +10,7 @@ from .config import RUNTIME, ssh_environment
 from .tmux import inventory
 from .remote import find
 from .model import key_host
-from . import workstation
+from . import alan, presentation, workstation
 
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -178,6 +178,14 @@ def serve(slot):
 def attach(key):
     if key.startswith("alan:"):
         actor = key.removeprefix("alan:")
+        host = key_host(key)
+        if host != os.uname().nodename:
+            raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+        [descriptor] = [item for item in alan.actors() if item["addr"] == actor]
+        if descriptor["kind"] == "python":
+            connection_file = alan.native_dir(actor) / "kernel.json"
+            presentation.python_console(actor, connection_file)
+            return
         os.execvp("fleet", ["fleet", "actor-view", actor])
         return
     host = key_host(key)
