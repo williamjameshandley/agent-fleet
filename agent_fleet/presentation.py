@@ -4,15 +4,26 @@ import shlex
 import subprocess
 
 import loop
+from jupyter_console.app import ZMQTerminalIPythonApp
 
 from . import alan
 
 
-def python_console(connection_file):
-    os.execvp(
-        "jupyter-console",
-        ["jupyter-console", "--existing", str(connection_file)],
-    )
+class PythonConsole(ZMQTerminalIPythonApp):
+    actor = None
+
+    def handle_sigint(self, *args):
+        if self.shell._executing:
+            loop.control(self.actor, "interrupt")
+        else:
+            super().handle_sigint(*args)
+
+
+def python_console(actor, connection_file):
+    console = PythonConsole.instance()
+    console.actor = actor
+    console.initialize(["--existing", str(connection_file)])
+    console.start()
 
 
 def codex_console(actor, descriptor):
@@ -80,7 +91,7 @@ def run(actor):
         raise SystemExit(f"Alan actor is {descriptor['state']}: {actor}")
 
     if descriptor["kind"] == "python":
-        python_console(alan.native_dir(actor) / "kernel.json")
+        python_console(actor, alan.native_dir(actor) / "kernel.json")
         return
     if descriptor["kind"] == "codex":
         codex_console(actor, descriptor)
