@@ -186,6 +186,9 @@ def attach(key):
             connection_file = alan.native_dir(actor) / "kernel.json"
             presentation.python_console(actor, connection_file)
             return
+        if descriptor["kind"] == "codex":
+            presentation.codex_console(actor, descriptor)
+            return
         os.execvp("fleet", ["fleet", "actor-view", actor])
         return
     host = key_host(key)

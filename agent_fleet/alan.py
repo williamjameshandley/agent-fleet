@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import os
 import threading
 import time
@@ -199,6 +200,25 @@ def native_dir(actor):
                                Path(os.environ.get("XDG_STATE_HOME",
                                                    Path.home() / ".local/state")) / "alan"))
     return state / "actors" / actor / "native"
+
+
+def runtime_name(actor):
+    return hashlib.sha256(actor.encode()).digest()[:16].hex()
+
+
+def actor_socket(actor):
+    return native_dir(actor).parent.parent / (runtime_name(actor) + ".sock")
+
+
+def codex_socket(actor):
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    return runtime / "alan" / "codex" / runtime_name(actor) / "codex.sock"
+
+
+def codex_gateway(actor):
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    cages = Path(os.environ.get("LOOP_CAGE_RUNTIME_DIR", runtime / "alan" / "cages"))
+    return cages / (runtime_name(actor) + ".sock")
 
 
 def retire(addr):

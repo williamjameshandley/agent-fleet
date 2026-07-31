@@ -988,14 +988,28 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('"rofi", "-dmenu"', workstation_source)
 
     def test_alan_attachment_execs_the_fleet_owned_repl(self):
-        actor = f"codex-1@{os.uname().nodename}"
+        actor = f"claude-1@{os.uname().nodename}"
         with mock.patch.object(alan, "actors", return_value=[{
-                 "addr": actor, "kind": "codex", "state": "waiting",
+                 "addr": actor, "kind": "claude", "state": "waiting",
              }]), \
              mock.patch("agent_fleet.viewer.os.execvp") as execute:
             viewer.attach(f"alan:{actor}")
         execute.assert_called_once_with(
             "fleet", ["fleet", "actor-view", actor])
+
+    def test_codex_actor_attachment_uses_its_native_console(self):
+        actor = f"codex-1@{os.uname().nodename}"
+        descriptor = {
+            "addr": actor,
+            "kind": "codex",
+            "state": "waiting",
+            "cwd": "/work",
+            "capabilities": "full",
+        }
+        with mock.patch.object(alan, "actors", return_value=[descriptor]), \
+             mock.patch.object(viewer.presentation, "codex_console") as present:
+            viewer.attach(f"alan:{actor}")
+        present.assert_called_once_with(actor, descriptor)
 
     def test_alan_preview_is_derived_from_native_evidence(self):
         actor = {
