@@ -182,14 +182,7 @@ def attach(key):
         if host != os.uname().nodename:
             raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
         [descriptor] = [item for item in alan.actors() if item["addr"] == actor]
-        if descriptor["kind"] == "python":
-            connection_file = alan.native_dir(actor) / "kernel.json"
-            presentation.python_console(actor, connection_file)
-            return
-        if descriptor["kind"] == "codex":
-            presentation.codex_console(actor, descriptor)
-            return
-        os.execvp("fleet", ["fleet", "actor-view", actor])
+        presentation.attach(actor, descriptor)
         return
     host = key_host(key)
     if host != os.uname().nodename:

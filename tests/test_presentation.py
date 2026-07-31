@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 from unittest import mock
-from types import SimpleNamespace
 
 from agent_fleet import presentation
 
@@ -9,7 +8,7 @@ from agent_fleet import presentation
 def descriptor(state="waiting"):
     return {
         "addr": "codex-a@newton",
-        "kind": "codex",
+        "kind": "llm",
         "state": state,
     }
 
@@ -46,31 +45,71 @@ def test_interrupt_controls_the_active_actor_then_observes_its_output(capsys):
     assert capsys.readouterr().out == "interrupted\n\n"
 
 
-def test_python_console_interrupts_only_while_jupyter_is_executing():
-    console = presentation.PythonConsole()
-    console.actor = "python-a@newton"
-    console.shell = SimpleNamespace(_executing=True)
-    with mock.patch.object(presentation.loop, "control") as control:
-        console.handle_sigint()
-    control.assert_called_once_with("python-a@newton", "interrupt")
-
-    console.shell._executing = False
-    with mock.patch.object(presentation.loop, "control") as control, \
-         mock.patch.object(
-             presentation.ZMQTerminalIPythonApp, "handle_sigint"
-         ) as upstream:
-        console.handle_sigint("signal", "frame")
-    control.assert_not_called()
-    upstream.assert_called_once_with("signal", "frame")
-
-
 def test_python_console_uses_jupyter_existing_mode():
-    console = mock.Mock()
-    with mock.patch.object(presentation.PythonConsole, "instance", return_value=console):
-        presentation.python_console("python-a@newton", "/native/kernel.json")
-    assert console.actor == "python-a@newton"
-    console.initialize.assert_called_once_with(["--existing", "/native/kernel.json"])
-    console.start.assert_called_once_with()
+    with mock.patch.object(presentation.os, "execvp") as execute:
+        presentation.python_console("/native/kernel.json")
+    execute.assert_called_once_with(
+        "jupyter-console",
+        ["jupyter-console", "--existing", "/native/kernel.json"],
+    )
+
+
+def test_actor_presentation_is_a_nested_tmux_session():
+    actor = "codex-a@newton"
+    details = {"cwd": "/work"}
+    missing = __import__("subprocess").CompletedProcess([], 1)
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run",
+                           side_effect=[missing, mock.DEFAULT, mock.DEFAULT,
+                                        mock.DEFAULT]) as run, \
+         mock.patch.object(presentation.os, "execvp") as execute:
+        presentation.attach(actor, details)
+
+    assert run.call_args_list == [
+        mock.call(["tmux", "has-session", "-t", "fleet@alan-hash"],
+                  stdout=presentation.subprocess.DEVNULL,
+                  stderr=presentation.subprocess.DEVNULL),
+        mock.call(["tmux", "new-session", "-d", "-s", "fleet@alan-hash",
+                   "-c", "/work", "fleet actor-view codex-a@newton"], check=True),
+        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "status", "off"],
+                  check=True),
+        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "mouse", "on"],
+                  check=True),
+    ]
+    execute.assert_called_once_with(
+        "tmux", ["tmux", "attach-session", "-t", "fleet@alan-hash"])
+
+
+def test_existing_actor_presentation_is_reused():
+    present = __import__("subprocess").CompletedProcess([], 0)
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run", return_value=present) as run, \
+         mock.patch.object(presentation.os, "execvp") as execute:
+        presentation.attach("python-a@newton", {"cwd": "/work"})
+    run.assert_called_once()
+    execute.assert_called_once_with(
+        "tmux", ["tmux", "attach-session", "-t", "fleet@alan-hash"])
+
+
+def test_actor_view_dispatches_python_to_jupyter_console():
+    actor = "python-a@newton"
+    details = {"addr": actor, "kind": "python", "state": "waiting"}
+    connection = Path("/state/actors") / actor / "native/kernel.json"
+    with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
+         mock.patch.object(presentation.alan, "native_dir",
+                           return_value=connection.parent), \
+         mock.patch.object(presentation, "python_console") as console:
+        presentation.run(actor)
+    console.assert_called_once_with(connection)
+
+
+def test_actor_view_dispatches_codex_to_native_console():
+    actor = "codex-a@newton"
+    details = {"addr": actor, "kind": "codex", "state": "waiting"}
+    with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
+         mock.patch.object(presentation, "codex_console") as console:
+        presentation.run(actor)
+    console.assert_called_once_with(actor, details)
 
 
 def test_full_codex_console_resumes_the_actor_thread(tmp_path):

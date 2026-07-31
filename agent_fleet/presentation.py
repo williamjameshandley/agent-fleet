@@ -1,27 +1,18 @@
 import json
 import os
+import shlex
+import subprocess
 
 import loop
-from jupyter_console.app import ZMQTerminalIPythonApp
 
 from . import alan
 
 
-class PythonConsole(ZMQTerminalIPythonApp):
-    actor = None
-
-    def handle_sigint(self, *args):
-        if self.shell._executing:
-            loop.control(self.actor, "interrupt")
-        else:
-            super().handle_sigint(*args)
-
-
-def python_console(actor, connection_file):
-    console = PythonConsole.instance()
-    console.actor = actor
-    console.initialize(["--existing", str(connection_file)])
-    console.start()
+def python_console(connection_file):
+    os.execvp(
+        "jupyter-console",
+        ["jupyter-console", "--existing", str(connection_file)],
+    )
 
 
 def codex_console(actor, descriptor):
@@ -60,6 +51,26 @@ def codex_console(actor, descriptor):
     )
 
 
+def attach(actor, descriptor):
+    name = "fleet@alan-" + alan.runtime_name(actor)
+    exists = subprocess.run(
+        ["tmux", "has-session", "-t", name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if exists.returncode:
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", name, "-c", descriptor["cwd"],
+             shlex.join(["fleet", "actor-view", actor])],
+            check=True,
+        )
+        subprocess.run(["tmux", "set-option", "-t", name, "status", "off"],
+                       check=True)
+        subprocess.run(["tmux", "set-option", "-t", name, "mouse", "on"],
+                       check=True)
+    os.execvp("tmux", ["tmux", "attach-session", "-t", name])
+
+
 def run(actor):
     descriptor = next((item for item in alan.actors()
                        if item["addr"] == actor), None)
@@ -67,6 +78,13 @@ def run(actor):
         raise SystemExit(f"Alan actor disappeared: {actor}")
     if descriptor["state"] in {"retired", "unavailable"}:
         raise SystemExit(f"Alan actor is {descriptor['state']}: {actor}")
+
+    if descriptor["kind"] == "python":
+        python_console(alan.native_dir(actor) / "kernel.json")
+        return
+    if descriptor["kind"] == "codex":
+        codex_console(actor, descriptor)
+        return
 
     while True:
         try:

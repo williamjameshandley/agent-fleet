@@ -210,20 +210,15 @@ class IdentityTests(unittest.TestCase):
                          "codex-a@newton")
         self.assertEqual(ref.key, "alan:codex-a@newton")
 
-    def test_python_actor_attaches_the_standard_jupyter_console(self):
+    def test_python_actor_attaches_a_fleet_owned_tmux_presentation(self):
         host = os.uname().nodename
         actor = f"python-a@{host}"
-        with tempfile.TemporaryDirectory() as directory, \
-             mock.patch.dict(os.environ, {"LOOP_STORE_DIR": directory}), \
-             mock.patch.object(alan, "actors", return_value=[{
-                 "addr": actor, "kind": "python", "state": "waiting",
-             }]), \
-             mock.patch.object(viewer.presentation, "python_console") as present:
+        descriptor = {"addr": actor, "kind": "python", "state": "waiting",
+                      "cwd": "/work"}
+        with mock.patch.object(alan, "actors", return_value=[descriptor]), \
+             mock.patch.object(viewer.presentation, "attach") as present:
             viewer.attach(f"alan:{actor}")
-        present.assert_called_once_with(
-            actor,
-            Path(directory) / "actors" / actor / "native" / "kernel.json",
-        )
+        present.assert_called_once_with(actor, descriptor)
 
     def test_preview_daemon_rejects_stale_and_malformed_keys_before_dispatch(self):
         fleet = Fleet()
@@ -987,17 +982,15 @@ class IdentityTests(unittest.TestCase):
         self.assertNotRegex(source, r"(?<![A-Za-z_])input\(")
         self.assertIn('"rofi", "-dmenu"', workstation_source)
 
-    def test_alan_attachment_execs_the_fleet_owned_repl(self):
+    def test_alan_attachment_uses_the_fleet_owned_presentation(self):
         actor = f"claude-1@{os.uname().nodename}"
-        with mock.patch.object(alan, "actors", return_value=[{
-                 "addr": actor, "kind": "claude", "state": "waiting",
-             }]), \
-             mock.patch("agent_fleet.viewer.os.execvp") as execute:
+        descriptor = {"addr": actor, "kind": "claude", "state": "waiting"}
+        with mock.patch.object(alan, "actors", return_value=[descriptor]), \
+             mock.patch.object(viewer.presentation, "attach") as present:
             viewer.attach(f"alan:{actor}")
-        execute.assert_called_once_with(
-            "fleet", ["fleet", "actor-view", actor])
+        present.assert_called_once_with(actor, descriptor)
 
-    def test_codex_actor_attachment_uses_its_native_console(self):
+    def test_codex_actor_attachment_uses_the_fleet_owned_presentation(self):
         actor = f"codex-1@{os.uname().nodename}"
         descriptor = {
             "addr": actor,
@@ -1007,7 +1000,7 @@ class IdentityTests(unittest.TestCase):
             "capabilities": "full",
         }
         with mock.patch.object(alan, "actors", return_value=[descriptor]), \
-             mock.patch.object(viewer.presentation, "codex_console") as present:
+             mock.patch.object(viewer.presentation, "attach") as present:
             viewer.attach(f"alan:{actor}")
         present.assert_called_once_with(actor, descriptor)
 
