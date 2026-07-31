@@ -301,15 +301,15 @@ class IdentityTests(unittest.TestCase):
 
             def observed(active):
                 nodes = [
-                    {"id": f"{addr}#0", "actor": addr, "op": "create",
+                    {"id": f"{addr}#0", "stream": addr, "op": "create",
                      "time": "2026-07-30T12:00:00Z"},
                 ]
                 if active:
                     nodes.extend([
-                        {"id": f"{addr}#1", "actor": addr, "op": "input",
+                        {"id": f"{addr}#1", "stream": addr, "op": "input",
                          "sender": "will", "payload": "work",
                          "time": "2026-07-30T12:00:01Z"},
-                        {"id": f"{addr}#2", "actor": addr, "op": "evaluation",
+                        {"id": f"{addr}#2", "stream": addr, "op": "evaluation",
                          "time": "2026-07-30T12:00:02Z"},
                     ])
                 return {

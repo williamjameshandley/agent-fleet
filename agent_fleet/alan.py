@@ -76,8 +76,8 @@ def actors(graph=None):
                    for actor in graph.graph.get("actors", [])}
     operations = {actor: [] for actor in descriptors}
     for reference, operation in graph.nodes(data=True):
-        if "actor" in operation:
-            operations.setdefault(operation["actor"], []).append((reference, operation))
+        if "stream" in operation:
+            operations.setdefault(operation["stream"], []).append((reference, operation))
 
     for addr, descriptor in descriptors.items():
         stream = sorted(operations.get(addr, ()), key=lambda item: _position(item[0]))
@@ -166,7 +166,7 @@ def wait_output(input_reference):
         stream = sorted(
             ((reference, operation)
              for reference, operation in graph.nodes(data=True)
-             if operation.get("actor") == actor),
+             if operation.get("stream") == actor),
             key=lambda item: _position(item[0]),
         )
         inputs = [reference for reference, operation in stream
@@ -184,7 +184,7 @@ def preview(addr, columns=0, lines=0):
     operations = sorted(
         ((reference, operation)
          for reference, operation in graph.nodes(data=True)
-         if operation.get("actor") == addr and operation["op"] in {"input", "output"}),
+         if operation.get("stream") == addr and operation["op"] in {"input", "output"}),
         key=lambda item: _position(item[0]),
     )
     rendered = []

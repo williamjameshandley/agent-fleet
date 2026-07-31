@@ -20,7 +20,7 @@ def graph(*operations, state="live"):
     for position, operation in enumerate(operations):
         result.add_node(
             f"{actor}#{position}",
-            actor=actor,
+            stream=actor,
             time=f"2026-07-30T12:00:0{position}Z",
             **operation,
         )
