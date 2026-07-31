@@ -668,8 +668,12 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.viewer.slots", return_value=[("main", session.ref.key)]), \
              mock.patch("agent_fleet.actions.viewer.request") as request:
             actions.archive(session.ref.key)
-        command.assert_called_once_with(host, "fleet", "alan-retire", f"codex-1@{host}",
-                                        capture_output=True)
+        self.assertEqual(command.call_args_list, [
+            mock.call(host, "fleet", "alan-retire", f"codex-1@{host}",
+                      capture_output=True),
+            mock.call(host, "fleet", "actor-close", f"codex-1@{host}",
+                      capture_output=True),
+        ])
         absent.assert_called_once_with(session.ref.key)
         request.assert_called_once_with("main", "")
 
@@ -684,6 +688,24 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "durable Claude or Codex identity"):
                 actions.archive(session.ref.key)
         command.assert_not_called()
+
+    def test_archive_retires_bare_alan_language_actor_by_address(self):
+        host = os.uname().nodename
+        session = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"llm-1@{host}"),
+            "review", 1, 0, 0, 1, "alan", "", "/work",
+            "llm", "waiting")
+        with mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.host_command") as command, \
+             mock.patch("agent_fleet.actions.wait_for_absence"), \
+             mock.patch("agent_fleet.actions.viewer.slots", return_value=[]):
+            actions.archive(session.ref.key)
+        self.assertEqual(command.call_args_list, [
+            mock.call(host, "fleet", "alan-retire", f"llm-1@{host}",
+                      capture_output=True),
+            mock.call(host, "fleet", "actor-close", f"llm-1@{host}",
+                      capture_output=True),
+        ])
 
     def test_archive_verifies_transcript_then_closes_exact_tmux_identity(self):
         session = self.session("lovelace")
@@ -735,6 +757,43 @@ class IdentityTests(unittest.TestCase):
             actions.history()
         self.assertEqual(output.getvalue().splitlines(), [
             "alan:codex-1@lovelace\tlovelace\tcodex\twork\t/work"])
+
+    def test_history_keeps_retired_bare_language_actor_without_native_identity(self):
+        actor = {"addr": "llm-1@lovelace", "kind": "llm", "state": "retired",
+                 "label": "review", "cwd": "/work", "created": 10,
+                 "human_activity": 20}
+
+        def command(_host, _fleet, operation, *args, **_kwargs):
+            payload = [actor] if operation == "alan-actors" else []
+            return subprocess.CompletedProcess([], 0, stdout=json.dumps(payload))
+
+        output = io.StringIO()
+        with mock.patch("agent_fleet.actions.hosts", return_value=["lovelace"]), \
+             mock.patch("agent_fleet.actions.snapshot",
+                        return_value='{"version":1,"sessions":[],"usage":{},"unavailable":[]}'), \
+             mock.patch("agent_fleet.actions.host_command", side_effect=command), \
+             contextlib.redirect_stdout(output):
+            actions.history()
+        self.assertEqual(output.getvalue().splitlines(), [
+            "alan:llm-1@lovelace\tlovelace\tllm\treview\t/work"])
+
+    def test_refresh_restarts_exact_waiting_actor_and_reopens_every_shown_slot(self):
+        host = os.uname().nodename
+        session = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"codex-1@{host}"),
+            "work", 1, 0, 0, 1, "alan", "", "/work",
+            "codex", "waiting", "", 0, "thread-1", 1)
+        with mock.patch("agent_fleet.actions.find", return_value=session), \
+             mock.patch("agent_fleet.actions.host_command") as command, \
+             mock.patch("agent_fleet.actions.viewer.slots",
+                        return_value=[("main", session.ref.key),
+                                      ("right", session.ref.key)]), \
+             mock.patch("agent_fleet.actions.viewer.request") as request:
+            actions.refresh(session.ref.key)
+        command.assert_called_once_with(host, "fleet", "actor-refresh",
+                                        f"codex-1@{host}", capture_output=True)
+        self.assertEqual(request.call_args_list, [
+            mock.call("main", session.ref.key), mock.call("right", session.ref.key)])
 
     def test_retained_unavailable_actor_remains_the_native_history_authority(self):
         actor = {"addr": "codex-1@lovelace", "kind": "codex", "state": "unavailable",
@@ -842,7 +901,7 @@ class IdentityTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         paths = [root / "fleet", *(root / "agent_fleet").glob("*.py")]
         source = "\n".join(path.read_text() for path in paths)
-        self.assertEqual(source.count('"kill-session"'), 1)
+        self.assertEqual(source.count('"kill-session"'), 2)
         for command in ("kill-window", "unlink-window"):
             self.assertNotIn(command, source)
 
@@ -935,7 +994,7 @@ class IdentityTests(unittest.TestCase):
                         return_value=os.terminal_size((100, 24))):
             self.assertEqual(
                 footer(),
-                "Enter open  c create  r rename  x archive  l agents  p python")
+                "Enter open  c create  r rename  R refresh  x archive  l agents  p python")
 
     def test_column_header_counts_sessions_by_state(self):
         from agent_fleet.ui import column_header

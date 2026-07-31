@@ -6,7 +6,8 @@ import threading
 
 from . import actions, ui, viewer, workstation
 from .commander_client import run as commander
-from .presentation import run as actor_view
+from .presentation import (close as actor_close, refresh as actor_refresh,
+                           run as actor_view)
 from .daemon import Fleet, projection
 from .protocol import encode
 from .quota import read as quota_read, update as quota_update
@@ -84,6 +85,8 @@ def main():
     item.add_argument("name")
     item = command("open-history", lambda a: actions.open_history_report(a.key))
     item.add_argument("key")
+    item = command("refresh", lambda a: actions.refresh_report(a.key))
+    item.add_argument("key")
     item = command("arrive", lambda a: actions.arrive(a.profile, a.available))
     item.add_argument("profile", choices=("laptop", "home", "office"))
     item.add_argument("--available", action="store_true")
@@ -107,6 +110,8 @@ def main():
     item.add_argument("key")
     item = command("actor-view", lambda a: actor_view(a.actor))
     item.add_argument("actor")
+    item = command("actor-close", lambda a: actor_close(a.actor))
+    item.add_argument("actor")
     command("create", lambda _: actions.create())
     command("create-tab", lambda _: actions.create_tab())
     item = command("rename-tab", lambda a: actions.rename_tab(a.key))
@@ -114,6 +119,8 @@ def main():
     item = command("alan-rename", lambda a: alan_rename(a.addr, a.label))
     item.add_argument("addr")
     item.add_argument("label")
+    item = command("actor-refresh", lambda a: actor_refresh(a.addr))
+    item.add_argument("addr")
     item = command("actor-create", lambda a: print(alan_create(a.kind, a.label, a.cwd)))
     item.add_argument("kind", choices=("claude", "codex"))
     item.add_argument("label")

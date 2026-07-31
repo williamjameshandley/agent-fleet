@@ -64,8 +64,9 @@ def codex_console(actor, descriptor):
 
 def attach(actor, descriptor):
     name = "fleet@alan-" + alan.runtime_name(actor)
+    target = "=" + name
     exists = subprocess.run(
-        ["tmux", "has-session", "-t", name],
+        ["tmux", "has-session", "-t", target],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -79,7 +80,33 @@ def attach(actor, descriptor):
                        check=True)
         subprocess.run(["tmux", "set-option", "-t", name, "mouse", "on"],
                        check=True)
-    os.execvp("tmux", ["tmux", "attach-session", "-t", name])
+    os.execvp("tmux", ["tmux", "attach-session", "-t", target])
+
+
+def close(actor):
+    name = "fleet@alan-" + alan.runtime_name(actor)
+    target = "=" + name
+    result = subprocess.run(
+        ["tmux", "kill-session", "-t", target], text=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    )
+    if result.returncode and result.stderr.strip() != f"can't find session: {name}":
+        result.check_returncode()
+
+
+def refresh(actor):
+    descriptor = next((item for item in alan.actors()
+                       if item["addr"] == actor), None)
+    if descriptor is None:
+        raise RuntimeError(f"Alan actor disappeared: {actor}")
+    native = descriptor.get("native") or {}
+    if descriptor["kind"] not in {"claude", "codex"} or not native.get("id"):
+        raise RuntimeError("refresh requires a durable Claude or Codex identity")
+    if descriptor["state"] != "waiting":
+        raise RuntimeError(f"refresh requires a waiting actor: {actor}")
+    alan.retire(actor)
+    close(actor)
+    alan.resume(actor)
 
 
 def run(actor):

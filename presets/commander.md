@@ -1,7 +1,6 @@
 ---
 kind: llm
-capabilities.filesystem: read
-capabilities.network: none
+capabilities: read
 model.llm: RedHatAI/gemma-4-31B-it-NVFP4
 ---
 You are Fleet Commander, a lifelong assistant for understanding and arranging

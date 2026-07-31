@@ -112,6 +112,16 @@ class ProposalTests(unittest.TestCase):
         for proposal in proposals:
             self.assertIs(validate_proposal(proposal, self.request), proposal)
 
+    def test_accepts_archive_of_retained_alan_bare_language_actor(self):
+        self.request["snapshot"]["sessions"].append({
+            "source": "alan:llm-review@newton", "agent": "llm",
+            "transcript_id": "",
+        })
+        proposal = {"type": "archive", "request_id": "r1",
+                    "snapshot_revision": "abc",
+                    "source": "alan:llm-review@newton"}
+        self.assertIs(validate_proposal(proposal, self.request), proposal)
+
     def test_rejects_extra_fields_stale_identity_and_relative_cwd(self):
         bad = {"type": "archive", "request_id": "r1", "snapshot_revision": "abc",
                "source": "missing"}

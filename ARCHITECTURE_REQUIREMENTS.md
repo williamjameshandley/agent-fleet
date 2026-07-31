@@ -39,9 +39,9 @@ a row drops into the real session for keyboard, mouse or voice input.
 - Muster supports keyboard and mouse selection, filtering, aligned compact
   status, usage, management and history. Working work is at the top; initial
   focus is the first waiting row.
-- Create and rename mutate real sessions. Archive records the source and vendor
-  transcript identity in History, then closes the live session. Open uses that
-  identity to resume the same Alan actor or standalone vendor conversation.
+- Create and rename mutate real actors or sessions. Archive retains the Alan
+  actor address or standalone vendor transcript identity in History, then closes
+  the live actor or session. Open uses that identity to resume the same source.
 - An explicit archive instruction is sufficient authorization; no second
   confirmation is required. Before closing, Fleet must prove that it has a
   usable vendor recovery identity and refuse the archive if it cannot.
@@ -61,7 +61,7 @@ a row drops into the real session for keyboard, mouse or voice input.
   Linux Voice. It never reads raw terminal stdin inside Muster: the Ctrl-Space
   recording chord must not become input data or replace the persistent list.
 - Creation starts the selected agent without workspace or tool permission
-  interstitials, resolves the new canonical tmux identity, and immediately
+  interstitials, resolves the new canonical actor identity, and immediately
   displays it in privileged Main. A blank directory means the source host's
   home directory, not Fleet's own working directory.
 - Exact machine labels are `N`, `L`, `B`, `T`, `OE`; no icon font is required.
@@ -137,8 +137,9 @@ and exposes cached values. Workstation restarts must not multiply API requests.
 
 ## Commander and voice
 
-Commander is a persistent agent, initially Claude Code behind a vendor-neutral
-typed action contract. It is both a precise voice-operated pair of hands and a
+Commander is a retained Alan language actor behind a typed action contract. Its
+preset may suggest a model without making that model part of its identity. It is
+both a precise voice-operated pair of hands and a
 conservative recommender. It may suggest replacement candidates at capacity but
 does not act until instructed. It indexes sessions through compact summaries,
 status and metadata, reading full Claude/Codex transcripts on demand when a
@@ -146,17 +147,14 @@ request requires deeper context. Future mdgtd context may propose start-of-day
 work.
 
 Commander is one lifelong personal-assistant identity, not one conversation per
-workstation, day or model vendor. Claude and Codex are interchangeable execution
-backends which the user explicitly selects; changing backend does not start a
-new Commander history.
+workstation, day or model vendor.
 
 An optional future Alan memory layer may make Commander feel like an infinite
 conversation despite finite model windows. Recent dialogue would remain
 verbatim, older dialogue would be represented by progressively coarser
 summaries, and immutable raw vendor JSONL would remain the lossless source.
 Compaction must never rewrite raw history, and summaries and indexes remain
-rebuildable projections. This is not a dependency of the first Commander: it
-uses an ordinary persistent Codex or Claude conversation.
+rebuildable projections.
 
 Conversation discovery and retrieval are composable Python packages, not MCP
 servers. They provide direct APIs for locating, filtering, searching and reading

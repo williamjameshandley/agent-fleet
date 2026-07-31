@@ -10,10 +10,12 @@ Muster is one persistent fzf list on Lovelace. Working and needs-action sessions
 the top, and waiting work follows by meaningful transcript recency. Its cursor is keyed by the canonical source ID, so
 sorting cannot turn one row into another.
 
-Enter attaches the global `fleet@main` viewer to the selected source. Fleet
-presents an Alan actor as its ordinary conversational REPL: submitted lines are
-sent through Alan and the corresponding output is selected from the observation
-graph. Preview renders the provider-native transcript referenced by that graph.
+Enter attaches the global `fleet@main` viewer to the selected source. For an
+Alan actor, Fleet creates or reuses a disposable nested tmux presentation:
+Codex uses its native TUI, Python uses Jupyter Console, and Claude and bare
+models use the minimal line presenter. The presentation is derived from the
+actor address and is not Alan lifecycle state. Claude and Codex previews render
+the provider-native transcript referenced by Alan's observation graph.
 Muster and Main are attachable from every workstation and therefore
 retain one shared selection while the user moves. A multi-screen deck
 focuses an already open source or uses a free slot; a full deck never evicts
@@ -74,11 +76,12 @@ fleet next-waiting              advance main to the next waiting source
 fleet show SOURCE --slot S      explicit replacement
 fleet create                    create an Alan Codex or Claude actor
 fleet rename SOURCE             rename the Fleet presentation
+fleet refresh SOURCE            restart a waiting native actor presentation
 fleet archive SOURCE            archive a recoverable LLM source
 fleet open-history HISTORY_KEY  open an archived LLM source
 fleet-view                      laptop 50:50 launcher
 fleet-deck                      home multi-screen launcher
-fleet-commander                 persistent Claude Commander session
+fleet-commander                 persistent Alan Commander session
 fleet-snapshot snapshot [file]  record pane topology + claude session ids
 fleet-snapshot restore [file]   recreate panes and `claude --resume` each
 ```
@@ -99,8 +102,10 @@ socket from `LOOP_SOCKET` or the user's XDG state directory. An unavailable
 Alan socket removes Alan rows but does not invalidate healthy tmux inventory on
 the same host.
 
-Fleet displays every live Alan actor and creates user-facing Codex and Claude
-actors. There is no native
+Fleet displays direct-root Alan actors by default. Spawned language actors and
+Python actors remain folded beneath their causal root unless their independent
+ephemeral Muster controls are enabled. Fleet creates user-facing Codex and
+Claude actors. There is no native
 Alan Gemini actor. Already-running standalone Gemini terminals remain ordinary
 legacy tmux rows.
 Muster collects the creation fields and asks that host's Fleet process to call

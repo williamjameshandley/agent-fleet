@@ -132,8 +132,8 @@ def muster():
         f"--footer={footer()}",
         "--footer-border=bottom",
         "--bind=start:unbind(esc)",
-        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,d,x,j,k,l,p)+rebind(esc)",
-        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,d,x,j,k,l,p)",
+        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k,l,p)+rebind(esc)",
+        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k,l,p)",
         "--bind=j:down,k:up",
         "--bind=load:transform(fleet cursor)+unbind(load)",
         "--bind=enter:execute-silent(fleet show --slot main {1})",
@@ -141,6 +141,7 @@ def muster():
         "--bind=double-click:execute-silent(fleet show --slot main {1})",
         "--bind=c:execute-silent(fleet create-tab)",
         "--bind=r:execute-silent(fleet rename-tab {1})",
+        "--bind=R:execute-silent(fleet refresh {1})+reload-sync(fleet items)",
         "--bind=x:execute-silent(fleet archive {1})+reload-sync(fleet items)",
         "--bind=l:execute-silent(fleet toggle language)+reload-sync(fleet items)",
         "--bind=p:execute-silent(fleet toggle python)+reload-sync(fleet items)",
@@ -162,7 +163,7 @@ def header():
 
 
 def footer():
-    hints = ("Enter open  c create  r rename  x archive  l agents  p python")
+    hints = ("Enter open  c create  r rename  R refresh  x archive  l agents  p python")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)

@@ -32,7 +32,10 @@ def validate_proposal(proposal, request):
         raise ValueError("unknown Fleet source")
     if operation == "archive":
         session = sessions[proposal["source"]]
-        if session["agent"] not in {"claude", "codex"} or not session.get("transcript_id"):
+        retained = (session["agent"] == "llm" and
+                    proposal["source"].startswith("alan:")) or (
+            session["agent"] in {"claude", "codex"} and session.get("transcript_id"))
+        if not retained:
             raise ValueError("source is not a recoverable LLM session")
     if operation == "open" and proposal["history"] not in history:
         raise ValueError("unknown Fleet history key")

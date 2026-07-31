@@ -128,12 +128,18 @@ def wait_for_absence(key):
 
 def archive(key):
     session = find(key)
-    if session.agent not in {"claude", "codex"} or not session.transcript_id:
-        raise SystemExit("archive requires a durable Claude or Codex identity")
     if session.ref.server.kind == "alan":
+        if session.agent not in {"llm", "claude", "codex"}:
+            raise SystemExit("archive requires a language actor")
+        if session.agent in {"claude", "codex"} and not session.transcript_id:
+            raise SystemExit("archive requires a durable Claude or Codex identity")
         host_command(session.ref.server.host, "fleet", "alan-retire",
                      session.ref.session_id, capture_output=True)
+        host_command(session.ref.server.host, "fleet", "actor-close",
+                     session.ref.session_id, capture_output=True)
     else:
+        if session.agent not in {"claude", "codex"} or not session.transcript_id:
+            raise SystemExit("archive requires a durable Claude or Codex identity")
         host_command(session.ref.server.host, "fleet", "transcript-check",
                      session.agent, session.transcript_id, capture_output=True)
         host_command(session.ref.server.host, "fleet", "mutate", key, "archive",
@@ -152,6 +158,28 @@ def archive_report(key):
                   and error.stderr else str(error))
         subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
                         f"Archive failed: {reason}"])
+        raise SystemExit(reason)
+
+
+def refresh(key):
+    session = find(key)
+    if session.ref.server.kind != "alan":
+        raise SystemExit("refresh requires an Alan actor")
+    shown = [slot for slot, source in viewer.slots() if source == key]
+    host_command(session.ref.server.host, "fleet", "actor-refresh",
+                 session.ref.session_id, capture_output=True)
+    for slot in shown:
+        viewer.request(slot, key)
+
+
+def refresh_report(key):
+    try:
+        refresh(key)
+    except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
+        reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
+                  and error.stderr else str(error))
+        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+                        f"Refresh failed: {reason}"])
         raise SystemExit(reason)
 
 
@@ -205,9 +233,11 @@ def history():
         for actor in json.loads(result.stdout):
             native_id = (actor.get("native") or {}).get("id")
             identity = (host, actor.get("kind"), native_id)
-            if (actor.get("kind") in {"claude", "codex"} and native_id and
-                    actor.get("state") in {"retired", "unavailable"}):
-                authorities.add(identity)
+            retained = (actor.get("kind") == "llm" or
+                        actor.get("kind") in {"claude", "codex"} and native_id)
+            if retained and actor.get("state") in {"retired", "unavailable"}:
+                if native_id:
+                    authorities.add(identity)
                 key = f'alan:{actor["addr"]}'
                 mtime = max(actor.get("human_activity", 0), actor.get("created", 0))
                 rows.append((mtime, key, host, actor["kind"],

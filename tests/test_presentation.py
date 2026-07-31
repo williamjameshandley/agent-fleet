@@ -85,7 +85,7 @@ def test_actor_presentation_is_a_nested_tmux_session():
         presentation.attach(actor, details)
 
     assert run.call_args_list == [
-        mock.call(["tmux", "has-session", "-t", "fleet@alan-hash"],
+        mock.call(["tmux", "has-session", "-t", "=fleet@alan-hash"],
                   stdout=presentation.subprocess.DEVNULL,
                   stderr=presentation.subprocess.DEVNULL),
         mock.call(["tmux", "new-session", "-d", "-s", "fleet@alan-hash",
@@ -96,7 +96,7 @@ def test_actor_presentation_is_a_nested_tmux_session():
                   check=True),
     ]
     execute.assert_called_once_with(
-        "tmux", ["tmux", "attach-session", "-t", "fleet@alan-hash"])
+        "tmux", ["tmux", "attach-session", "-t", "=fleet@alan-hash"])
 
 
 def test_existing_actor_presentation_is_reused():
@@ -107,7 +107,70 @@ def test_existing_actor_presentation_is_reused():
         presentation.attach("python-a@newton", {"cwd": "/work"})
     run.assert_called_once()
     execute.assert_called_once_with(
-        "tmux", ["tmux", "attach-session", "-t", "fleet@alan-hash"])
+        "tmux", ["tmux", "attach-session", "-t", "=fleet@alan-hash"])
+
+
+def test_close_kills_the_exact_actor_presentation():
+    present = __import__("subprocess").CompletedProcess([], 0)
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run", return_value=present) as run:
+        presentation.close("codex-a@newton")
+    run.assert_called_once_with(
+        ["tmux", "kill-session", "-t", "=fleet@alan-hash"], text=True,
+        stdout=presentation.subprocess.DEVNULL, stderr=presentation.subprocess.PIPE)
+
+
+def test_close_accepts_an_absent_actor_presentation():
+    absent = __import__("subprocess").CompletedProcess(
+        [], 1, stderr="can't find session: fleet@alan-hash\n")
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run", return_value=absent) as run:
+        presentation.close("codex-a@newton")
+    run.assert_called_once()
+
+
+def test_close_propagates_other_tmux_failures():
+    failure = __import__("subprocess").CompletedProcess(
+        [], 1, stderr="no server running\n")
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run", return_value=failure):
+        try:
+            presentation.close("codex-a@newton")
+        except __import__("subprocess").CalledProcessError:
+            pass
+        else:
+            raise AssertionError("close hid a tmux failure")
+
+
+def test_refresh_retires_closes_and_resumes_the_same_waiting_actor():
+    actor = "codex-a@newton"
+    details = {"addr": actor, "kind": "codex", "state": "waiting",
+               "native": {"id": "thread-1"}}
+    calls = []
+    with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
+         mock.patch.object(presentation.alan, "retire",
+                           side_effect=lambda value: calls.append(("retire", value))), \
+         mock.patch.object(presentation, "close",
+                           side_effect=lambda value: calls.append(("close", value))), \
+         mock.patch.object(presentation.alan, "resume",
+                           side_effect=lambda value: calls.append(("resume", value))):
+        presentation.refresh(actor)
+    assert calls == [("retire", actor), ("close", actor), ("resume", actor)]
+
+
+def test_refresh_rejects_a_working_actor_before_lifecycle_changes():
+    actor = "codex-a@newton"
+    details = {"addr": actor, "kind": "codex", "state": "working",
+               "native": {"id": "thread-1"}}
+    with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
+         mock.patch.object(presentation.alan, "retire") as retire:
+        try:
+            presentation.refresh(actor)
+        except RuntimeError as error:
+            assert "waiting actor" in str(error)
+        else:
+            raise AssertionError("refresh accepted a working actor")
+    retire.assert_not_called()
 
 
 def test_actor_view_dispatches_python_to_jupyter_console():
