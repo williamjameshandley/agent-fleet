@@ -207,7 +207,8 @@ def runtime_name(actor):
 
 
 def actor_socket(actor):
-    return native_dir(actor).parent.parent / (runtime_name(actor) + ".sock")
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    return runtime / "alan" / "actors" / runtime_name(actor) / "loop.sock"
 
 
 def codex_socket(actor):

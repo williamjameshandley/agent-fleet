@@ -75,7 +75,7 @@ def test_python_console_interrupts_only_while_jupyter_is_executing():
 
 def test_actor_presentation_is_a_nested_tmux_session():
     actor = "codex-a@newton"
-    details = {"cwd": "/work"}
+    details = {"kind": "codex", "cwd": "/work"}
     missing = __import__("subprocess").CompletedProcess([], 1)
     with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
          mock.patch.object(presentation.subprocess, "run",
@@ -110,6 +110,31 @@ def test_existing_actor_presentation_is_reused():
         "tmux", ["tmux", "attach-session", "-t", "=fleet@alan-hash"])
 
 
+def test_claude_attaches_only_to_its_existing_native_terminal():
+    present = __import__("subprocess").CompletedProcess([], 0)
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run", return_value=present) as run, \
+         mock.patch.object(presentation.os, "execvp") as execute:
+        presentation.attach("claude-a@newton", {"kind": "claude", "cwd": "/work"})
+    run.assert_called_once()
+    execute.assert_called_once_with(
+        "tmux", ["tmux", "attach-session", "-t", "=fleet@alan-hash"])
+
+
+def test_claude_does_not_get_a_fleet_owned_fallback_terminal():
+    missing = __import__("subprocess").CompletedProcess([], 1)
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run", return_value=missing) as run:
+        try:
+            presentation.attach(
+                "claude-a@newton", {"kind": "claude", "cwd": "/work"})
+        except RuntimeError as error:
+            assert "evaluator terminal is unavailable" in str(error)
+        else:
+            raise AssertionError("Fleet created a second Claude presentation")
+    run.assert_called_once()
+
+
 def test_close_kills_the_exact_actor_presentation():
     present = __import__("subprocess").CompletedProcess([], 0)
     with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
@@ -142,6 +167,18 @@ def test_close_propagates_other_tmux_failures():
             raise AssertionError("close hid a tmux failure")
 
 
+def test_close_rejects_an_alan_owned_claude_terminal():
+    actor = "claude-a@newton"
+    with mock.patch.object(presentation.subprocess, "run") as run:
+        try:
+            presentation.close(actor)
+        except RuntimeError as error:
+            assert "Alan owns" in str(error)
+        else:
+            raise AssertionError("Fleet closed an Alan-owned Claude evaluator")
+    run.assert_not_called()
+
+
 def test_refresh_retires_closes_and_resumes_the_same_waiting_actor():
     actor = "codex-a@newton"
     details = {"addr": actor, "kind": "codex", "state": "waiting",
@@ -156,6 +193,22 @@ def test_refresh_retires_closes_and_resumes_the_same_waiting_actor():
                            side_effect=lambda value: calls.append(("resume", value))):
         presentation.refresh(actor)
     assert calls == [("retire", actor), ("close", actor), ("resume", actor)]
+
+
+def test_refresh_leaves_claude_terminal_lifecycle_to_alan():
+    actor = "claude-a@newton"
+    details = {"addr": actor, "kind": "claude", "state": "waiting",
+               "native": {"id": "session-1"}}
+    calls = []
+    with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
+         mock.patch.object(presentation.alan, "retire",
+                           side_effect=lambda value: calls.append(("retire", value))), \
+         mock.patch.object(presentation, "close",
+                           side_effect=lambda value: calls.append(("close", value))), \
+         mock.patch.object(presentation.alan, "resume",
+                           side_effect=lambda value: calls.append(("resume", value))):
+        presentation.refresh(actor)
+    assert calls == [("retire", actor), ("resume", actor)]
 
 
 def test_refresh_rejects_a_working_actor_before_lifecycle_changes():
@@ -242,6 +295,8 @@ def test_read_codex_console_enters_the_existing_actor_cage(tmp_path):
         "/cage", "--client", actor, str(native), str(socket.parent),
         "/configured-cages/" + name + ".sock", str(socket), "thread-1",
     ]
-    assert environment["LOOP_SOCKET"] == str(state / "actors" / (name + ".sock"))
+    assert environment["LOOP_SOCKET"] == str(
+        runtime / "alan" / "actors" / name / "loop.sock"
+    )
     assert environment["LOOP_CAPABILITIES"] == '"read"'
     assert environment["LOOP_CWD"] == "/work"

@@ -71,6 +71,8 @@ def attach(actor, descriptor):
         stderr=subprocess.DEVNULL,
     )
     if exists.returncode:
+        if descriptor["kind"] == "claude":
+            raise RuntimeError(f"Claude evaluator terminal is unavailable: {actor}")
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", name, "-c", descriptor["cwd"],
              shlex.join(["fleet", "actor-view", actor])],
@@ -84,6 +86,8 @@ def attach(actor, descriptor):
 
 
 def close(actor):
+    if actor.startswith("claude-"):
+        raise RuntimeError("Alan owns the Claude evaluator terminal")
     name = "fleet@alan-" + alan.runtime_name(actor)
     target = "=" + name
     result = subprocess.run(
@@ -105,7 +109,8 @@ def refresh(actor):
     if descriptor["state"] != "waiting":
         raise RuntimeError(f"refresh requires a waiting actor: {actor}")
     alan.retire(actor)
-    close(actor)
+    if descriptor["kind"] != "claude":
+        close(actor)
     alan.resume(actor)
 
 
@@ -123,6 +128,8 @@ def run(actor):
     if descriptor["kind"] == "codex":
         codex_console(actor, descriptor)
         return
+    if descriptor["kind"] != "llm":
+        raise SystemExit(f"{descriptor['kind']} has no Fleet-owned presentation")
 
     while True:
         try:
