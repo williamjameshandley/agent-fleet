@@ -8,9 +8,10 @@ from agent_fleet.transcripts import (PANE_FORMAT, indexed_claude_agents, last_hu
 from agent_fleet.model import ServerRef, Session, SessionRef
 
 
-def rollout(path, identity, source="cli"):
+def rollout(path, identity, source="cli", parent_thread_id=None):
     path.write_text(json.dumps({"type": "session_meta", "payload": {
-        "id": identity, "source": source, "cwd": "/work"}}) + "\n")
+        "id": identity, "source": source, "cwd": "/work",
+        "parent_thread_id": parent_thread_id}}) + "\n")
     return str(path)
 
 
@@ -36,7 +37,8 @@ def test_root_codex_rollout_is_selected_without_resume_argument(tmp_path):
     root = rollout(tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl",
                    "00000000-0000-0000-0000-000000000001")
     child = rollout(tmp_path / "rollout-00000000-0000-0000-0000-000000000002.jsonl",
-                    "00000000-0000-0000-0000-000000000002", "subagent")
+                    "00000000-0000-0000-0000-000000000002", "subagent",
+                    "00000000-0000-0000-0000-000000000001")
     assert select_codex([root, child], set()) == root
 
 

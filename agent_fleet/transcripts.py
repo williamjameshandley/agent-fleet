@@ -266,7 +266,7 @@ def select_codex(targets, resumed):
         with open(target) as stream:
             metadata = json.loads(stream.readline())
         if (metadata.get("type") == "session_meta"
-                and metadata["payload"].get("source") == "cli"):
+                and metadata["payload"].get("parent_thread_id") is None):
             roots.append(target)
     if len(roots) != 1:
         raise RuntimeError(f"expected one root Codex rollout, found {len(roots)}")
@@ -323,7 +323,7 @@ def observe(sessions):
             path = CLAUDE / entry["cwd"].replace("/", "-").replace(".", "-") / f"{identity}.jsonl"
             updated = last_event_time(path) if path.exists() else 0
             human_activity = last_human_time(transcript("claude", path)) if path.exists() else 0
-            summary = title
+            summary = latest_assistant_text(transcript("claude", path))
         else:
             try:
                 item = codex_transcript(tree)

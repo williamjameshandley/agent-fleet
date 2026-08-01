@@ -63,6 +63,15 @@ def test_closed_and_retired_actors_are_reconstructed_without_extra_state():
     assert retired["state"] == "retired"
 
 
+def test_latest_successful_output_is_the_actor_summary():
+    current = alan.actors(graph(
+        {"op": "create"},
+        {"op": "output", "status": "ok", "value": "latest\nmodel reply"},
+    ))[0]
+
+    assert current["summary"] == "latest model reply"
+
+
 def test_foreign_semantic_endpoint_is_not_mistaken_for_an_observed_operation():
     current = graph({"op": "create"}, {"op": "input", "sender": "will"})
     current.add_edge(

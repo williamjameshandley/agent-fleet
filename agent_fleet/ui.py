@@ -56,7 +56,9 @@ def rows(include_header=True):
                    "finished": "-"}[session.state])
         agent = {"codex": "X", "shell": ""}.get(
             session.agent, session.agent[:1].upper())
-        summary = " ".join((session.summary or session.title).split())
+        summary = " ".join(
+            (session.title if session.agent == "shell" else session.summary).split()
+        )
         summary = re.sub(r"^[\u2800-\u28ff✳●*]+\s*", "", summary)
         room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 20 - 1)
         host_colour = HOST_COLOUR.get(session.ref.server.host, "")

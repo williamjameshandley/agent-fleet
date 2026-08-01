@@ -116,6 +116,8 @@ def actors(graph=None):
             descriptor["state"] = "working" if active else "waiting"
         if last_output and last_output.get("status") == "error":
             descriptor["last_error"] = last_output.get("error", "")
+        elif last_output and isinstance(last_output.get("value"), str):
+            descriptor["summary"] = " ".join(last_output["value"].split())
     return list(descriptors.values())
 
 
@@ -130,7 +132,8 @@ def inventory(host, actor_descriptors):
             SessionRef(source, actor["addr"]), actor.get("label") or label(actor["addr"]),
             actor["created"], 0, 0, 1, "alan", "",
             actor.get("cwd") or "", actor["kind"], actor["state"],
-            actor.get("last_error", ""), 0, native.get("id", ""),
+            actor.get("summary") or actor.get("last_error", ""), 0,
+            native.get("id", ""),
             actor["human_activity"], actor.get("active_evaluation") or "",
             actor["evaluation_started"]))
     return sessions
