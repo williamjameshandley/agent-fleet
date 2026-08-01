@@ -18,7 +18,7 @@ SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
 
 def check_slot(slot):
     if not SLOT.fullmatch(slot):
-        raise SystemExit(f"invalid viewer slot {slot!r}")
+        raise ValueError(f"invalid viewer slot {slot!r}")
     return slot
 
 
@@ -29,11 +29,11 @@ def exchange(slot, message):
         try:
             client.connect(str(path))
         except (FileNotFoundError, ConnectionRefusedError):
-            raise SystemExit(f"viewer slot {slot!r} is not running")
+            raise RuntimeError(f"viewer slot {slot!r} is not running")
         client.sendall((message + "\n").encode())
         reply = client.makefile().readline().strip()
         if message != "STATUS" and reply != "OK":
-            raise SystemExit(reply or f"viewer {slot!r} did not acknowledge")
+            raise RuntimeError(reply or f"viewer {slot!r} did not acknowledge")
         return reply
 
 
@@ -63,7 +63,7 @@ def slots():
         slot = path.name.removeprefix("viewer-").removesuffix(".sock")
         try:
             found.append((slot, exchange(slot, "STATUS")))
-        except SystemExit:
+        except RuntimeError:
             continue
     return found
 
@@ -104,7 +104,8 @@ def show(key, slot=None):
 def command(key):
     host = key_host(key)
     local = os.uname().nodename
-    attach = ["fleet", "attach", key]
+    attach = [os.environ.get("PYTHON", "python"), "-c",
+              "import sys; from agent_fleet.viewer import attach; attach(sys.argv[1])", key]
     return attach if host == local else ["ssh", "-tt", "-o", "BatchMode=yes", host,
                                          shlex.join(attach)]
 
@@ -179,26 +180,26 @@ def attach(key):
     if key.startswith("alan:"):
         _, host, addr = key.split(":", 2)
         if host != os.uname().nodename:
-            raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+            raise ValueError(f"identity is for {host}, not {os.uname().nodename}")
         actor = next((item for item in alan.actors() if item["addr"] == addr), None)
         if actor is None:
-            raise SystemExit(f"Alan actor disappeared: {addr}")
+            raise LookupError(f"Alan actor disappeared: {addr}")
         attachment = alan.attachment(addr)
         if attachment.get("kind") == "tmux":
             generation = subprocess.run(
                 ["tmux", "show-options", "-v", "-t", attachment["session"],
                  "@fleet_generation"], text=True, capture_output=True).stdout.strip()
             if generation != attachment.get("generation"):
-                raise SystemExit(f"stale actor presentation: {addr}")
+                raise RuntimeError(f"stale actor presentation: {addr}")
             os.execvp("tmux", ["tmux", "attach-session", "-t", attachment["session"]])
             return
-        raise SystemExit(f"actor {addr} has no supported attachment")
+        raise ValueError(f"actor {addr} has no supported attachment")
     host = key_host(key)
     if host != os.uname().nodename:
-        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+        raise ValueError(f"identity is for {host}, not {os.uname().nodename}")
     current = [s for s in inventory(host) if s.ref.key == key]
     if len(current) != 1:
-        raise SystemExit(f"session identity changed: {key}")
+        raise RuntimeError(f"session identity changed: {key}")
     if current[0].agent == "codex":
         subprocess.run(["tmux", "set-option", "-t", current[0].ref.session_id,
                         "mouse", "on"], check=True)

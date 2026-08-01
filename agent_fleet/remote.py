@@ -7,6 +7,6 @@ def find(key, live=True):
     for session in sessions:
         if session.ref.key == key:
             if live and session.ref.server.host in unavailable:
-                raise SystemExit(f"{session.ref.server.host} is disconnected; refusing action")
+                raise RuntimeError(f"{session.ref.server.host} is disconnected; refusing action")
             return session
-    raise SystemExit(f"session disappeared: {key}")
+    raise LookupError(f"session disappeared: {key}")

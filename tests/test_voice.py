@@ -78,11 +78,9 @@ class VoiceModelTests(unittest.TestCase):
 
         selected = destination.capture()
 
-        self.assertEqual(
-            run.call_args_list[1].args[0],
-            ["ssh", "-T", "-o", "BatchMode=yes", "lovelace",
-             "fleet", "viewer-status", "main"],
-        )
+        command = run.call_args_list[1].args[0]
+        self.assertEqual(command[:5], ["ssh", "-T", "-o", "BatchMode=yes", "lovelace"])
+        self.assertIn("agent_fleet.viewer import exchange", command[7])
         self.assertEqual(selected.key, "source-key")
 
     @patch("alan_composer.i3.subprocess.run")

@@ -1,5 +1,7 @@
 #!/bin/sh
 if [ "$(hostname -s)" != lovelace ]; then
-    exec ssh -tt -o BatchMode=yes lovelace fleet-commander "$@"
+    [ "$#" -eq 0 ] || exit 2
+    exec ssh -tt -o BatchMode=yes lovelace fleet-commander
 fi
-exec fleet commander "$@"
+[ "$#" -eq 0 ] || exit 2
+exec python -c 'from agent_fleet.commander_client import run; run()'

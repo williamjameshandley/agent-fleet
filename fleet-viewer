@@ -5,11 +5,11 @@ if [ "$slot" = main ]; then
     if [ "$(hostname -s)" != lovelace ]; then
         exec ssh -tt -o BatchMode=yes lovelace fleet-viewer main
     fi
-    if tmux has-session -t fleet@main 2>/dev/null && ! fleet viewer-status main >/dev/null 2>&1; then
+    if tmux has-session -t fleet@main 2>/dev/null && ! python -c 'from agent_fleet.viewer import exchange; print(exchange("main", "STATUS"))' >/dev/null 2>&1; then
         tmux kill-session -t fleet@main
     fi
     if ! tmux has-session -t fleet@main 2>/dev/null; then
-        tmux new-session -d -s fleet@main 'exec fleet viewer --slot main'
+        tmux new-session -d -s fleet@main "exec python -c 'from agent_fleet.viewer import serve; serve(\"main\")'"
         tmux set-option -t fleet@main status off
         tmux set-option -t fleet@main prefix None
         tmux set-option -t fleet@main prefix2 None
@@ -18,4 +18,4 @@ if [ "$slot" = main ]; then
     tmux set-option -t fleet@main mouse on
     exec tmux -u attach-session -t fleet@main
 fi
-exec fleet viewer --slot "$slot"
+exec python -c 'import sys; from agent_fleet.viewer import serve; serve(sys.argv[1])' "$slot"
