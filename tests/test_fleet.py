@@ -687,12 +687,12 @@ class IdentityTests(unittest.TestCase):
                 actions.archive(session.ref.key)
         command.assert_not_called()
 
-    def test_archive_leaves_claude_terminal_lifecycle_to_alan(self):
+    def test_archive_retires_alan_claude_without_projected_native_identity(self):
         host = os.uname().nodename
         session = Session(
             SessionRef(ServerRef(host, "", 0, 0, "alan"), f"claude-1@{host}"),
             "work", 1, 0, 0, 1, "alan", "", "/work",
-            "claude", "waiting", "", 0, "session-1", 1)
+            "claude", "waiting", "", 0, "", 1)
         with mock.patch("agent_fleet.actions.find", return_value=session), \
              mock.patch("agent_fleet.actions.host_command") as command, \
              mock.patch("agent_fleet.actions.wait_for_absence"), \

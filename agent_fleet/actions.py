@@ -131,8 +131,6 @@ def archive(key):
     if session.ref.server.kind == "alan":
         if session.agent not in {"llm", "claude", "codex"}:
             raise SystemExit("archive requires a language actor")
-        if session.agent in {"claude", "codex"} and not session.transcript_id:
-            raise SystemExit("archive requires a durable Claude or Codex identity")
         host_command(session.ref.server.host, "fleet", "alan-retire",
                      session.ref.session_id, capture_output=True)
         if session.agent == "llm":
