@@ -323,7 +323,8 @@ def observe(sessions):
             path = CLAUDE / entry["cwd"].replace("/", "-").replace(".", "-") / f"{identity}.jsonl"
             updated = last_event_time(path) if path.exists() else 0
             human_activity = last_human_time(transcript("claude", path)) if path.exists() else 0
-            summary = latest_assistant_text(transcript("claude", path))
+            summary = (latest_assistant_text(transcript("claude", path))
+                       if path.exists() else "")
         else:
             try:
                 item = codex_transcript(tree)
