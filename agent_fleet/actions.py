@@ -135,7 +135,7 @@ def archive(key):
             raise SystemExit("archive requires a durable Claude or Codex identity")
         host_command(session.ref.server.host, "fleet", "alan-retire",
                      session.ref.session_id, capture_output=True)
-        if session.agent != "claude":
+        if session.agent == "llm":
             host_command(session.ref.server.host, "fleet", "actor-close",
                          session.ref.session_id, capture_output=True)
     else:

@@ -671,8 +671,6 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(command.call_args_list, [
             mock.call(host, "fleet", "alan-retire", f"codex-1@{host}",
                       capture_output=True),
-            mock.call(host, "fleet", "actor-close", f"codex-1@{host}",
-                      capture_output=True),
         ])
         absent.assert_called_once_with(session.ref.key)
         request.assert_called_once_with("main", "")
@@ -1030,7 +1028,7 @@ class IdentityTests(unittest.TestCase):
         self.assertNotRegex(source, r"(?<![A-Za-z_])input\(")
         self.assertIn('"rofi", "-dmenu"', workstation_source)
 
-    def test_alan_attachment_uses_the_fleet_owned_presentation(self):
+    def test_alan_attachment_uses_the_actor_owned_presentation(self):
         actor = f"claude-1@{os.uname().nodename}"
         descriptor = {"addr": actor, "kind": "claude", "state": "waiting"}
         with mock.patch.object(alan, "actors", return_value=[descriptor]), \
@@ -1038,7 +1036,7 @@ class IdentityTests(unittest.TestCase):
             viewer.attach(f"alan:{actor}")
         present.assert_called_once_with(actor, descriptor)
 
-    def test_codex_actor_attachment_uses_the_fleet_owned_presentation(self):
+    def test_codex_actor_attachment_uses_the_actor_owned_presentation(self):
         actor = f"codex-1@{os.uname().nodename}"
         descriptor = {
             "addr": actor,
@@ -1052,25 +1050,39 @@ class IdentityTests(unittest.TestCase):
             viewer.attach(f"alan:{actor}")
         present.assert_called_once_with(actor, descriptor)
 
-    def test_alan_preview_is_derived_from_native_evidence(self):
+    def test_alan_preview_captures_the_actor_owned_terminal(self):
+        for kind in ("claude", "codex"):
+            with self.subTest(kind=kind):
+                self.assert_actor_preview_captures_terminal(kind)
+
+    def assert_actor_preview_captures_terminal(self, kind):
         actor = {
-            "addr": "codex-1@newton", "kind": "codex",
+            "addr": f"{kind}-1@newton", "kind": kind,
             "cwd": "/work",
             "native": {"id": "thread-1", "thread_id": "thread-1",
                        "base_dir": "/alan/native",
                        "path": "/provider/corpus/rollout-thread-1.jsonl"},
         }
-        evidence = object()
+        session = mock.Mock(session_name="fleet@alan-hash")
+        server = mock.Mock(sessions=[session])
         with mock.patch("agent_fleet.tmux.alan.actors", return_value=[actor]), \
-             mock.patch("agent_fleet.tmux.native_evidence",
-                        return_value=evidence) as resolve, \
-             mock.patch("agent_fleet.tmux.render_preview",
+             mock.patch("agent_fleet.tmux.alan.runtime_name", return_value="hash"), \
+             mock.patch("agent_fleet.tmux.server", return_value=server), \
+             mock.patch("agent_fleet.tmux.capture_pane",
                         return_value="conversation\n") as preview:
             self.assertEqual(
-                tmux.capture("alan:codex-1@newton", 80, 20),
+                tmux.capture(f"alan:{kind}-1@newton", 80, 20),
                 "conversation\n")
-        resolve.assert_called_once_with(actor["native"])
-        preview.assert_called_once_with(evidence, 80, 20)
+        preview.assert_called_once_with(session, 80, 20)
+
+    def test_alan_preview_has_no_transcript_fallback(self):
+        actor = {"addr": "codex-1@newton", "kind": "codex"}
+        with mock.patch("agent_fleet.tmux.alan.actors", return_value=[actor]), \
+             mock.patch("agent_fleet.tmux.alan.runtime_name", return_value="hash"), \
+             mock.patch("agent_fleet.tmux.server",
+                        return_value=mock.Mock(sessions=[])):
+            with self.assertRaisesRegex(RuntimeError, "terminal is unavailable"):
+                tmux.capture("alan:codex-1@newton", 80, 20)
 
     def test_viewer_clear_remains_an_internal_primitive(self):
         root = Path(__file__).parents[1]

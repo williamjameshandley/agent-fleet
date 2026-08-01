@@ -16,7 +16,6 @@ from .agent import observe
 from .config import RUNTIME
 from .alan import Watcher as AlanWatcher, inventory as alan_inventory
 from . import alan
-from .transcripts import native_evidence, render_preview
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
 
@@ -59,13 +58,15 @@ def capture(key, columns=0, lines=0):
                       if item["addr"] == addr), None)
         if actor is None:
             raise RuntimeError(f"Alan actor disappeared: {addr}")
-        native = actor.get("native")
-        if actor["kind"] in {"claude", "codex"} and native:
-            return render_preview(
-                native_evidence(native),
-                columns,
-                lines,
-            )
+        if actor["kind"] in {"claude", "codex"}:
+            name = "fleet@alan-" + alan.runtime_name(addr)
+            session = next((item for item in server().sessions
+                            if item.session_name == name), None)
+            if session is None:
+                raise RuntimeError(
+                    f"{actor['kind'].capitalize()} evaluator terminal is unavailable: {addr}"
+                )
+            return capture_pane(session, columns, lines)
         return alan.preview(addr, columns, lines)
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:

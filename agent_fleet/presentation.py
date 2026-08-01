@@ -1,4 +1,3 @@
-import json
 import os
 import shlex
 import subprocess
@@ -26,42 +25,6 @@ def python_console(actor, connection_file):
     console.start()
 
 
-def codex_console(actor, descriptor):
-    native = alan.native_dir(actor)
-    thread_id = (native / "thread_id").read_text()
-    socket = alan.codex_socket(actor)
-    os.chdir(descriptor["cwd"])
-    if descriptor["capabilities"] == "full":
-        os.execvp(
-            "codex",
-            ["codex", "resume", "--remote", f"unix://{socket}", thread_id,
-             "--no-alt-screen"],
-        )
-        return
-
-    cage = os.environ.get("LOOP_CODEX_CAGE", "/usr/lib/alan/alan-codex-cage")
-    environment = {
-        **os.environ,
-        "LOOP_SOCKET": str(alan.actor_socket(actor)),
-        "LOOP_CAPABILITIES": json.dumps("read"),
-        "LOOP_CWD": descriptor["cwd"],
-    }
-    os.execve(
-        cage,
-        [
-            cage,
-            "--client",
-            actor,
-            str(native),
-            str(socket.parent),
-            str(alan.codex_gateway(actor)),
-            str(socket),
-            thread_id,
-        ],
-        environment,
-    )
-
-
 def attach(actor, descriptor):
     name = "fleet@alan-" + alan.runtime_name(actor)
     target = "=" + name
@@ -71,8 +34,10 @@ def attach(actor, descriptor):
         stderr=subprocess.DEVNULL,
     )
     if exists.returncode:
-        if descriptor["kind"] == "claude":
-            raise RuntimeError(f"Claude evaluator terminal is unavailable: {actor}")
+        if descriptor["kind"] in {"claude", "codex"}:
+            raise RuntimeError(
+                f"{descriptor['kind'].capitalize()} evaluator terminal is unavailable: {actor}"
+            )
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", name, "-c", descriptor["cwd"],
              shlex.join(["fleet", "actor-view", actor])],
@@ -86,8 +51,8 @@ def attach(actor, descriptor):
 
 
 def close(actor):
-    if actor.startswith("claude-"):
-        raise RuntimeError("Alan owns the Claude evaluator terminal")
+    if not actor.startswith("llm-"):
+        raise RuntimeError("Fleet owns only bare-model actor presentations")
     name = "fleet@alan-" + alan.runtime_name(actor)
     target = "=" + name
     result = subprocess.run(
@@ -109,8 +74,6 @@ def refresh(actor):
     if descriptor["state"] != "waiting":
         raise RuntimeError(f"refresh requires a waiting actor: {actor}")
     alan.retire(actor)
-    if descriptor["kind"] != "claude":
-        close(actor)
     alan.resume(actor)
 
 
@@ -124,9 +87,6 @@ def run(actor):
 
     if descriptor["kind"] == "python":
         python_console(actor, alan.native_dir(actor) / "kernel.json")
-        return
-    if descriptor["kind"] == "codex":
-        codex_console(actor, descriptor)
         return
     if descriptor["kind"] != "llm":
         raise SystemExit(f"{descriptor['kind']} has no Fleet-owned presentation")

@@ -204,14 +204,6 @@ def actor_session(addr, kind):
     )
 
 
-def test_actor_socket_uses_the_actor_runtime_directory(tmp_path, monkeypatch):
-    actor = "codex-a@newton"
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    assert alan.actor_socket(actor) == (
-        tmp_path / "alan" / "actors" / alan.runtime_name(actor) / "loop.sock"
-    )
-
-
 def test_projection_derives_roots_and_reveals_descendants_by_class():
     root = "codex-root@newton"
     language = "claude-child@lovelace"

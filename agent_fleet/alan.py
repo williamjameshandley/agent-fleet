@@ -206,22 +206,6 @@ def runtime_name(actor):
     return hashlib.sha256(actor.encode()).digest()[:16].hex()
 
 
-def actor_socket(actor):
-    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-    return runtime / "alan" / "actors" / runtime_name(actor) / "loop.sock"
-
-
-def codex_socket(actor):
-    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-    return runtime / "alan" / "codex" / runtime_name(actor) / "codex.sock"
-
-
-def codex_gateway(actor):
-    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-    cages = Path(os.environ.get("LOOP_CAGE_RUNTIME_DIR", runtime / "alan" / "cages"))
-    return cages / (runtime_name(actor) + ".sock")
-
-
 def retire(addr):
     loop.control(addr, "retire")
 

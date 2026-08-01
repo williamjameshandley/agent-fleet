@@ -10,12 +10,12 @@ Muster is one persistent fzf list on Lovelace. Working and needs-action sessions
 the top, and waiting work follows by meaningful transcript recency. Its cursor is keyed by the canonical source ID, so
 sorting cannot turn one row into another.
 
-Enter attaches the global `fleet@main` viewer to the selected source. For an
-Alan actor, Fleet creates or reuses a disposable nested tmux presentation:
-Codex uses its native TUI, Python uses Jupyter Console, and Claude and bare
-models use the minimal line presenter. The presentation is derived from the
-actor address and is not Alan lifecycle state. Claude and Codex previews render
-the provider-native transcript referenced by Alan's observation graph.
+Enter attaches the global `fleet@main` viewer to the selected source. Alan owns
+the exact Claude and Codex tmux terminals for those actors; Fleet attaches to
+and previews those same panes. Python uses a Fleet-owned Jupyter Console and a
+bare model uses Fleet's minimal line presenter, each derived from its actor
+address. Provider-native transcripts remain evidence and supply History, not a
+second live presentation.
 Muster and Main are attachable from every workstation and therefore
 retain one shared selection while the user moves. A multi-screen deck
 focuses an already open source or uses a free slot; a full deck never evicts
@@ -46,8 +46,8 @@ Opening a remote source in Main or a named workstation viewer creates the one
 unavoidable long-lived interactive SSH attachment with `BatchMode=yes`.
 
 Tmux previews use `capture-pane -eN`, reconstruct the terminal grid with
-libvterm, and apply tmux's `screen_write_preview` cursor-centred crop. Alan
-Claude and Codex previews show the recent authoritative vendor transcript.
+libvterm, and apply tmux's `screen_write_preview` cursor-centred crop. Live Alan
+Claude and Codex previews capture their actor-owned tmux panes.
 
 Tmux identity is:
 
