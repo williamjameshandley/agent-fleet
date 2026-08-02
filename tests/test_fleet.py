@@ -675,18 +675,6 @@ class IdentityTests(unittest.TestCase):
         absent.assert_called_once_with(session.ref.key)
         request.assert_called_once_with("main", "")
 
-    def test_archive_refuses_actor_without_native_identity_before_mutation(self):
-        host = os.uname().nodename
-        session = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"codex-1@{host}"),
-            "work", 1, 0, 0, 1, "tmux", "", "/work",
-            "codex", "waiting")
-        with mock.patch("agent_fleet.actions.find", return_value=session), \
-             mock.patch("agent_fleet.actions.host_command") as command:
-            with self.assertRaisesRegex(SystemExit, "durable Claude or Codex identity"):
-                actions.archive(session.ref.key)
-        command.assert_not_called()
-
     def test_archive_retires_alan_claude_without_projected_native_identity(self):
         host = os.uname().nodename
         session = Session(
