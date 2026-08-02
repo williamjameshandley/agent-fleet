@@ -1,10 +1,11 @@
 import fcntl
 import hashlib
+import json
 import os
 import threading
 import time
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -89,8 +90,10 @@ def provider_identity(addr, kind):
 def actors(graph=None):
     if graph is None:
         graph = loop.observe()
-    descriptors = {actor["addr"]: dict(actor)
-                   for actor in graph.graph.get("actors", [])}
+    all_descriptors = {actor["addr"]: dict(actor)
+                       for actor in graph.graph.get("actors", [])}
+    descriptors = {addr: actor for addr, actor in all_descriptors.items()
+                   if actor["kind"] != "principal"}
     operations = {actor: [] for actor in descriptors}
     for reference, operation in graph.nodes(data=True):
         if "stream" in operation:
@@ -113,8 +116,11 @@ def actors(graph=None):
                 last_output = operation
                 if evidence := operation.get("native"):
                     native = evidence
-            elif operation["op"] == "input" and "sender" in operation:
-                human_activity = _timestamp(operation["time"])
+            elif operation["op"] == "input" and "send" in operation:
+                source = graph.nodes.get(operation["send"], {})
+                source_actor = all_descriptors.get(source.get("stream"), {})
+                if source_actor.get("kind") == "principal":
+                    human_activity = _timestamp(operation["time"])
 
         descriptor["created"] = _timestamp(stream[0][1]["time"]) if stream else 0
         descriptor["label"] = label(addr)
@@ -204,8 +210,37 @@ def project(sessions, graph, expanded=(), show_python=False):
             children.setdefault(parent, []).append(actor)
             children.setdefault(actor, [])
 
+    def visible(actor):
+        result = [actor]
+        if actor in expanded:
+            for child in children[actor]:
+                result.extend(visible(child))
+        return result
+
+    emitted = set()
+    for root in eligible:
+        emitted.update(visible(root))
+
+    attention = {}
+    for source, request in _outstanding_requests(graph, descriptors):
+        candidates = (nx.ancestors(ancestry, source) | {source}) & emitted
+        if not candidates:
+            continue
+        anchor = min(candidates, key=lambda actor: nx.shortest_path_length(
+            ancestry, actor, source))
+        attention.setdefault(anchor, []).append(request)
+
     def emit(actor, depth):
         session = actor_sessions[actor]
+        requests = attention.get(actor, ())
+        if requests:
+            latest = max(requests, key=lambda request: request[0])
+            session = replace(
+                session,
+                reported_state="needs-action",
+                summary=f"{len(requests)} awaiting — {latest[2]}",
+                human_activity=max(session.human_activity, latest[1]),
+            )
         descendants = children[actor]
         yield Projected(session, depth, len(descendants), actor in expanded)
         if actor in expanded:
@@ -221,6 +256,35 @@ def project(sessions, graph, expanded=(), show_python=False):
         if actor in eligible:
             result.extend(emit(actor, 0))
     return result
+
+
+def _outstanding_requests(graph, descriptors):
+    principals = {addr for addr, actor in descriptors.items()
+                  if actor["kind"] == "principal"}
+    replied = {source for source, _target, relation in graph.edges(keys=True)
+               if relation == "reply"}
+    requests = []
+    for reference, operation in graph.nodes(data=True):
+        if operation.get("op") != "send" or operation.get("to") not in principals \
+                or operation.get("reply") or reference in replied:
+            continue
+        accepted = any(
+            relation == "send"
+            and graph.nodes[target].get("stream") == operation["to"]
+            for _source, target, relation in graph.out_edges(reference, keys=True)
+        )
+        if not accepted:
+            continue
+        payload = operation.get("payload", "")
+        if isinstance(payload, dict):
+            payload = payload.get("text", payload.get("code", payload))
+        preview = " ".join(
+            (json.dumps(payload, sort_keys=True) if not isinstance(payload, str)
+             else payload).split()
+        )
+        requests.append((operation["stream"],
+                         (operation["time"], _timestamp(operation["time"]), preview)))
+    return requests
 
 
 def create(kind, name, cwd):
