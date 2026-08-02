@@ -31,13 +31,13 @@ def graph(*operations, state="live"):
 def test_actor_state_and_native_evidence_are_derived_from_operations():
     current = alan.actors(graph(
         {"op": "create"},
-        {"op": "input", "sender": "will"},
+        {"op": "input"},
         {"op": "evaluation"},
         {"op": "output", "status": "ok", "native": {
             "kind": "codex", "session_id": "app-session", "turn_id": "turn-1",
             "base_dir": "/native", "path": "/native/rollout-a.jsonl",
         }},
-        {"op": "input", "sender": "will"},
+        {"op": "input"},
         {"op": "evaluation"},
     ))[0]
 
@@ -50,13 +50,31 @@ def test_actor_state_and_native_evidence_are_derived_from_operations():
     assert "id" not in current["native"]
     assert current["native"]["base_dir"] == "/native"
     assert current["created"] == 1785412800
-    assert current["human_activity"] == 1785412804
+    assert current["human_activity"] == 0
+
+
+def test_principals_are_not_sessions_and_their_sends_are_human_activity():
+    current = graph({"op": "create"}, {"op": "input", "send": "will@newton#1"})
+    current.graph["actors"].append({
+        "addr": "will@newton", "kind": "principal", "host": "newton"
+    })
+    current.add_node("will@newton#0", stream="will@newton", op="create",
+                     time="2026-07-30T12:00:00Z")
+    current.add_node("will@newton#1", stream="will@newton", op="send",
+                     to="codex-a@newton", payload="hello",
+                     time="2026-07-30T12:00:01Z")
+    current.add_edge("will@newton#1", "codex-a@newton#1", key="send")
+
+    [actor] = alan.actors(current)
+
+    assert actor["addr"] == "codex-a@newton"
+    assert actor["human_activity"] == 1785412801
 
 
 def test_closed_and_retired_actors_are_reconstructed_without_extra_state():
     waiting = alan.actors(graph(
         {"op": "create"},
-        {"op": "input", "sender": "will"},
+        {"op": "input"},
         {"op": "evaluation"},
         {"op": "output", "status": "error", "error": "failed"},
     ))[0]
@@ -77,7 +95,7 @@ def test_latest_successful_output_is_the_actor_summary():
 
 
 def test_foreign_semantic_endpoint_is_not_mistaken_for_an_observed_operation():
-    current = graph({"op": "create"}, {"op": "input", "sender": "will"})
+    current = graph({"op": "create"}, {"op": "input"})
     current.add_edge(
         "claude-remote@lovelace#4",
         "codex-a@newton#1",
@@ -88,21 +106,7 @@ def test_foreign_semantic_endpoint_is_not_mistaken_for_an_observed_operation():
     actor = alan.actors(current)[0]
 
     assert actor["addr"] == "codex-a@newton"
-    assert actor["human_activity"] == 1785412801
-
-
-def test_schedule_operations_do_not_become_fleet_actors():
-    current = graph({"op": "create"})
-    current.add_node(
-        "schedule:550e8400-e29b-41d4-a716-446655440000@newton#0",
-        op="send",
-        to="codex-a@newton",
-        payload="later",
-        at="2037-01-02T03:04:05Z",
-        time="2026-07-30T12:00:01Z",
-    )
-
-    assert [actor["addr"] for actor in alan.actors(current)] == ["codex-a@newton"]
+    assert actor["human_activity"] == 0
 
 
 def test_explicit_empty_graph_is_not_replaced_by_a_live_observation():
@@ -140,7 +144,7 @@ def test_watcher_polls_observe_and_emits_only_changed_snapshots():
     stopped = threading.Event()
     changed = queue.Queue()
     first = graph({"op": "create"})
-    second = graph({"op": "create"}, {"op": "input", "sender": "will"})
+    second = graph({"op": "create"}, {"op": "input"})
     observations = iter((first, first, second))
 
     def observe():
@@ -362,3 +366,75 @@ def test_projection_composes_spawn_ancestry_from_separate_hosts():
     assert [item.session.ref.key for item in alan.project(
         sessions, current, expanded={parent}
     )] == [f"alan:{parent}", f"alan:{child}"]
+
+
+def test_outstanding_principal_requests_follow_recursive_folds_and_reply_edges():
+    root = "codex-root@newton"
+    child = "claude-child@newton"
+    nested = "codex-nested@newton"
+    principal = "will@newton"
+    current = nx.MultiDiGraph()
+    current.graph["actors"] = [
+        {"addr": root, "kind": "codex"},
+        {"addr": child, "kind": "claude"},
+        {"addr": nested, "kind": "codex"},
+        {"addr": principal, "kind": "principal"},
+    ]
+    for actor in (root, child, nested, principal):
+        current.add_node(f"{actor}#0", stream=actor, op="create",
+                         time="2026-07-30T12:00:00Z")
+    for parent, descendant in ((root, child), (child, nested)):
+        spawn = f"{parent}#1"
+        current.add_node(spawn, stream=parent, op="spawn",
+                         time="2026-07-30T12:00:01Z")
+        current.add_edge(spawn, f"{descendant}#0", key="spawn")
+    for position, (source, text) in enumerate(
+            ((child, "first question"), (nested, "latest question")), 1):
+        send = f"{source}#2"
+        accepted = f"{principal}#{position}"
+        current.add_node(send, stream=source, op="send", to=principal,
+                         payload=text, time=f"2026-07-30T12:00:0{position + 2}Z")
+        current.add_node(accepted, stream=principal, op="input", send=send,
+                         payload=text, time=f"2026-07-30T12:00:0{position + 2}Z")
+        current.add_edge(send, accepted, key="send")
+    current.add_node(f"{root}#2", stream=root, op="send", to=principal,
+                     payload="not accepted", time="2026-07-30T12:00:05Z")
+    current.add_node(f"{principal}#3", stream=principal, op="send", to=nested,
+                     payload="human prompt", time="2026-07-30T12:00:05Z")
+    current.add_node(f"{nested}#3", stream=nested, op="input",
+                     send=f"{principal}#3", payload="human prompt",
+                     time="2026-07-30T12:00:05Z")
+    current.add_edge(f"{principal}#3", f"{nested}#3", key="send")
+    current.add_node(f"{nested}#4", stream=nested, op="send", to=principal,
+                     reply=f"{principal}#3", payload="answer to human",
+                     time="2026-07-30T12:00:06Z")
+    current.add_node(f"{principal}#4", stream=principal, op="input",
+                     send=f"{nested}#4", reply=f"{principal}#3",
+                     payload="answer to human", time="2026-07-30T12:00:06Z")
+    current.add_edge(f"{principal}#3", f"{nested}#4", key="reply")
+    current.add_edge(f"{nested}#4", f"{principal}#4", key="send")
+    sessions = [actor_session(actor, kind) for actor, kind in (
+        (root, "codex"), (child, "claude"), (nested, "codex"))]
+
+    [collapsed] = alan.project(sessions, current)
+    assert collapsed.session.state == "needs-action"
+    assert collapsed.session.summary == "2 awaiting — latest question"
+
+    root_open = alan.project(sessions, current, expanded={root})
+    assert root_open[0].session.state == "waiting"
+    assert root_open[1].session.state == "needs-action"
+    assert root_open[1].session.summary == "2 awaiting — latest question"
+
+    nested_open = alan.project(sessions, current, expanded={root, child})
+    assert [item.session.summary for item in nested_open] == [
+        "", "1 awaiting — first question", "1 awaiting — latest question"
+    ]
+
+    reply = f"{principal}#5"
+    current.add_node(reply, stream=principal, op="send", to=child,
+                     reply=f"{child}#2", payload="answer",
+                     time="2026-07-30T12:00:06Z")
+    current.add_edge(f"{child}#2", reply, key="reply")
+
+    [collapsed] = alan.project(sessions, current)
+    assert collapsed.session.summary == "1 awaiting — latest question"
