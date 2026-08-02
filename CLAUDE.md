@@ -54,6 +54,8 @@ across machines, operable with one hand and eventually none.
 - No persistent JSON state. Lovelace owns the sole disposable in-memory
   projection and the global `fleet@muster` and `fleet@main` sessions. Actual
   named-viewer placement remains workstation-local and comes from i3.
+- `fleet@main` is a transparent routing session: its status and prefixes remain
+  off. The attached source presentation owns the one visible tmux status line.
 - Verify installed tmux, SSH, fzf and agent behavior experimentally. In
   particular, control observers attach with `ignore-size`, shell-bound remote
   arguments use `shlex.join`, and tmux `#{q:}` fields are parsed with `shlex`.

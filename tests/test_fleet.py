@@ -956,10 +956,49 @@ class IdentityTests(unittest.TestCase):
                       muster)
         self.assertIn("new-session -d -s fleet@main", main)
         self.assertIn("set-option -t fleet@main prefix None", main)
+        self.assertIn("set-option -t fleet@main status off", main)
         self.assertIn("set-option -t fleet@main mouse on", main)
         self.assertIn("set-option -t fleet@muster mouse off", muster)
         self.assertIn("from agent_fleet.viewer import exchange", main)
         self.assertIn("ConditionHost=lovelace", service)
+
+    def test_main_viewer_restores_its_transparent_status(self):
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            environment = {key: value for key, value in os.environ.items()
+                           if key != "TMUX"}
+            environment["TMUX_TMPDIR"] = str(directory / "tmux")
+            environment["XDG_RUNTIME_DIR"] = str(directory / "runtime")
+            environment["PYTHONPATH"] = str(root)
+            (directory / "tmux").mkdir()
+            (directory / "runtime").mkdir()
+            subprocess.run(
+                ["tmux", "new-session", "-d", "-s", "fleet@main",
+                 f"exec {sys.executable} -c 'from agent_fleet.viewer import serve; "
+                 "serve(\"main\")'"], check=True, env=environment)
+            try:
+                subprocess.run(["tmux", "set-option", "-t", "fleet@main",
+                                "status", "on"], check=True, env=environment)
+                for _ in range(100):
+                    if (directory / "runtime" / "agent-fleet" /
+                            "viewer-main.sock").exists():
+                        break
+                    time.sleep(0.01)
+                self.assertTrue((directory / "runtime" / "agent-fleet" /
+                                 "viewer-main.sock").exists())
+                subprocess.run([root / "fleet-viewer", "main"],
+                               stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL,
+                               env=environment)
+                status = subprocess.run(
+                    ["tmux", "show-option", "-t", "fleet@main", "-v", "status"],
+                    check=True, text=True, capture_output=True,
+                    env=environment).stdout.strip()
+                self.assertEqual(status, "off")
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment)
 
     def test_muster_always_opens_the_global_main_viewer(self):
         source = (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text()
