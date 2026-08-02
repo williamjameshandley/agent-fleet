@@ -8,8 +8,8 @@ import textwrap
 
 from .config import RUNTIME, machine
 from .daemon import snapshot
-from .protocol import decode_message
-from . import viewer
+from .protocol import decode_graph, decode_message
+from . import alan, viewer
 
 
 STATE_ORDER = {"working": 0, "needs-action": 1, "waiting": 2, "finished": 3}
@@ -54,9 +54,11 @@ def rows(include_header=True):
         marker = ("?" if session.ref.server.host in unavailable else
                   {"needs-action": "!", "working": "*", "waiting": ".",
                    "finished": "-"}[session.state])
-        agent = {"claude": "C", "codex": "X", "python": "P", "gemini": "G",
-                 "multiple": "M", "shell": ""}[session.agent]
-        summary = " ".join((session.summary or session.title).split())
+        agent = {"codex": "X", "shell": ""}.get(
+            session.agent, session.agent[:1].upper())
+        summary = " ".join(
+            (session.title if session.agent == "shell" else session.summary).split()
+        )
         summary = re.sub(r"^[\u2800-\u28ff✳●*]+\s*", "", summary)
         room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 20 - 1)
         host_colour = HOST_COLOUR.get(session.ref.server.host, "")
@@ -71,11 +73,37 @@ def rows(include_header=True):
 
 
 def ordered():
-    sessions, usage, unavailable = decode_message(snapshot())
+    raw = snapshot()
+    sessions, usage, unavailable = decode_message(raw)
     sessions.sort(key=lambda s: (s.ref.server.host in unavailable,
                                  STATE_ORDER.get(s.state, 2),
                                  -recency(s), s.ref.key))
+    graph = decode_graph(raw)
+    if graph is not None:
+        sessions = alan.project(
+            sessions,
+            graph,
+            show_language=option("@fleet_show_language"),
+            show_python=option("@fleet_show_python"),
+        )
     return sessions, usage, unavailable
+
+
+def option(name):
+    result = subprocess.run(
+        ["tmux", "show-options", "-qv", "-t", "=fleet@muster", name],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "1"
+
+
+def toggle(kind):
+    name = {"language": "@fleet_show_language", "python": "@fleet_show_python"}[kind]
+    subprocess.run(
+        ["tmux", "set-option", "-t", "=fleet@muster", name, "0" if option(name) else "1"],
+        check=True,
+    )
 
 
 def recency(session):
@@ -106,8 +134,8 @@ def muster():
         f"--footer={footer()}",
         "--footer-border=bottom",
         "--bind=start:unbind(esc)",
-        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k)+rebind(esc)",
-        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k)",
+        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k,l,p)+rebind(esc)",
+        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k,l,p)",
         "--bind=j:down,k:up",
         "--bind=load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)",
         "--bind=enter:execute-silent(/usr/lib/agent-fleet/ui show --slot main {1})",
@@ -117,6 +145,8 @@ def muster():
         "--bind=r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})",
         "--bind=R:execute-silent(/usr/lib/agent-fleet/ui refresh {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=x:execute-silent(/usr/lib/agent-fleet/ui archive {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
+        "--bind=l:execute-silent(/usr/lib/agent-fleet/ui toggle language)+reload-sync(/usr/lib/agent-fleet/ui items)",
+        "--bind=p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--preview=/usr/lib/agent-fleet/ui preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
@@ -135,7 +165,7 @@ def header():
 
 
 def footer():
-    hints = ("Enter open  c create  r rename  R refresh  x archive")
+    hints = ("Enter open  c create  r rename  R refresh  x archive  l agents  p python")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)

@@ -23,6 +23,8 @@ class SessionRef:
 
     @property
     def key(self):
+        if self.server.kind == "alan":
+            return f"alan:{self.session_id}"
         return f"{self.server.key}:{self.session_id}"
 
 
@@ -42,8 +44,9 @@ class Session:
     summary: str = ""
     recency: int = 0
     transcript_id: str = ""
-    attachment: dict | None = None
     human_activity: int = 0
+    evaluation: str = ""
+    evaluation_started: int = 0
 
     @property
     def agent(self):
@@ -69,4 +72,4 @@ class Session:
 
 
 def key_host(key):
-    return key.split(":", 2)[1] if key.startswith("alan:") else key.split(":", 1)[0]
+    return key.rsplit("@", 1)[1] if key.startswith("alan:") else key.split(":", 1)[0]

@@ -39,9 +39,9 @@ a row drops into the real session for keyboard, mouse or voice input.
 - Muster supports keyboard and mouse selection, filtering, aligned compact
   status, usage, management and history. Working work is at the top; initial
   focus is the first waiting row.
-- Create and rename mutate real sessions. Archive records the source and vendor
-  transcript identity in History, then closes the live session. Open uses that
-  identity to resume the same Alan actor or standalone vendor conversation.
+- Create and rename mutate real actors or sessions. Archive retains the Alan
+  actor address or standalone vendor transcript identity in History, then closes
+  the live actor or session. Open uses that identity to resume the same source.
 - An explicit archive instruction is sufficient authorization; no second
   confirmation is required. Before closing, Fleet must prove that it has a
   usable vendor recovery identity and refuse the archive if it cannot.
@@ -61,10 +61,43 @@ a row drops into the real session for keyboard, mouse or voice input.
   Linux Voice. It never reads raw terminal stdin inside Muster: the Ctrl-Space
   recording chord must not become input data or replace the persistent list.
 - Creation starts the selected agent without workspace or tool permission
-  interstitials, resolves the new canonical tmux identity, and immediately
+  interstitials, resolves the new canonical actor identity, and immediately
   displays it in privileged Main. A blank directory means the source host's
   home directory, not Fleet's own working directory.
-- Exact machine labels are `N`, `L`, `B`, `T`, `OE`; no icon font is required.
+- Exact machine labels are `N`, `L`, `B`, `T`, `Œ`; no icon font is required.
+
+## Projection and actor presentation
+
+- Muster is a view of ongoing work, not a process inventory. Its default rows
+  are standalone native Claude/Codex sessions and direct-root Alan actors,
+  excluding actors identified by Fleet's existing infrastructure roles. Python
+  is never shown by default.
+- Alan's operation graph is the sole authority for spawn ancestry. Fleet derives
+  each descendant's immediate creator and causal root from `spawn` edges; it does
+  not store parent identifiers or an actor catalogue.
+- Spawned language actors and Python actors are folded beneath their causal root.
+  Muster has independent ephemeral controls to reveal each class. Revealed rows
+  remain grouped with their root rather than entering the global top-level sort.
+- An incomplete cross-host graph never becomes guessed ancestry. A proven
+  descendant whose chain cannot currently reach a root stays folded until the
+  missing host returns; the ordinary host-unavailable indication explains why.
+- Selecting an actor opens its real conversational interface. Codex uses its
+  native TUI attached to the actor's app server; Python uses `jupyter console`
+  attached to the actor's existing kernel. Claude and bare-model actors retain
+  the minimal Fleet presenter. Claude's native hooks identify normal completion
+  but expose no terminal event correlated to a user-interrupted prompt, so a
+  native Claude TUI cannot close Alan's evaluation without inference.
+- Native presentation does not create a second conversation or bypass Alan.
+  Input and terminal output from the native interface become the same actor's
+  ordinary durable `input`, `evaluation` and `output` operations. Provider JSONL
+  and IPython history remain the authoritative native evidence referenced by
+  those operations.
+- Python presentation is Jupyter Console, with only its unsupported
+  `--existing`-kernel SIGINT path adapted to Alan's existing interrupt control.
+  Fleet does not implement a terminal or Jupyter client.
+- Fleet does not implement another terminal REPL for a provider that already has
+  one. The minimal actor presenter has no compatibility role and is removed from
+  actor kinds once their native presentation is complete.
 
 ## State and identity
 
@@ -78,6 +111,8 @@ a row drops into the real session for keyboard, mouse or voice input.
   Disposable projections live in memory, while workstation profile markers live
   in that workstation's tmux global options. Placement comes from i3 and viewer
   registrations.
+- Fold controls are disposable state of the current Muster tmux session. They are not
+  durable actor state and do not affect the operation graph.
 
 ## Performance and transport
 
@@ -102,8 +137,9 @@ and exposes cached values. Workstation restarts must not multiply API requests.
 
 ## Commander and voice
 
-Commander is a persistent agent, initially Claude Code behind a vendor-neutral
-typed action contract. It is both a precise voice-operated pair of hands and a
+Commander is a retained Alan language actor behind a typed action contract. Its
+preset may suggest a model without making that model part of its identity. It is
+both a precise voice-operated pair of hands and a
 conservative recommender. It may suggest replacement candidates at capacity but
 does not act until instructed. It indexes sessions through compact summaries,
 status and metadata, reading full Claude/Codex transcripts on demand when a
@@ -111,17 +147,14 @@ request requires deeper context. Future mdgtd context may propose start-of-day
 work.
 
 Commander is one lifelong personal-assistant identity, not one conversation per
-workstation, day or model vendor. Claude and Codex are interchangeable execution
-backends which the user explicitly selects; changing backend does not start a
-new Commander history.
+workstation, day or model vendor.
 
 An optional future Alan memory layer may make Commander feel like an infinite
 conversation despite finite model windows. Recent dialogue would remain
 verbatim, older dialogue would be represented by progressively coarser
 summaries, and immutable raw vendor JSONL would remain the lossless source.
 Compaction must never rewrite raw history, and summaries and indexes remain
-rebuildable projections. This is not a dependency of the first Commander: it
-uses an ordinary persistent Codex or Claude conversation.
+rebuildable projections.
 
 Conversation discovery and retrieval are composable Python packages, not MCP
 servers. They provide direct APIs for locating, filtering, searching and reading

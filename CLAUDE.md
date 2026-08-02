@@ -5,16 +5,26 @@ across machines, operable with one hand and eventually none.
 
 ## The source is the view
 
-- A viewer attaches to the requested tmux terminal session, including standalone
-  vendor terminals, or Alan Claude/Codex actor. There is no Main
+- A viewer attaches to the requested tmux terminal session or the actor's native
+  provider/kernel interface. Alan owns the exact Claude and Codex tmux terminals;
+  Fleet attaches to and previews them directly. Python uses a Fleet-owned Jupyter
+  projection and bare-model actors use Fleet's minimal conversational presenter.
+  There is no Main
   mirror, linked observer, copied window, numbered join or parallel ordering.
 - tmux owns terminal sessions, windows, panes and focus. Alan owns actor
-  lifecycle, mailboxes and native attachment descriptors. Fleet has no topology DB.
+  lifecycle and append-only operation streams. Fleet derives actor state and
+  native-evidence references from Alan's observation graph and owns labels and
+  presentation. Fleet has no topology DB.
 - Canonical identity is a tagged source reference: host, socket, server PID,
-  server start time and tmux object ID; or Alan host and actor address. Names,
+  server start time and tmux object ID; or an Alan host-bound actor address. Names,
   indices and rows are never identity.
 - Agent status and summaries are derived, disposable projections.
 - fzf renders and selects stable IDs. It is not authoritative state.
+- Muster defaults to standalone native sessions and direct-root Alan actors,
+  excluding identified Fleet infrastructure actors. Spawned actors are causally
+  derived from Alan's graph and folded beneath their root; Python and spawned
+  language actors have independent ephemeral reveal controls. Fleet stores no
+  parent IDs.
 
 ## Safety and spatial behavior
 

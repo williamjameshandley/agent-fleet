@@ -9,8 +9,10 @@ import hashlib
 import time
 import threading
 
+import networkx as nx
+
 from .config import HUB, RUNTIME, hosts, ssh_environment
-from .protocol import decode_message, encode
+from .protocol import decode_graph, decode_message, encode
 from .model import key_host
 from .tmux import capture, event_stream
 from .quota import read as quota_read
@@ -39,14 +41,15 @@ def events(host):
             consumer.set()
 
     threading.Thread(target=requests, daemon=True).start()
-    for sessions in event_stream(host, consumer):
+    for sessions, graph in event_stream(host, consumer):
         usage = quota_read() if host == hosts()[0] else {}
-        emit(encode(sessions, usage))
+        emit(encode(sessions, usage, graph=graph))
 
 
 class Fleet:
     def __init__(self):
         self.sessions = {}
+        self.graphs = {}
         self.usage = {}
         self.unavailable = set(hosts())
         self.refresh_pending = False
@@ -63,7 +66,7 @@ class Fleet:
         while True:
             process = await asyncio.create_subprocess_exec(*command,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
+                stderr=asyncio.subprocess.PIPE, limit=sys.maxsize)
             self.processes[host] = process
             errors = []
 
@@ -87,6 +90,7 @@ class Fleet:
                         continue
                     sessions, usage, _ = decode_message(raw)
                     self.sessions[host] = sessions
+                    self.graphs[host] = decode_graph(raw)
                     self.unavailable.discard(host)
                     if host == hosts()[0] and usage:
                         self.usage = usage
@@ -99,6 +103,7 @@ class Fleet:
                 if not drain.done():
                     drain.cancel()
                 self.processes.pop(host, None)
+                self.graphs.pop(host, None)
                 for number, (owner, future) in list(self.previews.items()):
                     if owner == host:
                         future.set_exception(RuntimeError(f"{host} disconnected"))
@@ -148,7 +153,7 @@ class Fleet:
         request = (await reader.readline()).decode().rstrip()
         if request == "snapshot":
             payload = encode([s for group in self.sessions.values() for s in group], self.usage,
-                             sorted(self.unavailable))
+                             sorted(self.unavailable), self.composed_graph())
         elif request.startswith("preview "):
             key, columns, lines = request.removeprefix("preview ").rsplit(" ", 2)
             payload = await self.preview(key, int(columns), int(lines))
@@ -161,6 +166,18 @@ class Fleet:
         writer.write(payload.encode())
         await writer.drain()
         writer.close()
+
+    def composed_graph(self):
+        graphs = [graph for graph in self.graphs.values() if graph is not None]
+        if not graphs:
+            return nx.MultiDiGraph()
+        result = nx.compose_all(graphs)
+        result.graph["actors"] = [
+            actor
+            for graph in graphs
+            for actor in graph.graph.get("actors", [])
+        ]
+        return result
 
     async def commander_context(self):
         sessions = sorted(
@@ -202,15 +219,15 @@ class Fleet:
         return json.loads(stdout)
 
     async def history_observation(self, host):
-        actors, transcripts = await asyncio.gather(
-            self.remote_json(
+        actors = [] if self.graphs.get(host) is None else await self.remote_json(
                 host, sys.executable, "-c",
                 "import json; from agent_fleet.alan import actors; print(json.dumps(actors()))",
-            ),
-            self.remote_json(
-                host, sys.executable, "-c",
-                "import json; from agent_fleet.transcripts import history; print(json.dumps(history(100)))",
-            ))
+            )
+        transcripts = await self.remote_json(
+            host, sys.executable, "-c",
+            "import json; from agent_fleet.transcripts import history; "
+            "print(json.dumps(history(100)))",
+        )
         return {"host": host, "actors": actors, "transcripts": transcripts}
 
     @staticmethod
@@ -222,12 +239,14 @@ class Fleet:
         for host, observation in zip(source_hosts, observations):
             for actor in observation["actors"]:
                 native_id = (actor.get("native") or {}).get("id")
-                identity = host, actor.get("type"), native_id
-                if (actor.get("type") in {"claude", "codex"} and native_id and
-                        actor.get("state") in {"retired", "failed"}):
-                    authorities.add(identity)
-                    entries.append({"key": f'alan:{host}:{actor["addr"]}', "host": host,
-                                    "agent": actor["type"],
+                identity = host, actor.get("kind"), native_id
+                retained = (actor.get("kind") == "llm" or
+                            actor.get("kind") in {"claude", "codex"} and native_id)
+                if retained and actor.get("state") in {"retired", "unavailable"}:
+                    if native_id:
+                        authorities.add(identity)
+                    entries.append({"key": f'alan:{actor["addr"]}', "host": host,
+                                    "agent": actor["kind"],
                                     "name": actor.get("label") or actor["addr"],
                                     "cwd": actor.get("cwd") or "",
                                     "mtime": max(actor.get("human_activity", 0),

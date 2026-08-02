@@ -8,14 +8,12 @@ from pathlib import Path
 
 from .config import hosts, ssh_environment
 from .remote import find
-from .daemon import preview as pane_preview, snapshot
+from .daemon import commander_context as commander_projection, preview as pane_preview, snapshot
 from .protocol import decode
 from .protocol import decode_message
 from . import viewer
 from . import workstation
 from .alan import rename as alan_rename
-from .alan import refresh as alan_refresh
-from .alan import native_identity_usable as alan_native_identity_usable
 
 
 def host_command(host, *command, capture_output=False, stdout=None):
@@ -99,13 +97,14 @@ def create(host, agent, name, cwd):
     name = session_name(name)
     if not name:
         raise ValueError("session name is required")
-    command = ["alan-create"]
-    if agent == "codex":
-        command.append("--present")
-    result = host_command(host, *command, agent, name, cwd,
+    result = host_python(
+        host,
+        "import sys; from agent_fleet.alan import create; "
+        "print(create(sys.argv[1], sys.argv[2], sys.argv[3]))",
+        agent, name, cwd,
                           stdout=subprocess.PIPE)
     addr = result.stdout.strip()
-    key = f"alan:{host}:{addr}"
+    key = f"alan:{addr}"
     wait_for_projection(key)
     viewer.open_main(key)
     return key
@@ -174,26 +173,23 @@ def wait_for_absence(key):
 
 def archive(key):
     session = find(key)
-    if session.agent not in {"claude", "codex"} or not session.transcript_id:
-        raise ValueError("archive requires a durable Claude or Codex identity")
     if session.ref.server.kind == "alan":
+        if session.agent not in {"llm", "claude", "codex"}:
+            raise ValueError("archive requires a language actor")
         host_python(
             session.ref.server.host,
             "import sys; from agent_fleet.alan import retire; retire(sys.argv[1])",
             session.ref.session_id, capture_output=True,
         )
     else:
+        if session.agent not in {"claude", "codex"} or not session.transcript_id:
+            raise ValueError("archive requires a durable Claude or Codex identity")
         host_python(
             session.ref.server.host,
             "import sys; from agent_fleet.transcripts import verify; "
-            "verify(sys.argv[1], sys.argv[2])",
-            session.agent, session.transcript_id, capture_output=True,
-        )
-        host_python(
-            session.ref.server.host,
-            "import sys; from agent_fleet.tmux import mutate; "
-            "mutate(sys.argv[1], 'archive', [])",
-            key, capture_output=True,
+            "from agent_fleet.tmux import mutate; "
+            "verify(sys.argv[1], sys.argv[2]); mutate(sys.argv[3], 'archive', [])",
+            session.agent, session.transcript_id, key, capture_output=True,
         )
     wait_for_absence(key)
     for slot, source in viewer.slots():
@@ -212,23 +208,29 @@ def archive_report(key):
         raise SystemExit(reason)
 
 
-def refresh_local(key):
-    if not key.startswith("alan:"):
-        raise ValueError("refresh requires an Alan-owned session")
-    _, host, addr = key.split(":", 2)
-    if host != os.uname().nodename:
-        raise ValueError(f"identity is for {host}, not {os.uname().nodename}")
-    alan_refresh(addr)
+def refresh(key):
+    session = find(key)
+    if session.ref.server.kind != "alan":
+        raise ValueError("refresh requires an Alan actor")
+    shown = [slot for slot, source in viewer.slots() if source == key]
+    host_python(
+        session.ref.server.host,
+        "import sys; from agent_fleet.presentation import refresh; refresh(sys.argv[1])",
+        session.ref.session_id, capture_output=True,
+    )
+    for slot in shown:
+        viewer.request(slot, key)
 
 
-def refresh_check(key, native_id):
-    if not key.startswith("alan:"):
-        raise ValueError("refresh requires an Alan-owned session")
-    _, host, addr = key.split(":", 2)
-    if host != os.uname().nodename:
-        raise ValueError(f"identity is for {host}, not {os.uname().nodename}")
-    if not alan_native_identity_usable(addr, native_id):
-        raise RuntimeError(f"actor {addr} has no usable current native identity")
+def refresh_report(key):
+    try:
+        refresh(key)
+    except (LookupError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
+                  and error.stderr else str(error))
+        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+                        f"Refresh failed: {reason}"])
+        raise SystemExit(reason)
 
 
 def wait_for_projection(key, native_id=None):
@@ -246,86 +248,41 @@ def wait_for_projection(key, native_id=None):
     raise RuntimeError(f"Fleet projection did not restore {key}")
 
 
-def refresh(key):
-    session = find(key)
-    shown = [slot for slot, source in viewer.slots() if source == key]
-    try:
-        host_python(
-            session.ref.server.host,
-            "import sys; from agent_fleet.actions import refresh_local; "
-            "refresh_local(sys.argv[1])",
-            key, capture_output=True,
-        )
-    except subprocess.CalledProcessError as failure:
-        try:
-            host_python(
-                session.ref.server.host,
-                "import sys; from agent_fleet.actions import refresh_check; "
-                "refresh_check(sys.argv[1], sys.argv[2])",
-                key, session.transcript_id, capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            pass
-        else:
-            for slot in shown:
-                viewer.request(slot, key)
-        raise failure
-    else:
-        wait_for_projection(key, session.transcript_id)
-        for slot in shown:
-            viewer.request(slot, key)
+def next_waiting_key(sessions, active):
+    waiting = [session for session in sessions if session.state == "waiting"]
+    if not waiting:
+        return None
+    current = next((i for i, session in enumerate(waiting)
+                    if session.ref.key == active), -1)
+    return waiting[(current + 1) % len(waiting)].ref.key
 
 
-def refresh_report(key):
-    try:
-        refresh(key)
-    except (LookupError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
-        reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
-                  and error.stderr else str(error))
+def next_waiting():
+    from .ui import ordered
+    sessions, _, _ = ordered()
+    key = next_waiting_key(sessions, dict(viewer.slots()).get("main"))
+    if key is None:
         subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
-                        f"Refresh failed: {reason}"])
-        raise SystemExit(reason)
+                        "No waiting sessions"])
+        return
+    viewer.show(key, "main")
+
+
+def preview(key, columns=0, lines=0):
+    find(key)
+    print(pane_preview(key, columns, lines), end="")
 
 
 def history():
-    live = {(session.ref.server.host, session.agent, session.transcript_id)
-            for session in decode(snapshot()) if session.transcript_id}
-    authorities = set(live)
-    rows = []
-    for host in hosts():
-        result = host_python(
-            host,
-            "import json; from agent_fleet.alan import actors; print(json.dumps(actors()))",
-            capture_output=True,
-        )
-        for actor in json.loads(result.stdout):
-            native_id = (actor.get("native") or {}).get("id")
-            identity = (host, actor.get("type"), native_id)
-            if (actor.get("type") in {"claude", "codex"} and native_id and
-                    actor.get("state") in {"retired", "failed"}):
-                authorities.add(identity)
-                key = f'alan:{host}:{actor["addr"]}'
-                mtime = max(actor.get("human_activity", 0), actor.get("created", 0))
-                rows.append((mtime, key, host, actor["type"],
-                             actor.get("label") or actor["addr"], actor.get("cwd") or ""))
-        result = host_python(
-            host,
-            "import json; from agent_fleet.transcripts import history; "
-            "print(json.dumps(history(100)))",
-            capture_output=True,
-        )
-        for item in json.loads(result.stdout):
-            if (host, item["agent"], item["session_id"]) not in authorities:
-                key = f'{host}:{item["agent"]}:{item["session_id"]}'
-                rows.append((item["mtime"], key, host, item["agent"],
-                             item["name"], item["cwd"]))
-    return [(key, host, agent, name, cwd)
-            for _, key, host, agent, name, cwd in sorted(rows, reverse=True)]
+    entries = json.loads(commander_projection())["history"]
+    return [tuple(item[key] for key in ("key", "host", "agent", "name", "cwd"))
+            for item in sorted(entries, key=lambda row: row["mtime"], reverse=True)]
 
 
 def open_history(key):
     if key.startswith("alan:"):
-        _, host, addr = key.split(":", 2)
+        addr = key.removeprefix("alan:")
+        host = addr.rsplit("@", 1)[1]
         host_python(
             host,
             "import sys; from agent_fleet.alan import resume; print(resume(sys.argv[1]))",

@@ -1,7 +1,7 @@
 # agent-fleet
 
 Agent Fleet is a fast switchboard for attachable shell and standalone vendor
-terminals plus Alan Python, Codex and Claude actors spread across several
+terminals plus Alan actors spread across several
 machines.
 
 ## Experience
@@ -10,9 +10,12 @@ Muster is one persistent fzf list on Lovelace. Working and needs-action sessions
 the top, and waiting work follows by meaningful transcript recency. Its cursor is keyed by the canonical source ID, so
 sorting cannot turn one row into another.
 
-Enter attaches the global `fleet@main` viewer to the selected native session.
-For a headless Python or Codex actor, Alan first creates or reuses its optional
-tmux presentation; Claude's tmux process is its provider runtime.
+Enter attaches the global `fleet@main` viewer to the selected source. Alan owns
+the exact Claude and Codex tmux terminals for those actors; Fleet attaches to
+and previews those same panes. Python uses a Fleet-owned Jupyter Console and a
+bare model uses Fleet's minimal line presenter, each derived from its actor
+address. Provider-native transcripts remain evidence and supply History, not a
+second live presentation.
 Muster and Main are attachable from every workstation and therefore
 retain one shared selection while the user moves. A multi-screen deck
 focuses an already open source or uses a free slot; a full deck never evicts
@@ -36,15 +39,15 @@ recent sent or cancelled draft.
 
 Lovelace alone runs `fleet.service`. It maintains one long-lived,
 non-interactive SSH event stream per configured host. The host helper combines
-tmux control-mode lifecycle notifications, Alan's actor watch stream and
+tmux control-mode lifecycle notifications, polling of Alan's observation graph and
 transcript filesystem events, then publishes disposable snapshots. Navigation,
 sorting and preview never run SSH.
 Opening a remote source in Main or a named workstation viewer creates the one
 unavoidable long-lived interactive SSH attachment with `BatchMode=yes`.
 
 Tmux previews use `capture-pane -eN`, reconstruct the terminal grid with
-libvterm, and apply tmux's `screen_write_preview` cursor-centred crop. Alan
-Claude and Codex previews show the recent authoritative vendor transcript.
+libvterm, and apply tmux's `screen_write_preview` cursor-centred crop. Live Alan
+Claude and Codex previews capture their actor-owned tmux panes.
 
 Tmux identity is:
 
@@ -54,9 +57,10 @@ host + tmux socket + server PID + server start time + $session_id
 
 Names, row positions and window indices are presentation. The daemon keeps its
 projection only in memory and exposes it through a mode-0600 runtime socket.
-Tmux topology remains entirely in tmux. Alan actors retain their own addresses
-and expose explicit attachment descriptors; Fleet does not infer them from
-processes or names. There is no Fleet JSON state file or database.
+Tmux topology remains entirely in tmux. Alan actor identity, lifecycle, active
+evaluation and native evidence come from Alan's operation graph. Fleet owns
+labels as small ordinary files and stores no graph, lifecycle or catalogue
+copy. There is no Fleet JSON state file or database.
 
 The host adapter combines tmux process discovery with the composable
 `agent_fleet.transcripts` readers for Claude and Codex JSONL.
@@ -97,24 +101,24 @@ and replays it afterwards. It is not live topology authority—tmux remains the
 source of truth. Fleet publishes no general semantic command.
 
 Host aliases come from `~/.config/agent-fleet/hosts`. Routing and credentials
-belong to OpenSSH configuration. Machine labels are ASCII (`N L B T OE`), so
-Fleet has no icon-font dependency.
+belong to OpenSSH configuration. Machine labels are single-cell (`N L B T Œ`),
+so Fleet has no icon-font dependency.
 
 Fleet consumes the canonical `loop` client, which resolves the personal Alan
 socket from `LOOP_SOCKET` or the user's XDG state directory. An unavailable
 Alan socket removes Alan rows but does not invalidate healthy tmux inventory on
 the same host.
 
-Fleet displays and creates user-facing Python, Codex and Claude actors. Direct
-`llm` and reviewer actors remain outside the session UI. There is no native
+Fleet displays direct-root Alan actors by default. Spawned language actors and
+Python actors remain folded beneath their causal root unless their independent
+ephemeral Muster controls are enabled. Fleet creates user-facing Codex and
+Claude actors. There is no native
 Alan Gemini actor. Already-running standalone Gemini terminals remain ordinary
 legacy tmux rows.
-Muster collects the creation fields and invokes that host's local
-`alan-create`; Alan owns creation and returns only after native readiness.
+Muster collects the creation fields and asks that host's Fleet process to call
+Alan's canonical Python `spawn` operation. Fleet records the requested label.
 Ordinary shell sessions remain directly available through tmux rather than
-through Fleet's creator. Refresh replaces an idle Alan Claude or Codex provider
-at the same actor and vendor identity; Fleet does not bare-resume standalone
-vendor terminals.
+through Fleet's creator.
 
 ## Development
 

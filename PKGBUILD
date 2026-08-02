@@ -7,7 +7,7 @@ arch=('x86_64')
 url='https://github.com/williamjameshandley/agent-fleet'
 license=('MIT')
 options=('!debug')
-depends=('alan>=1:2.0.0.a11.r1785330889.g64ac36c' python python-libtmux python-watchfiles jupyter-console openai-codex tmux fzf openssh curl procps-ng libvterm)
+depends=('alan>=1:3.0.0.a1' python python-libtmux python-watchfiles jupyter-console openai-codex tmux fzf openssh curl procps-ng libvterm)
 optdepends=(
     'ghostty: workstation viewer terminals'
     'i3-wm: workstation layout and focus control'
@@ -45,6 +45,6 @@ package() {
   install -Dm644 "$startdir/fleet.service" "$pkgdir/usr/lib/systemd/user/fleet.service"
   install -Dm644 "$startdir/fleet-quota.service" "$pkgdir/usr/lib/systemd/user/fleet-quota.service"
   install -Dm644 "$startdir/fleet-quota.timer" "$pkgdir/usr/lib/systemd/user/fleet-quota.timer"
-  install -Dm644 "$startdir/personas/commander.md" "$pkgdir/usr/share/alan/personas/commander.md"
+  install -Dm644 "$startdir/presets/commander.md" "$pkgdir/usr/share/alan/presets/commander.md"
   install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
