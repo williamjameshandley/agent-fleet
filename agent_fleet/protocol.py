@@ -19,6 +19,7 @@ def encode(sessions, usage=None, unavailable=None, graph=None):
         "human_activity": s.human_activity,
         "evaluation": s.evaluation,
         "evaluation_started": s.evaluation_started,
+        "transcript_path": s.transcript_path,
     } for s in sessions]
     message = {"version": 1, "sessions": items, "usage": usage or {},
                "unavailable": unavailable or []}

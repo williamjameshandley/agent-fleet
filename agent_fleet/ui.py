@@ -35,7 +35,7 @@ COLUMN_ICONS = {"machine": "", "agent": "", "time": "",
 
 
 def rows(include_header=True):
-    sessions, usage, unavailable = ordered()
+    projected, usage, unavailable = ordered()
     now = int(time.time())
     empty = "5h [--------]   0%/0h  7d [--------]   0%/0h"
     claude = usage.get("claude", empty)
@@ -44,9 +44,10 @@ def rows(include_header=True):
     if include_header:
         print(f"Claude {claude}{offline}")
         print(f"OpenAI {codex}")
-        print(column_header(sessions))
+        print(column_header(projected))
     width = shutil.get_terminal_size((100, 24)).columns
-    for session in sessions:
+    for projection in projected:
+        session = projection.session
         timestamp = recency(session)
         age = max(0, now - timestamp)
         elapsed = ("?" if not timestamp else
@@ -60,7 +61,10 @@ def rows(include_header=True):
             (session.title if session.agent == "shell" else session.summary).split()
         )
         summary = re.sub(r"^[\u2800-\u28ff✳●*]+\s*", "", summary)
-        room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 20 - 1)
+        fold = ("" if not projection.child_count else
+                f"{'▾' if projection.expanded else '▸'} {projection.child_count}")
+        name = "  " * projection.depth + session.name
+        room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 4 - 1 - 20 - 1)
         host_colour = HOST_COLOUR.get(session.ref.server.host, "")
         agent_colour = AGENT_COLOUR.get(session.agent, "")
         state_colour = ("\033[37;41m" if marker == "?" else STATE_COLOUR[session.state])
@@ -68,7 +72,7 @@ def rows(include_header=True):
         visible = (f"{emphasis}{host_colour}{machine(session.ref.server.host)}{RESET}{emphasis} "
                    f"{agent_colour}{agent:1}{RESET}{emphasis} {elapsed:>4} "
                    f"{state_colour}{marker}{RESET}{emphasis} "
-                   f"{session.name:<20.20} {summary:<{room}.{room}}{RESET}")
+                   f"{fold:<4} {name:<20.20} {summary:<{room}.{room}}{RESET}")
         print(f"{session.ref.key}\t{visible}")
 
 
@@ -83,15 +87,17 @@ def ordered():
         sessions = alan.project(
             sessions,
             graph,
-            show_language=option("@fleet_show_language"),
+            expanded=expanded(),
             show_python=option("@fleet_show_python"),
         )
+    else:
+        sessions = [alan.Projected(session, 0, 0, False) for session in sessions]
     return sessions, usage, unavailable
 
 
 def option(name):
     result = subprocess.run(
-        ["tmux", "show-options", "-qv", "-t", "=fleet@muster", name],
+        ["tmux", "show-options", "-qv", "-t", "=fleet@muster:", name],
         capture_output=True,
         text=True,
     )
@@ -99,9 +105,34 @@ def option(name):
 
 
 def toggle(kind):
-    name = {"language": "@fleet_show_language", "python": "@fleet_show_python"}[kind]
+    name = {"python": "@fleet_show_python"}[kind]
     subprocess.run(
-        ["tmux", "set-option", "-t", "=fleet@muster", name, "0" if option(name) else "1"],
+        ["tmux", "set-option", "-t", "=fleet@muster:", name, "0" if option(name) else "1"],
+        check=True,
+    )
+
+
+def expanded():
+    result = subprocess.run(
+        ["tmux", "show-options", "-qv", "-t", "=fleet@muster:", "@fleet_expanded"],
+        capture_output=True,
+        text=True,
+    )
+    return set(result.stdout.split())
+
+
+def fold(key):
+    projected, _, _ = ordered()
+    [projection] = [item for item in projected if item.session.ref.key == key]
+    session = projection.session
+    if session.ref.server.kind != "alan" or not projection.child_count:
+        return
+    actors = expanded()
+    actor = session.ref.session_id
+    actors.symmetric_difference_update({actor})
+    subprocess.run(
+        ["tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
+         " ".join(sorted(actors))],
         check=True,
     )
 
@@ -112,10 +143,11 @@ def recency(session):
 
 def column_header(sessions):
     icon = COLUMN_ICONS
+    sessions = [item.session for item in sessions]
     working = sum(1 for session in sessions if session.state == "working")
     waiting = sum(1 for session in sessions if session.state == "waiting")
     return (f"{icon['machine']} {icon['agent']} {icon['time']:^4} {icon['status']} "
-            f"{icon['title']:<20} {icon['summary']}  "
+            f"{'':4} {icon['title']:<20} {icon['summary']}  "
             f"{working} working  {waiting} waiting  {len(sessions)} total")
 
 
@@ -145,8 +177,8 @@ def muster():
         "--bind=r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})",
         "--bind=R:execute-silent(/usr/lib/agent-fleet/ui refresh {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=x:execute-silent(/usr/lib/agent-fleet/ui archive {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=l:execute-silent(/usr/lib/agent-fleet/ui toggle language)+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+reload-sync(/usr/lib/agent-fleet/ui items)",
+        "--bind=l:execute-silent(/usr/lib/agent-fleet/ui fold {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
+        "--bind=p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--preview=/usr/lib/agent-fleet/ui preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
@@ -156,16 +188,16 @@ def muster():
 
 
 def header():
-    sessions, usage, unavailable = ordered()
+    projected, usage, unavailable = ordered()
     empty = "5h [--------]   0%/0h  7d [--------]   0%/0h"
     offline = f"  |  offline {' '.join(unavailable)}" if unavailable else ""
     return (f"Claude {usage.get('claude', empty)}{offline}\n"
             f"OpenAI {usage.get('codex', empty)}\n"
-            f"{column_header(sessions)}")
+            f"{column_header(projected)}")
 
 
 def footer():
-    hints = ("Enter open  c create  r rename  R refresh  x archive  l agents  p python")
+    hints = ("Enter open  c create  r rename  R refresh  x archive  l fold  p python")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)
@@ -174,8 +206,9 @@ def footer():
 def cursor():
     active = dict(viewer.slots()).get("main")
     if not active:
-        sessions, _, _ = ordered()
-        active = next((s.ref.key for s in sessions if s.state == "waiting"), None)
+        projected, _, _ = ordered()
+        active = next((item.session.ref.key for item in projected
+                       if item.session.state == "waiting"), None)
     result = subprocess.run(
         ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(RUNTIME / "muster.sock"),
          "http://localhost"], capture_output=True, text=True, check=True)

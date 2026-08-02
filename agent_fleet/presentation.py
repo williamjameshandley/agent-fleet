@@ -47,10 +47,10 @@ def attach(actor, descriptor):
              ])],
             check=True,
         )
-        subprocess.run(["tmux", "set-option", "-t", name, "status", "off"],
-                       check=True)
         subprocess.run(["tmux", "set-option", "-t", name, "mouse", "on"],
                        check=True)
+    subprocess.run(["tmux", "set-option", "-t", name, "status", "on"],
+                   check=True)
     os.execvp("tmux", ["tmux", "attach-session", "-t", target])
 
 
@@ -72,9 +72,8 @@ def refresh(actor):
                        if item["addr"] == actor), None)
     if descriptor is None:
         raise RuntimeError(f"Alan actor disappeared: {actor}")
-    native = descriptor.get("native") or {}
-    if descriptor["kind"] not in {"claude", "codex"} or not native.get("id"):
-        raise RuntimeError("refresh requires a durable Claude or Codex identity")
+    if descriptor["kind"] not in {"claude", "codex"}:
+        raise RuntimeError("refresh requires a Claude or Codex actor")
     if descriptor["state"] != "waiting":
         raise RuntimeError(f"refresh requires a waiting actor: {actor}")
     alan.retire(actor)

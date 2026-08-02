@@ -106,7 +106,7 @@ def resume(agent, session_id, name):
                else ["codex", "resume", item.session_id])
     subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c",
                     item.cwd() or str(Path.home()), *command], check=True)
-    subprocess.run(["tmux", "set-option", "-t", name, "status", "off"],
+    subprocess.run(["tmux", "set-option", "-t", name, "status", "on"],
                    check=True)
 
 
@@ -205,17 +205,10 @@ def latest_assistant_text(item):
 
 
 def native_transcript(session):
-    if session.ref.server.kind != "alan" or not session.transcript_id:
+    if session.ref.server.kind != "alan" or not session.transcript_path:
         return None
-    if session.agent == "claude":
-        path = (CLAUDE / session.cwd.replace("/", "-").replace(".", "-") /
-                f"{session.transcript_id}.jsonl")
-        return transcript("claude", path) if path.exists() else None
-    if session.agent == "codex":
-        matches = list(CODEX.glob(f"*/*/*/rollout-*{session.transcript_id}.jsonl"))
-        if len(matches) == 1:
-            return transcript("codex", matches[0])
-    return None
+    path = Path(session.transcript_path)
+    return transcript(session.agent, path) if path.exists() else None
 
 
 def native_summary(session):

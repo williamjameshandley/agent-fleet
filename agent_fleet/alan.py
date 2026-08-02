@@ -4,7 +4,7 @@ import os
 import threading
 import time
 import textwrap
-from dataclasses import replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +12,14 @@ import loop
 import networkx as nx
 
 from .model import ServerRef, Session, SessionRef
+
+
+@dataclass(frozen=True)
+class Projected:
+    session: Session
+    depth: int
+    child_count: int
+    expanded: bool
 
 
 class Watcher:
@@ -72,6 +80,12 @@ def _timestamp(value):
     return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
 
 
+def provider_identity(addr, kind):
+    if kind not in {"claude", "codex"}:
+        return ""
+    return addr.split("-", 1)[1].rsplit("@", 1)[0]
+
+
 def actors(graph=None):
     if graph is None:
         graph = loop.observe()
@@ -108,10 +122,7 @@ def actors(graph=None):
         descriptor["evaluation_started"] = active_started
         descriptor["human_activity"] = human_activity
         if native:
-            descriptor["native"] = {
-                **native,
-                "id": native.get("thread_id") or native.get("session_id", ""),
-            }
+            descriptor["native"] = native
         if descriptor["state"] == "live":
             descriptor["state"] = "working" if active else "waiting"
         if last_output and last_output.get("status") == "error":
@@ -128,18 +139,20 @@ def inventory(host, actor_descriptors):
         if actor["state"] in {"retired", "unavailable"}:
             continue
         native = actor.get("native") or {}
+        transcript_id = provider_identity(actor["addr"], actor["kind"])
+        transcript_path = native.get("path", "") if transcript_id else ""
         sessions.append(Session(
             SessionRef(source, actor["addr"]), actor.get("label") or label(actor["addr"]),
             actor["created"], 0, 0, 1, "alan", "",
             actor.get("cwd") or "", actor["kind"], actor["state"],
             actor.get("summary") or actor.get("last_error", ""), 0,
-            native.get("id", ""),
+            transcript_id,
             actor["human_activity"], actor.get("active_evaluation") or "",
-            actor["evaluation_started"]))
+            actor["evaluation_started"], transcript_path))
     return sessions
 
 
-def project(sessions, graph, show_language=False, show_python=False):
+def project(sessions, graph, expanded=(), show_python=False):
     descriptors = {actor["addr"]: actor for actor in graph.graph.get("actors", [])}
     ancestry = nx.DiGraph()
     ancestry.add_nodes_from(descriptors)
@@ -164,31 +177,49 @@ def project(sessions, graph, show_language=False, show_python=False):
         [root] = candidates
         roots[actor] = root if root in descriptors else None
 
-    result = []
-    for session in sessions:
-        if session.ref.server.kind != "alan":
-            result.append(session)
-            continue
-        actor = session.ref.session_id
-        descriptor = descriptors[actor]
-        if roots[actor] != actor or descriptor.get("preset") == "commander" or (
+    expanded = set(expanded)
+    children = {}
+    eligible = set()
+    session_order = [session.ref.session_id for session in sessions
+                     if session.ref.server.kind == "alan"]
+    for root in session_order:
+        descriptor = descriptors[root]
+        if roots[root] != root or descriptor.get("preset") == "commander" or (
             descriptor["kind"] == "python" and not show_python
         ):
             continue
-        result.append(session)
-        for descendant in sessions:
-            if descendant.ref.server.kind != "alan":
+        eligible.add(root)
+        visible = [actor for actor in session_order
+                   if roots[actor] == root
+                   and descriptors[actor].get("preset") != "commander"
+                   and (descriptors[actor]["kind"] != "python" or show_python)]
+        visible_set = set(visible)
+        children[root] = []
+        for actor in visible:
+            if actor == root:
                 continue
-            child = descendant.ref.session_id
-            if child == actor or roots[child] != actor:
-                continue
-            kind = descriptors[child]["kind"]
-            if descriptors[child].get("preset") == "commander":
-                continue
-            if (kind == "python" and show_python) or (
-                kind in {"llm", "claude", "codex"} and show_language
-            ):
-                result.append(replace(descendant, name="  ↳ " + descendant.name))
+            candidates = nx.ancestors(ancestry, actor) & visible_set
+            parent = max(candidates,
+                         key=lambda item: nx.shortest_path_length(ancestry, root, item))
+            children.setdefault(parent, []).append(actor)
+            children.setdefault(actor, [])
+
+    def emit(actor, depth):
+        session = actor_sessions[actor]
+        descendants = children[actor]
+        yield Projected(session, depth, len(descendants), actor in expanded)
+        if actor in expanded:
+            for child in descendants:
+                yield from emit(child, depth + 1)
+
+    result = []
+    for session in sessions:
+        if session.ref.server.kind != "alan":
+            result.append(Projected(session, 0, 0, False))
+            continue
+        actor = session.ref.session_id
+        if actor in eligible:
+            result.extend(emit(actor, 0))
     return result
 
 

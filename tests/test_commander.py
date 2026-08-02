@@ -99,20 +99,21 @@ class CommanderContextTests(unittest.TestCase):
         })
 
     def test_history_retains_bare_language_actor_and_native_actor_authority(self):
+        identity = "00000000-0000-4000-8000-000000000001"
         observations = [{"actors": [
             {"addr": "llm-review@lovelace", "kind": "llm", "state": "retired",
              "label": "review", "cwd": "/work", "created": 2,
              "human_activity": 3},
-            {"addr": "codex-work@lovelace", "kind": "codex", "state": "retired",
+            {"addr": f"codex-{identity}@lovelace", "kind": "codex", "state": "retired",
              "label": "work", "cwd": "/work", "created": 2,
-             "human_activity": 4, "native": {"id": "thread-1"}},
+             "human_activity": 4},
         ], "transcripts": [{
-            "agent": "codex", "session_id": "thread-1", "mtime": 4,
+            "agent": "codex", "session_id": identity, "mtime": 4,
             "name": "duplicate", "cwd": "/work",
         }]}]
         history = Fleet.history_entries([], ["lovelace"], observations)
         self.assertEqual([item["key"] for item in history], [
-            "alan:codex-work@lovelace", "alan:llm-review@lovelace"])
+            f"alan:codex-{identity}@lovelace", "alan:llm-review@lovelace"])
 
 
 class ProposalTests(unittest.TestCase):

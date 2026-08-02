@@ -92,9 +92,9 @@ def test_actor_presentation_is_a_nested_tmux_session():
                    "-c", "/work",
                    "/usr/bin/python -c 'import sys; from agent_fleet.presentation import run; run(sys.argv[1])' llm-a@newton"],
                   check=True),
-        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "status", "off"],
-                  check=True),
         mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "mouse", "on"],
+                  check=True),
+        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "status", "on"],
                   check=True),
     ]
     execute.assert_called_once_with(
@@ -107,7 +107,13 @@ def test_existing_actor_presentation_is_reused():
          mock.patch.object(presentation.subprocess, "run", return_value=present) as run, \
          mock.patch.object(presentation.os, "execvp") as execute:
         presentation.attach("python-a@newton", {"cwd": "/work"})
-    run.assert_called_once()
+    assert run.call_args_list == [
+        mock.call(["tmux", "has-session", "-t", "=fleet@alan-hash"],
+                  stdout=presentation.subprocess.DEVNULL,
+                  stderr=presentation.subprocess.DEVNULL),
+        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "status", "on"],
+                  check=True),
+    ]
     execute.assert_called_once_with(
         "tmux", ["tmux", "attach-session", "-t", "=fleet@alan-hash"])
 
@@ -118,7 +124,13 @@ def test_claude_attaches_only_to_its_existing_native_terminal():
          mock.patch.object(presentation.subprocess, "run", return_value=present) as run, \
          mock.patch.object(presentation.os, "execvp") as execute:
         presentation.attach("claude-a@newton", {"kind": "claude", "cwd": "/work"})
-    run.assert_called_once()
+    assert run.call_args_list == [
+        mock.call(["tmux", "has-session", "-t", "=fleet@alan-hash"],
+                  stdout=presentation.subprocess.DEVNULL,
+                  stderr=presentation.subprocess.DEVNULL),
+        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "status", "on"],
+                  check=True),
+    ]
     execute.assert_called_once_with(
         "tmux", ["tmux", "attach-session", "-t", "=fleet@alan-hash"])
 
@@ -203,7 +215,7 @@ def test_close_propagates_other_bare_model_tmux_failures():
 def test_refresh_leaves_codex_terminal_lifecycle_to_alan():
     actor = "codex-a@newton"
     details = {"addr": actor, "kind": "codex", "state": "waiting",
-               "native": {"id": "thread-1"}}
+               "native": {"path": "/native/rollout-a.jsonl"}}
     calls = []
     with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
          mock.patch.object(presentation.alan, "retire",
@@ -217,7 +229,7 @@ def test_refresh_leaves_codex_terminal_lifecycle_to_alan():
 def test_refresh_leaves_claude_terminal_lifecycle_to_alan():
     actor = "claude-a@newton"
     details = {"addr": actor, "kind": "claude", "state": "waiting",
-               "native": {"id": "session-1"}}
+               "native": {"path": "/native/a.jsonl"}}
     calls = []
     with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
          mock.patch.object(presentation.alan, "retire",
@@ -233,7 +245,7 @@ def test_refresh_leaves_claude_terminal_lifecycle_to_alan():
 def test_refresh_rejects_a_working_actor_before_lifecycle_changes():
     actor = "codex-a@newton"
     details = {"addr": actor, "kind": "codex", "state": "working",
-               "native": {"id": "thread-1"}}
+               "native": {"path": "/native/rollout-a.jsonl"}}
     with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
          mock.patch.object(presentation.alan, "retire") as retire:
         try:

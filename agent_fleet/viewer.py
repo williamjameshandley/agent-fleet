@@ -191,6 +191,8 @@ def attach(key):
     current = [s for s in inventory(host) if s.ref.key == key]
     if len(current) != 1:
         raise RuntimeError(f"session identity changed: {key}")
+    subprocess.run(["tmux", "set-option", "-t", current[0].ref.session_id,
+                    "status", "on"], check=True)
     if current[0].agent == "codex":
         subprocess.run(["tmux", "set-option", "-t", current[0].ref.session_id,
                         "mouse", "on"], check=True)

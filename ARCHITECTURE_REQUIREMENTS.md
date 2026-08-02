@@ -75,9 +75,10 @@ a row drops into the real session for keyboard, mouse or voice input.
 - Alan's operation graph is the sole authority for spawn ancestry. Fleet derives
   each descendant's immediate creator and causal root from `spawn` edges; it does
   not store parent identifiers or an actor catalogue.
-- Spawned language actors and Python actors are folded beneath their causal root.
-  Muster has independent ephemeral controls to reveal each class. Revealed rows
-  remain grouped with their root rather than entering the global top-level sort.
+- Spawned actors form recursive folds beneath their nearest visible creator.
+  Each visible actor has an independent ephemeral fold; Python remains hidden
+  unless its global presentation toggle is enabled. Revealed rows remain grouped
+  with their root rather than entering the global top-level sort.
 - An incomplete cross-host graph never becomes guessed ancestry. A proven
   descendant whose chain cannot currently reach a root stays folded until the
   missing host returns; the ordinary host-unavailable indication explains why.

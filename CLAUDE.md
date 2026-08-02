@@ -25,9 +25,9 @@ across machines, operable with one hand and eventually none.
 - fzf renders and selects stable IDs. It is not authoritative state.
 - Muster defaults to standalone native sessions and direct-root Alan actors,
   excluding identified Fleet infrastructure actors. Spawned actors are causally
-  derived from Alan's graph and folded beneath their root; Python and spawned
-  language actors have independent ephemeral reveal controls. Fleet stores no
-  parent IDs.
+  derived from Alan's graph and recursively folded beneath their nearest visible
+  creator. Each visible actor folds independently; Python has one global
+  presentation toggle. Fleet stores no parent IDs.
 
 ## Safety and spatial behavior
 
