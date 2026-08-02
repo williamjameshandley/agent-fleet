@@ -40,7 +40,11 @@ def attach(actor, descriptor):
             )
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", name, "-c", descriptor["cwd"],
-             shlex.join(["fleet", "actor-view", actor])],
+             shlex.join([
+                 "/usr/bin/python", "-c",
+                 "import sys; from agent_fleet.presentation import run; run(sys.argv[1])",
+                 actor,
+             ])],
             check=True,
         )
         subprocess.run(["tmux", "set-option", "-t", name, "status", "off"],
