@@ -127,16 +127,14 @@ def test_latest_assistant_text_reads_backwards_from_native_transcript(tmp_path):
     assert latest_assistant_text(transcript("codex", path)) == "latest reply"
 
 
-def test_alan_claude_transcript_uses_native_identity_and_cwd(tmp_path, monkeypatch):
+def test_alan_transcript_uses_the_recorded_native_path(tmp_path):
     identity = "00000000-0000-0000-0000-000000000001"
-    path = tmp_path / "-work" / f"{identity}.jsonl"
-    path.parent.mkdir()
+    path = tmp_path / f"{identity}.jsonl"
     path.write_text("{}\n")
-    monkeypatch.setattr(transcripts, "CLAUDE", tmp_path)
     source = ServerRef("newton", "", 0, 0, "alan")
     session = Session(SessionRef(source, "claude-1"), "work", 1, 0, 0, 1,
                       "tmux", "work", "/work", "claude", "waiting",
-                      transcript_id=identity)
+                      transcript_id=identity, transcript_path=str(path))
     assert native_transcript(session).path == path
 
 
@@ -146,7 +144,6 @@ def test_native_evidence_uses_the_recorded_non_default_path(tmp_path):
     path.write_text("{}\n")
     item = transcripts.native_evidence({
         "kind": "codex",
-        "thread_id": "thread-1",
         "path": str(path),
     })
     assert item.path == path

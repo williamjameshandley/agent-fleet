@@ -203,7 +203,7 @@ def test_close_propagates_other_bare_model_tmux_failures():
 def test_refresh_leaves_codex_terminal_lifecycle_to_alan():
     actor = "codex-a@newton"
     details = {"addr": actor, "kind": "codex", "state": "waiting",
-               "native": {"id": "thread-1"}}
+               "native": {"path": "/native/rollout-a.jsonl"}}
     calls = []
     with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
          mock.patch.object(presentation.alan, "retire",
@@ -217,7 +217,7 @@ def test_refresh_leaves_codex_terminal_lifecycle_to_alan():
 def test_refresh_leaves_claude_terminal_lifecycle_to_alan():
     actor = "claude-a@newton"
     details = {"addr": actor, "kind": "claude", "state": "waiting",
-               "native": {"id": "session-1"}}
+               "native": {"path": "/native/a.jsonl"}}
     calls = []
     with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
          mock.patch.object(presentation.alan, "retire",
@@ -233,7 +233,7 @@ def test_refresh_leaves_claude_terminal_lifecycle_to_alan():
 def test_refresh_rejects_a_working_actor_before_lifecycle_changes():
     actor = "codex-a@newton"
     details = {"addr": actor, "kind": "codex", "state": "working",
-               "native": {"id": "thread-1"}}
+               "native": {"path": "/native/rollout-a.jsonl"}}
     with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
          mock.patch.object(presentation.alan, "retire") as retire:
         try:

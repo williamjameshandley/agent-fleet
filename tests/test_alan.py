@@ -28,13 +28,14 @@ def graph(*operations, state="live"):
     return result
 
 
-def test_actor_state_and_native_identity_are_derived_from_operations():
+def test_actor_state_and_native_evidence_are_derived_from_operations():
     current = alan.actors(graph(
         {"op": "create"},
         {"op": "input", "sender": "will"},
         {"op": "evaluation"},
         {"op": "output", "status": "ok", "native": {
-            "kind": "codex", "thread_id": "thread-1", "base_dir": "/native",
+            "kind": "codex", "session_id": "app-session", "turn_id": "turn-1",
+            "base_dir": "/native", "path": "/native/rollout-a.jsonl",
         }},
         {"op": "input", "sender": "will"},
         {"op": "evaluation"},
@@ -43,7 +44,10 @@ def test_actor_state_and_native_identity_are_derived_from_operations():
     assert current["state"] == "working"
     assert current["active_evaluation"] == "codex-a@newton#5"
     assert current["evaluation_started"] == 1785412805
-    assert current["native"]["id"] == "thread-1"
+    assert current["native"]["session_id"] == "app-session"
+    assert current["native"]["turn_id"] == "turn-1"
+    assert current["native"]["path"] == "/native/rollout-a.jsonl"
+    assert "id" not in current["native"]
     assert current["native"]["base_dir"] == "/native"
     assert current["created"] == 1785412800
     assert current["human_activity"] == 1785412804

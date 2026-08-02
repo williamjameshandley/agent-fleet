@@ -80,6 +80,12 @@ def _timestamp(value):
     return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
 
 
+def provider_identity(addr, kind):
+    if kind not in {"claude", "codex"}:
+        return ""
+    return addr.split("-", 1)[1].rsplit("@", 1)[0]
+
+
 def actors(graph=None):
     if graph is None:
         graph = loop.observe()
@@ -116,10 +122,7 @@ def actors(graph=None):
         descriptor["evaluation_started"] = active_started
         descriptor["human_activity"] = human_activity
         if native:
-            descriptor["native"] = {
-                **native,
-                "id": native.get("thread_id") or native.get("session_id", ""),
-            }
+            descriptor["native"] = native
         if descriptor["state"] == "live":
             descriptor["state"] = "working" if active else "waiting"
         if last_output and last_output.get("status") == "error":
@@ -136,14 +139,16 @@ def inventory(host, actor_descriptors):
         if actor["state"] in {"retired", "unavailable"}:
             continue
         native = actor.get("native") or {}
+        transcript_id = provider_identity(actor["addr"], actor["kind"])
+        transcript_path = native.get("path", "") if transcript_id else ""
         sessions.append(Session(
             SessionRef(source, actor["addr"]), actor.get("label") or label(actor["addr"]),
             actor["created"], 0, 0, 1, "alan", "",
             actor.get("cwd") or "", actor["kind"], actor["state"],
             actor.get("summary") or actor.get("last_error", ""), 0,
-            native.get("id", ""),
+            transcript_id,
             actor["human_activity"], actor.get("active_evaluation") or "",
-            actor["evaluation_started"]))
+            actor["evaluation_started"], transcript_path))
     return sessions
 
 

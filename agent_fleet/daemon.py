@@ -12,6 +12,7 @@ import threading
 import networkx as nx
 
 from .config import HUB, RUNTIME, hosts, ssh_environment
+from .alan import provider_identity
 from .protocol import decode_graph, decode_message, encode
 from .model import key_host
 from .tmux import capture, event_stream
@@ -238,10 +239,10 @@ class Fleet:
         entries = []
         for host, observation in zip(source_hosts, observations):
             for actor in observation["actors"]:
-                native_id = (actor.get("native") or {}).get("id")
+                native_id = provider_identity(actor["addr"], actor.get("kind"))
                 identity = host, actor.get("kind"), native_id
                 retained = (actor.get("kind") == "llm" or
-                            actor.get("kind") in {"claude", "codex"} and native_id)
+                            actor.get("kind") in {"claude", "codex"})
                 if retained and actor.get("state") in {"retired", "unavailable"}:
                     if native_id:
                         authorities.add(identity)

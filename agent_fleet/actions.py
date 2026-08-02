@@ -233,7 +233,7 @@ def refresh_report(key):
         raise SystemExit(reason)
 
 
-def wait_for_projection(key, native_id=None):
+def wait_for_projection(key):
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
@@ -241,10 +241,7 @@ def wait_for_projection(key, native_id=None):
         except LookupError:
             time.sleep(.1)
             continue
-        if (session.ref.server.kind != "alan" or
-                native_id is None or session.transcript_id == native_id):
-            return
-        time.sleep(.1)
+        return
     raise RuntimeError(f"Fleet projection did not restore {key}")
 
 

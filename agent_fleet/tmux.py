@@ -177,7 +177,8 @@ def event_stream(host, consumer=None):
                 current = [replace(session, agent_name=cached.agent_name,
                                    reported_state=cached.reported_state,
                                    summary=cached.summary, recency=cached.recency,
-                                   transcript_id=cached.transcript_id)
+                                   transcript_id=cached.transcript_id,
+                                   transcript_path=cached.transcript_path)
                            if (cached := agent_cache.get(session.ref)) else session
                            for session in current]
             serial = tuple(current)

@@ -524,25 +524,32 @@ class IdentityTests(unittest.TestCase):
         ])
 
     def test_inventory_projects_visible_actor_kinds_without_loop_presentation(self):
+        identity = "00000000-0000-4000-8000-000000000001"
+        codex = f"codex-{identity}@newton"
         descriptors = [
-            {"addr": "codex-1@newton", "kind": "codex", "state": "working",
+            {"addr": codex, "kind": "codex", "state": "working",
              "cwd": "/work", "created": 1, "human_activity": 2,
-             "active_evaluation": "codex-1@newton#2", "evaluation_started": 3,
-             "native": {"id": "thread-1"}},
+             "active_evaluation": f"{codex}#2", "evaluation_started": 3,
+             "native": {"path": f"/native/rollout-{identity}.jsonl"}},
             {"addr": "python-1@newton", "kind": "python", "state": "waiting",
              "cwd": "/work", "created": 1, "human_activity": 0,
-             "active_evaluation": None, "evaluation_started": 0},
+             "active_evaluation": None, "evaluation_started": 0,
+             "native": {"kind": "ipython", "path": "/native/history.sqlite"}},
             {"addr": "claude-old@newton", "kind": "claude", "state": "retired",
              "cwd": "/work", "created": 1, "human_activity": 0,
              "active_evaluation": None, "evaluation_started": 0},
         ]
         projected = alan_inventory("newton", descriptors)
         self.assertEqual([item.ref.session_id for item in projected],
-                         ["codex-1@newton", "python-1@newton"])
+                         [codex, "python-1@newton"])
         self.assertEqual(projected[0].state, "working")
-        self.assertEqual(projected[0].transcript_id, "thread-1")
-        self.assertEqual(projected[0].evaluation, "codex-1@newton#2")
+        self.assertEqual(projected[0].transcript_id, identity)
+        self.assertEqual(projected[0].transcript_path,
+                         f"/native/rollout-{identity}.jsonl")
+        self.assertEqual(projected[0].evaluation, f"{codex}#2")
         self.assertEqual(projected[0].evaluation_started, 3)
+        self.assertEqual(projected[1].transcript_id, "")
+        self.assertEqual(projected[1].transcript_path, "")
 
     def test_fleet_uses_loop_client_instead_of_reimplementing_its_wire(self):
         source = (Path(__file__).parents[1] / "agent_fleet/alan.py").read_text()
@@ -700,29 +707,31 @@ class IdentityTests(unittest.TestCase):
         self.assertTrue(any(call.args[0][1] == "rename-window" for call in run.call_args_list))
         output.assert_not_called()
 
-    def test_projection_readiness_waits_for_actor_native_evidence(self):
+    def test_projection_readiness_waits_for_the_actor(self):
         actor = alan_inventory("lovelace", [{
             "addr": "codex-1@lovelace", "kind": "codex", "state": "waiting",
             "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
-            "native": {"id": "thread-1"},
+            "native": {"path": "/native/rollout-1.jsonl"},
         }])[0]
         with mock.patch("agent_fleet.actions.find",
                         side_effect=[LookupError(), actor]), \
              mock.patch("agent_fleet.actions.time.sleep") as sleep:
-            actions.wait_for_projection(actor.ref.key, "thread-1")
+            actions.wait_for_projection(actor.ref.key)
         sleep.assert_called_once_with(.1)
 
     def test_tmux_name_normalization_preserves_spaces(self):
         self.assertEqual(session_name(" Test session. "), "Test session")
         self.assertEqual(session_name("docs:v2.1"), "docs-v2-1")
 
-    def test_archive_retires_exact_alan_actor_after_durable_identity_check(self):
+    def test_archive_retires_exact_alan_actor_by_address(self):
         host = os.uname().nodename
+        identity = "00000000-0000-4000-8000-000000000001"
+        actor = f"codex-{identity}@{host}"
         session = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"codex-1@{host}"),
+            SessionRef(ServerRef(host, "", 0, 0, "alan"), actor),
             "work", 1, 0, 0, 1, "tmux", "", "/work",
-            "codex", "waiting", "", 0, "thread-1", 1)
+            "codex", "waiting", "", 0, "", 1)
         with mock.patch("agent_fleet.actions.find", return_value=session), \
              mock.patch("agent_fleet.actions.host_command") as command, \
              mock.patch("agent_fleet.actions.wait_for_absence") as absent, \
@@ -730,7 +739,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.viewer.request") as request:
             actions.archive(session.ref.key)
         self.assertIn("agent_fleet.alan import retire", command.call_args.args[3])
-        self.assertEqual(command.call_args.args[-1], f"codex-1@{host}")
+        self.assertEqual(command.call_args.args[-1], actor)
         absent.assert_called_once_with(session.ref.key)
         request.assert_called_once_with("main", "")
 
@@ -1326,9 +1335,6 @@ class IdentityTests(unittest.TestCase):
         actor = {
             "addr": f"{kind}-1@newton", "kind": kind,
             "cwd": "/work",
-            "native": {"id": "thread-1", "thread_id": "thread-1",
-                       "base_dir": "/alan/native",
-                       "path": "/provider/corpus/rollout-thread-1.jsonl"},
         }
         session = mock.Mock(session_name="fleet@alan-hash")
         server = mock.Mock(sessions=[session])

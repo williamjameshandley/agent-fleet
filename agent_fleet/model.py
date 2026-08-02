@@ -47,6 +47,7 @@ class Session:
     human_activity: int = 0
     evaluation: str = ""
     evaluation_started: int = 0
+    transcript_path: str = ""
 
     @property
     def agent(self):
