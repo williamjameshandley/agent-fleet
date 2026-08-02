@@ -69,16 +69,16 @@ def find(session_id, agent=None):
                if item.session_id.startswith(session_id)]
     identities = {item.session_id for item in matches}
     if not matches:
-        raise SystemExit(f"no transcript matches {session_id!r}")
+        raise LookupError(f"no transcript matches {session_id!r}")
     if len(identities) != 1:
-        raise SystemExit(f"ambiguous transcript {session_id!r}")
+        raise LookupError(f"ambiguous transcript {session_id!r}")
     return matches[0]
 
 
 def verify(agent, session_id):
     item = find(session_id, agent)
     if item.session_id != session_id:
-        raise SystemExit(f"transcript identity changed: {session_id}")
+        raise RuntimeError(f"transcript identity changed: {session_id}")
     return item
 
 

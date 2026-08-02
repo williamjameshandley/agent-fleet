@@ -1,15 +1,11 @@
-import importlib.machinery
 import io
 import json
 import subprocess
 import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).parents[1]
-usage = importlib.machinery.SourceFileLoader(
-    "fleet_usage_test", str(ROOT / "fleet-usage")).load_module()
+from agent_fleet import usage
 
 
 class UsageTests(unittest.TestCase):

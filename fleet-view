@@ -11,7 +11,7 @@ fi
 (
     runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet
     while [ ! -S "$runtime/viewer-main.sock" ]; do sleep .05; done
-    fleet arrive laptop
+    python -c 'from agent_fleet.actions import arrive; arrive("laptop")'
 ) &
 (
     while ! i3-msg -t get_tree | jq -e '[.. | objects | .window_properties.class?] | index("org.agentfleet.Muster") and index("org.agentfleet.Main")' >/dev/null; do

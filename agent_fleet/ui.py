@@ -109,17 +109,17 @@ def muster():
         "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k)+rebind(esc)",
         "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k)",
         "--bind=j:down,k:up",
-        "--bind=load:transform(fleet cursor)+unbind(load)",
-        "--bind=enter:execute-silent(fleet show --slot main {1})",
-        "--bind=left-click:execute-silent(fleet show --slot main {1})",
-        "--bind=double-click:execute-silent(fleet show --slot main {1})",
-        "--bind=c:execute-silent(fleet create-tab)",
-        "--bind=r:execute-silent(fleet rename-tab {1})",
-        "--bind=R:execute-silent(fleet refresh {1})+reload-sync(fleet items)",
-        "--bind=x:execute-silent(fleet archive {1})+reload-sync(fleet items)",
+        "--bind=load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)",
+        "--bind=enter:execute-silent(/usr/lib/agent-fleet/ui show --slot main {1})",
+        "--bind=left-click:execute-silent(/usr/lib/agent-fleet/ui show --slot main {1})",
+        "--bind=double-click:execute-silent(/usr/lib/agent-fleet/ui show --slot main {1})",
+        "--bind=c:execute-silent(/usr/lib/agent-fleet/ui create-tab)",
+        "--bind=r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})",
+        "--bind=R:execute-silent(/usr/lib/agent-fleet/ui refresh {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
+        "--bind=x:execute-silent(/usr/lib/agent-fleet/ui archive {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:history)",
-        "--preview=fleet preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
+        "--preview=/usr/lib/agent-fleet/ui preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
         "--preview-window=down,45%,nowrap,follow,border-none",
     ]
     os.execvp(command[0], command)
@@ -168,7 +168,7 @@ def select():
             time.sleep(.3)
         subprocess.run(
             ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-             "-XPOST", "-d", "transform(fleet cursor)", "http://localhost"],
+             "-XPOST", "-d", "transform(/usr/lib/agent-fleet/ui cursor)", "http://localhost"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
 
@@ -179,7 +179,7 @@ def history():
         f"--color={FZF_COLOUR}",
         "--id-nth=1", "--layout=reverse", "--no-sort", "--no-multi",
         "--header=History  Enter open  Tab live",
-        "--bind=enter:execute-silent(fleet open-history {1})+reload-sync(fleet history-rows)",
+        "--bind=enter:execute-silent(/usr/lib/agent-fleet/ui open-history {1})+reload-sync(/usr/lib/agent-fleet/ui history-rows)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:live)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:live)",
     ]

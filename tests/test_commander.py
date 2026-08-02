@@ -19,7 +19,7 @@ class CommanderContextTests(unittest.TestCase):
         fleet.sessions = {"lovelace": list(sessions)}
 
         async def remote(host, *command):
-            if command == ("fleet", "context"):
+            if "agent_fleet.actions import context" in command[2]:
                 return {"profile": host + profile_suffix, "unavailable": [],
                         "slots": [{"slot": "main", "source": ""}]}
             raise AssertionError((host, command))

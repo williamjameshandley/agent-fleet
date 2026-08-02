@@ -5,7 +5,6 @@ import json
 import os
 import select
 import subprocess
-import sys
 import time
 import urllib.request
 import urllib.error
@@ -127,12 +126,11 @@ def codex(command=CODEX_APP_SERVER, timeout=10):
     return "  ".join(windows[name] for name in ("5h", "7d"))
 
 
-def main():
+def read(agent):
+    """Return the formatted account limit for one supported provider."""
     readers = {"claude": claude, "codex": codex}
-    if len(sys.argv) != 2 or sys.argv[1] not in readers:
-        sys.exit("usage: fleet-usage claude|codex")
     try:
-        print(readers[sys.argv[1]]())
+        return readers[agent]()
     except urllib.error.HTTPError as e:
         retry = e.headers.get("Retry-After")
         if retry and retry.isdigit():
@@ -142,10 +140,6 @@ def main():
         else:
             retry_at = None
         suffix = f" retry-at={retry_at}" if retry_at else ""
-        sys.exit(f"fleet-usage: {sys.argv[1]}: HTTP {e.code}{suffix}")
+        raise RuntimeError(f"{agent}: HTTP {e.code}{suffix}") from e
     except (OSError, KeyError, TypeError, ValueError) as e:
-        sys.exit(f"fleet-usage: {sys.argv[1]}: {e}")
-
-
-if __name__ == "__main__":
-    main()
+        raise RuntimeError(f"{agent}: {e}") from e
