@@ -26,8 +26,7 @@ DEFAULT = Path.home() / "fleet-snapshot.json"
 
 TMUX_ENV = {k: v for k, v in os.environ.items() if k != "TMUX"}
 # TMUX is stripped so a run from inside a tmux pane can never target the
-# calling server implicitly (the 2026-07-18 lovelace kill-server incident:
-# $TMUX overrides TMUX_TMPDIR and socket selection)
+# calling server implicitly: $TMUX overrides TMUX_TMPDIR and socket selection.
 
 
 def sh(*args):

@@ -1,5 +1,8 @@
 # agent-fleet
 
+Correct, minimal documentation is best. Omission is preferable to an
+unsupported or obsolete claim. Incorrect documentation is worst.
+
 Agent Fleet is a fast switchboard for attachable shell and standalone vendor
 terminals plus Alan actors spread across several
 machines.
@@ -31,9 +34,7 @@ is not part of Fleet.
 `alan-composer.service` presents the Boltzmann prompt composer specified in
 [VOICE_COMPOSER.md](VOICE_COMPOSER.md). Alan Home owns capture, transcription
 and spoken-intent decisions; Fleet receives typed composer events over a local
-socket and reports its current closed/open/paused mode. `alan-composer open`
-remains a manual activation path and `alan-composer recover` reopens the most
-recent sent or cancelled draft.
+socket and reports its current closed/open/paused mode.
 
 ## Architecture
 
@@ -127,5 +128,4 @@ python -m pytest
 env -u VIRTUAL_ENV PATH=/usr/bin:/bin makepkg -sif --noconfirm
 ```
 
-Cutover and package updates must not restart a tmux server or mutate a source
-session.
+Package updates must not restart a tmux server or mutate a source session.
