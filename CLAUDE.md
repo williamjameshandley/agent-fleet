@@ -65,6 +65,5 @@ composer archives recoverable state but never becomes tmux topology authority.
 mdgtd and shared keyboard/mouse control remain later integrations.
 
 Commander transcript search is a composable Python API over Claude and Codex
-JSONL, optionally exposed by thin CLI commands. Do not introduce MCP servers or
-a bespoke tool protocol; this repository follows the post-MCP approach used by
-Alan Home and Alan Work.
+JSONL. Do not introduce MCP servers or a second command interface; this
+repository follows the post-MCP approach used by Alan Home and Alan Work.

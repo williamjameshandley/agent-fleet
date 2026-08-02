@@ -13,12 +13,11 @@ Known limitation: claude panes sharing a cwd are paired to transcripts by
 recency, so pane<->session pairing within such a group can swap; all
 sessions still resume.
 
-Usage: fleet-snapshot snapshot [file] | fleet-snapshot restore [file]
+Call :func:`snapshot` before reboot and :func:`restore` afterwards.
 """
 import json
 import os
 import subprocess
-import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -47,11 +46,12 @@ def project_sessions(cwd):
     return [f.stem for f in files]
 
 
-def snapshot(path):
+def snapshot(path=DEFAULT):
     fmt = "#{session_name}\t#{window_index}\t#{window_name}\t" \
           "#{pane_index}\t#{pane_current_path}\t#{pane_current_command}\t" \
           "#{pane_pid}"
     panes = []
+    warnings = []
     for line in sh("tmux", "list-panes", "-a", "-F", fmt).splitlines():
         sess, widx, wname, pidx, cwd, cmd, pid = line.split("\t")
         entry = {"session": sess, "window": int(widx), "window_name": wname,
@@ -67,26 +67,25 @@ def snapshot(path):
     for cwd, members in groups.items():
         ids = project_sessions(cwd)
         if len(members) > 1:
-            print(f"  note: {len(members)} claude panes share {cwd}; "
-                  f"pane<->session pairing within this group is by recency")
+            warnings.append(f"{len(members)} claude panes share {cwd}; "
+                            "pane<->session pairing within this group is by recency")
         for p, sid in zip(members, ids):
             p["claude_session"] = sid
         p_extra = members[len(ids):]
         for p in p_extra:
-            print(f"  WARNING more claude panes than transcripts in {cwd}")
+            warnings.append(f"more claude panes than transcripts in {cwd}")
     path.write_text(json.dumps(panes, indent=1))
     n_claude = sum(1 for p in panes if p.get("claude_session"))
     missing = [p for p in panes
                if p["command"] == "claude" and not p.get("claude_session")]
-    print(f"{len(panes)} panes across "
-          f"{len({p['session'] for p in panes})} sessions; "
-          f"{n_claude} claude sessions captured -> {path}")
     for p in missing:
-        print(f"  WARNING no session id for claude pane "
-              f"{p['session']}:{p['window']}.{p['pane']}")
+        warnings.append("no session id for claude pane "
+                        f"{p['session']}:{p['window']}.{p['pane']}")
+    return {"panes": panes, "sessions": len({p["session"] for p in panes}),
+            "captured": n_claude, "path": str(path), "warnings": warnings}
 
 
-def restore(path):
+def restore(path=DEFAULT):
     panes = json.loads(path.read_text())
     panes.sort(key=lambda p: (p["session"], p["window"], p["pane"]))
     existing = set(sh("tmux", "list-sessions", "-F",
@@ -117,10 +116,4 @@ def restore(path):
             subprocess.run(["tmux", "send-keys", "-t", pane,
                             f"claude --resume {p['claude_session']}",
                             "Enter"], check=True, env=TMUX_ENV)
-    print(f"restored {len(panes)} panes; claude sessions resuming")
-
-
-if __name__ == "__main__":
-    action = sys.argv[1] if len(sys.argv) > 1 else "snapshot"
-    file = Path(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT
-    {"snapshot": snapshot, "restore": restore}[action](file)
+    return {"panes": panes, "restored": len(panes)}

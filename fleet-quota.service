@@ -4,4 +4,4 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/fleet quota
+ExecStart=/usr/bin/python -c 'from agent_fleet.quota import update; update()'

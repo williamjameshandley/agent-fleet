@@ -33,13 +33,13 @@ def split_key(key):
 def mutate(key, operation, arguments):
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:
-        raise SystemExit(f"identity is for {host}, not {os.uname().nodename}")
+        raise ValueError(f"identity is for {host}, not {os.uname().nodename}")
     if operation == "rename":
         command = ["rename-session", "-t", session_id, arguments[0]]
     elif operation == "archive":
         command = ["kill-session", "-t", session_id]
     else:
-        raise SystemExit(f"unknown mutation {operation!r}")
+        raise ValueError(f"unknown mutation {operation!r}")
     condition = (f"#{{&&:#{{==:#{{socket_path}},{socket}}},"
                  f"#{{&&:#{{==:#{{pid}},{pid}}},"
                  f"#{{&&:#{{==:#{{start_time}},{started}}},"
@@ -48,7 +48,7 @@ def mutate(key, operation, arguments):
                           shlex.join(command),
                           "display-message -p FLEET_STALE")
     if result.stdout and result.stdout[0] == "FLEET_STALE":
-        raise SystemExit(f"stale source identity: {key}")
+        raise RuntimeError(f"stale source identity: {key}")
 
 
 def capture(key, columns=0, lines=0):

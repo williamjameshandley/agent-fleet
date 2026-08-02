@@ -51,7 +51,7 @@ def test_transcript_identity_comes_from_rollout_filename(tmp_path):
 def test_archive_verifies_the_full_transcript_identity(monkeypatch):
     item = type("Transcript", (), {"session_id": "full-session-id"})()
     monkeypatch.setattr(transcripts, "find", lambda session_id, agent: item)
-    with __import__("pytest").raises(SystemExit, match="transcript identity changed"):
+    with __import__("pytest").raises(RuntimeError, match="transcript identity changed"):
         verify("codex", "prefix")
 
 
@@ -85,7 +85,7 @@ def test_resume_rejects_a_prefix_before_creating_tmux(monkeypatch):
     item = type("Transcript", (), {"session_id": "full-session-id"})()
     monkeypatch.setattr(transcripts, "find", lambda session_id, agent: item)
     with mock.patch("agent_fleet.transcripts.subprocess.run") as run, \
-         __import__("pytest").raises(SystemExit, match="transcript identity changed"):
+         __import__("pytest").raises(RuntimeError, match="transcript identity changed"):
         transcripts.resume("codex", "prefix", "work")
     run.assert_not_called()
 

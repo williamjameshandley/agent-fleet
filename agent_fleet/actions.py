@@ -2,6 +2,7 @@ import os
 import subprocess
 import shlex
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -20,6 +21,14 @@ def host_command(host, *command, capture_output=False, stdout=None):
         "ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(command)]
     return subprocess.run(argv, text=True, check=True, capture_output=capture_output,
                           stdout=stdout)
+
+
+def host_python(host, source, *arguments, capture_output=False, stdout=None):
+    """Run one fixed Python operation across the SSH host boundary."""
+    return host_command(
+        host, sys.executable, "-c", source, *arguments,
+        capture_output=capture_output, stdout=stdout,
+    )
 
 
 def desktop_input(prompt, values=(), fixed=False):
@@ -58,8 +67,13 @@ def muster_input(prompt, values=(), initial="", context="", title="Create sessio
 
 
 def created_key(host, name):
-    result = host_command(host, "fleet", "snapshot", "--host", host,
-                          capture_output=True)
+    result = host_python(
+        host,
+        "import sys; from agent_fleet.tmux import inventory; "
+        "from agent_fleet.protocol import encode; "
+        "print(encode(inventory(sys.argv[1])))",
+        host, capture_output=True,
+    )
     matches = [session.ref.key for session in decode(result.stdout)
                if session.name == name]
     if len(matches) != 1:
@@ -73,46 +87,77 @@ def session_name(value):
 
 def create_tab():
     subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
-                    "exec fleet create"], check=True)
+                    "exec /usr/lib/agent-fleet/ui create"], check=True)
 
 
-def create():
-    host = muster_input("host", hosts())
-    agent = muster_input("agent", ("codex", "claude"),
-                         context=host)
-    name = session_name(muster_input("name", context=f"{host} · {agent}"))
-    cwd = muster_input("directory", initial=str(Path.home()),
-                       context=f"{host} · {agent} · {name}") or str(Path.home())
+def create(host, agent, name, cwd):
+    """Create and present one Alan actor from explicit values."""
+    if agent not in {"claude", "codex"}:
+        raise ValueError(f"unsupported agent {agent!r}")
+    name = session_name(name)
     if not name:
-        raise SystemExit("session name is required")
-    result = host_command(host, "fleet", "actor-create", agent, name, cwd,
+        raise ValueError("session name is required")
+    result = host_python(
+        host,
+        "import sys; from agent_fleet.alan import create; "
+        "print(create(sys.argv[1], sys.argv[2], sys.argv[3]))",
+        agent, name, cwd,
                           stdout=subprocess.PIPE)
     addr = result.stdout.strip()
     key = f"alan:{addr}"
     wait_for_projection(key)
     viewer.open_main(key)
+    return key
+
+
+def create_prompt():
+    """Collect Muster input and call :func:`create`."""
+    host = muster_input("host", hosts())
+    agent = muster_input("agent", ("codex", "claude"), context=host)
+    name = muster_input("name", context=f"{host} · {agent}")
+    cwd = muster_input("directory", initial=str(Path.home()),
+                       context=f"{host} · {agent} · {name}") or str(Path.home())
+    return create(host, agent, name, cwd)
 
 
 def rename_tab(key):
-    command = shlex.join(("exec", "fleet", "rename", key))
+    command = shlex.join(("exec", "/usr/lib/agent-fleet/ui", "rename-prompt", key))
     subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "rename",
                     command], check=True)
 
 
-def rename(key):
+def rename(key, name):
+    """Rename one canonical source from an explicit value."""
     session = find(key)
-    name = session_name(muster_input("name", initial=session.name,
-                                     context=session.ref.server.host,
-                                     title="Rename session"))
+    name = session_name(name)
     if name:
         if session.ref.server.kind == "alan":
             if session.ref.server.host == os.uname().nodename:
                 alan_rename(session.ref.session_id, name)
             else:
-                host_command(session.ref.server.host, "fleet", "alan-rename",
-                             session.ref.session_id, name)
+                host_python(
+                    session.ref.server.host,
+                    "import sys; from agent_fleet.alan import rename; "
+                    "rename(sys.argv[1], sys.argv[2])",
+                    session.ref.session_id, name,
+                )
         else:
-            host_command(session.ref.server.host, "fleet", "mutate", key, "rename", name)
+            host_python(
+                session.ref.server.host,
+                "import sys; from agent_fleet.tmux import mutate; "
+                "mutate(sys.argv[1], 'rename', [sys.argv[2]])",
+                key, name,
+            )
+    return name
+
+
+def rename_prompt(key):
+    """Collect a Muster name and call :func:`rename`."""
+    session = find(key)
+    name = muster_input("name", initial=session.name,
+                        context=session.ref.server.host,
+                        title="Rename session")
+    return rename(key, name)
 
 
 def wait_for_absence(key):
@@ -120,7 +165,7 @@ def wait_for_absence(key):
     while time.monotonic() < deadline:
         try:
             find(key)
-        except SystemExit:
+        except LookupError:
             return
         time.sleep(.1)
     raise RuntimeError(f"Fleet projection did not archive {key}")
@@ -130,19 +175,22 @@ def archive(key):
     session = find(key)
     if session.ref.server.kind == "alan":
         if session.agent not in {"llm", "claude", "codex"}:
-            raise SystemExit("archive requires a language actor")
-        host_command(session.ref.server.host, "fleet", "alan-retire",
-                     session.ref.session_id, capture_output=True)
-        if session.agent == "llm":
-            host_command(session.ref.server.host, "fleet", "actor-close",
-                         session.ref.session_id, capture_output=True)
+            raise ValueError("archive requires a language actor")
+        host_python(
+            session.ref.server.host,
+            "import sys; from agent_fleet.alan import retire; retire(sys.argv[1])",
+            session.ref.session_id, capture_output=True,
+        )
     else:
         if session.agent not in {"claude", "codex"} or not session.transcript_id:
-            raise SystemExit("archive requires a durable Claude or Codex identity")
-        host_command(session.ref.server.host, "fleet", "transcript-check",
-                     session.agent, session.transcript_id, capture_output=True)
-        host_command(session.ref.server.host, "fleet", "mutate", key, "archive",
-                     capture_output=True)
+            raise ValueError("archive requires a durable Claude or Codex identity")
+        host_python(
+            session.ref.server.host,
+            "import sys; from agent_fleet.transcripts import verify; "
+            "from agent_fleet.tmux import mutate; "
+            "verify(sys.argv[1], sys.argv[2]); mutate(sys.argv[3], 'archive', [])",
+            session.agent, session.transcript_id, key, capture_output=True,
+        )
     wait_for_absence(key)
     for slot, source in viewer.slots():
         if source == key:
@@ -152,7 +200,7 @@ def archive(key):
 def archive_report(key):
     try:
         archive(key)
-    except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
+    except (LookupError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
                   and error.stderr else str(error))
         subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
@@ -163,10 +211,13 @@ def archive_report(key):
 def refresh(key):
     session = find(key)
     if session.ref.server.kind != "alan":
-        raise SystemExit("refresh requires an Alan actor")
+        raise ValueError("refresh requires an Alan actor")
     shown = [slot for slot, source in viewer.slots() if source == key]
-    host_command(session.ref.server.host, "fleet", "actor-refresh",
-                 session.ref.session_id, capture_output=True)
+    host_python(
+        session.ref.server.host,
+        "import sys; from agent_fleet.presentation import refresh; refresh(sys.argv[1])",
+        session.ref.session_id, capture_output=True,
+    )
     for slot in shown:
         viewer.request(slot, key)
 
@@ -174,7 +225,7 @@ def refresh(key):
 def refresh_report(key):
     try:
         refresh(key)
-    except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
+    except (LookupError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
                   and error.stderr else str(error))
         subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
@@ -187,7 +238,7 @@ def wait_for_projection(key, native_id=None):
     while time.monotonic() < deadline:
         try:
             session = find(key)
-        except SystemExit:
+        except LookupError:
             time.sleep(.1)
             continue
         if (session.ref.server.kind != "alan" or
@@ -224,34 +275,42 @@ def preview(key, columns=0, lines=0):
 
 def history():
     entries = json.loads(commander_projection())["history"]
-    for item in sorted(entries, key=lambda row: row["mtime"], reverse=True):
-        print("\t".join((item[key] for key in ("key", "host", "agent", "name", "cwd"))))
+    return [tuple(item[key] for key in ("key", "host", "agent", "name", "cwd"))
+            for item in sorted(entries, key=lambda row: row["mtime"], reverse=True)]
 
 
 def open_history(key):
     if key.startswith("alan:"):
         addr = key.removeprefix("alan:")
         host = addr.rsplit("@", 1)[1]
-        host_command(host, "fleet", "alan-resume", addr, capture_output=True)
+        host_python(
+            host,
+            "import sys; from agent_fleet.alan import resume; print(resume(sys.argv[1]))",
+            addr, capture_output=True,
+        )
         wait_for_projection(key)
         viewer.open_main(key)
         return
     host, agent, transcript = key.split(":", 2)
     if any((session.ref.server.host, session.agent, session.transcript_id) ==
            (host, agent, transcript) for session in decode(snapshot())):
-        raise SystemExit("that transcript already has a live session")
+        raise ValueError("that transcript already has a live session")
     name = desktop_input("new session name")
     if not name:
-        raise SystemExit("session name is required")
-    host_command(host, "fleet", "resume", agent, transcript, name,
-                 capture_output=True)
+        raise ValueError("session name is required")
+    host_python(
+        host,
+        "import sys; from agent_fleet.transcripts import resume; "
+        "resume(sys.argv[1], sys.argv[2], sys.argv[3])",
+        agent, transcript, name, capture_output=True,
+    )
     viewer.request("main", created_key(host, name))
 
 
 def open_history_report(key):
     try:
         open_history(key)
-    except (RuntimeError, subprocess.CalledProcessError, SystemExit) as error:
+    except (LookupError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
                   and error.stderr else str(error))
         subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
@@ -262,7 +321,7 @@ def open_history_report(key):
 def arrive(profile, available=False):
     sessions, _, unavailable = decode_message(snapshot())
     if unavailable and not available:
-        raise SystemExit("inventory incomplete; unavailable: " + " ".join(unavailable))
+        raise RuntimeError("inventory incomplete; unavailable: " + " ".join(unavailable))
     result = subprocess.run(["tmux", "show-options", "-gv",
                              "@fleet_profile"], text=True, capture_output=True)
     current = result.stdout.strip() if result.returncode == 0 else ""
@@ -286,20 +345,6 @@ def arrive(profile, available=False):
         viewer.request(slot, session.ref.key)
 
 
-def focused_slot():
-    result = subprocess.run(["i3-msg", "-t", "get_tree"], text=True,
-                            capture_output=True, check=True)
-    tree = json.loads(result.stdout)
-    while tree.get("focus"):
-        wanted = tree["focus"][0]
-        tree = next(node for node in tree.get("nodes", []) + tree.get("floating_nodes", [])
-                    if node["id"] == wanted)
-    instance = tree.get("window_properties", {}).get("instance", "")
-    if not instance.startswith("fleet-") or instance in {"fleet-muster", "fleet-commander"}:
-        raise SystemExit("the focused window is not a Fleet viewer")
-    return instance.removeprefix("fleet-")
-
-
 def context():
     sessions, _, unavailable = decode_message(snapshot())
     profile = subprocess.run(["tmux", "show-options", "-gv",
@@ -313,8 +358,4 @@ def context():
                       "summary": s.summary, "recency": s.human_activity}
                      for s in sessions],
     }
-    print(json.dumps(data, indent=2))
-
-
-def commander_context():
-    print(json.dumps(json.loads(commander_projection()), indent=2))
+    return data

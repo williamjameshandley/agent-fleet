@@ -4,6 +4,7 @@ import sys
 import time
 
 from .config import RUNTIME, hosts
+from .usage import read as usage
 
 
 def tmux(*args):
@@ -25,7 +26,7 @@ def read():
 
 def update():
     if os.uname().nodename != hosts()[0]:
-        raise SystemExit("quota collection runs only on the first fleet host")
+        raise RuntimeError("quota collection runs only on the first fleet host")
     errors = []
     for agent in ("claude", "codex"):
         option = f"@fleet_{agent}_retry_after"
@@ -33,17 +34,20 @@ def update():
         if retry and int(retry) > time.time():
             tmux_check("set-option", "-g", f"@fleet_{agent}_usage", "unavailable")
             continue
-        result = subprocess.run(["fleet-usage", agent], text=True, capture_output=True)
-        if result.returncode:
-            if "retry-at=" in result.stderr:
-                retry_at = result.stderr.rsplit("retry-at=", 1)[1].split()[0]
+        try:
+            value = usage(agent)
+        except RuntimeError as error:
+            message = str(error)
+            if "retry-at=" in message:
+                retry_at = message.rsplit("retry-at=", 1)[1].split()[0]
                 tmux_check("set-option", "-g", option, retry_at)
             tmux_check("set-option", "-g", f"@fleet_{agent}_usage", "unavailable")
-            errors.append(result.stderr.strip())
+            errors.append(message)
             continue
-        tmux_check("set-option", "-g", f"@fleet_{agent}_usage", result.stdout.strip())
+        tmux_check("set-option", "-g", f"@fleet_{agent}_usage", value)
         tmux("set-option", "-gu", option)
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     (RUNTIME / "quota.changed").touch()
     for error in errors:
         print(error, file=sys.stderr)
+    return errors

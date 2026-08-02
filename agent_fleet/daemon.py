@@ -7,12 +7,43 @@ import json
 import subprocess
 import hashlib
 import time
+import threading
 
 import networkx as nx
 
 from .config import HUB, RUNTIME, hosts, ssh_environment
 from .protocol import decode_graph, decode_message, encode
 from .model import key_host
+from .tmux import capture, event_stream
+from .quota import read as quota_read
+
+
+def events(host):
+    """Stream one host's session events and answer preview requests."""
+    lock = threading.Lock()
+    consumer = threading.Event()
+
+    def emit(message):
+        with lock:
+            print(message, flush=True)
+
+    def requests():
+        try:
+            for line in sys.stdin:
+                request = json.loads(line)
+                try:
+                    text = capture(request["key"], request["columns"], request["lines"])
+                    response = {"preview": request["preview"], "text": text}
+                except RuntimeError as error:
+                    response = {"preview": request["preview"], "error": str(error)}
+                emit(json.dumps(response, separators=(",", ":")))
+        finally:
+            consumer.set()
+
+    threading.Thread(target=requests, daemon=True).start()
+    for sessions, graph in event_stream(host, consumer):
+        usage = quota_read() if host == hosts()[0] else {}
+        emit(encode(sessions, usage, graph=graph))
 
 
 class Fleet:
@@ -27,10 +58,11 @@ class Fleet:
         self.next_preview = 0
 
     async def collect(self, host):
-        command = ([sys.executable, "-m", "agent_fleet.cli", "events", "--host", host]
-                   if host == os.uname().nodename
-                   else ["ssh", "-T", "-o", "BatchMode=yes", host,
-                         shlex.join(("fleet", "events", "--host", host))])
+        python = (sys.executable, "-c",
+                  "import sys; from agent_fleet.daemon import events; events(sys.argv[1])",
+                  host)
+        command = (list(python) if host == os.uname().nodename else
+                   ["ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(python)])
         while True:
             process = await asyncio.create_subprocess_exec(*command,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -95,7 +127,7 @@ class Fleet:
             self.refresh_pending = False
             process = await asyncio.create_subprocess_exec(
                 "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-                "-XPOST", "-d", "transform-header(sh -c '/usr/bin/fleet header')+reload-sync(fleet items)",
+                "-XPOST", "-d", "transform-header(sh -c '/usr/lib/agent-fleet/ui header')+reload-sync(/usr/lib/agent-fleet/ui items)",
                 "http://localhost",
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
             await process.wait()
@@ -157,7 +189,10 @@ class Fleet:
             key=lambda item: item["source"])
         source_hosts = sorted(hosts())
         observations = await asyncio.gather(
-            *(self.remote_json(host, "fleet", "context")
+            *(self.remote_json(
+                host, sys.executable, "-c",
+                "import json; from agent_fleet.actions import context; print(json.dumps(context()))",
+              )
               for host in ("boltzmann", "noether", "newton")),
             *(self.history_observation(host) for host in source_hosts))
         workstations = {
@@ -185,8 +220,14 @@ class Fleet:
 
     async def history_observation(self, host):
         actors = [] if self.graphs.get(host) is None else await self.remote_json(
-            host, "fleet", "alan-actors")
-        transcripts = await self.remote_json(host, "fleet", "transcripts", "--limit", "100")
+                host, sys.executable, "-c",
+                "import json; from agent_fleet.alan import actors; print(json.dumps(actors()))",
+            )
+        transcripts = await self.remote_json(
+            host, sys.executable, "-c",
+            "import json; from agent_fleet.transcripts import history; "
+            "print(json.dumps(history(100)))",
+        )
         return {"host": host, "actors": actors, "transcripts": transcripts}
 
     @staticmethod
@@ -267,7 +308,8 @@ def snapshot():
     if os.uname().nodename.split(".", 1)[0] == HUB:
         return projection()
     return subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", HUB,
-                           "fleet projection"], text=True,
+                           shlex.join((sys.executable, "-c",
+                                      "from agent_fleet.daemon import projection; print(projection(), end='')"))], text=True,
                           capture_output=True, check=True).stdout
 
 

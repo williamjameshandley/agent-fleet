@@ -65,33 +65,40 @@ copy. There is no Fleet JSON state file or database.
 The host adapter combines tmux process discovery with the composable
 `agent_fleet.transcripts` readers for Claude and Codex JSONL.
 
-## Commands
+## Process launchers and Python API
 
 ```
 fleet-muster                    attach the global Lovelace Muster
 fleet-viewer main               attach the global Lovelace Main
 fleet-viewer SLOT               run a workstation-local named slot
-fleet show SOURCE               focus/open a live source
-fleet next-waiting              advance main to the next waiting source
-fleet show SOURCE --slot S      explicit replacement
-fleet create                    create an Alan Codex or Claude actor
-fleet rename SOURCE             rename the Fleet presentation
-fleet refresh SOURCE            restart a waiting native actor presentation
-fleet archive SOURCE            archive a recoverable LLM source
-fleet open-history HISTORY_KEY  open an archived LLM source
 fleet-view                      laptop 50:50 launcher
 fleet-deck                      home multi-screen launcher
-fleet-commander                 persistent Alan Commander session
-fleet-snapshot snapshot [file]  record pane topology + claude session ids
-fleet-snapshot restore [file]   recreate panes and `claude --resume` each
+fleet-commander                 persistent Claude Commander session
 ```
 
-`fleet-snapshot` is an explicit, user-invoked reboot bridge: it writes a
-disposable snapshot file (default `~/fleet-snapshot.json`) before a planned
-reboot and replays it afterwards. It is not live topology authority — tmux
-remains the source of truth. Claude panes sharing a cwd are paired to
-transcripts by recency, so pairing within such a group can swap; all sessions
-still resume.
+Semantic operations compose directly from Python:
+
+```python
+from agent_fleet.actions import archive, create, refresh, rename
+from agent_fleet.daemon import snapshot
+from agent_fleet.protocol import decode_message
+from agent_fleet.reboot import restore as restore_reboot
+from agent_fleet.reboot import snapshot as snapshot_reboot
+from agent_fleet.viewer import show
+
+sessions, usage, unavailable = decode_message(snapshot())
+key = create(host, agent, name, cwd)
+rename(key, new_name)
+show(key, slot="main")
+refresh(key)
+archive(key)
+snapshot_reboot()
+restore_reboot()
+```
+
+The reboot bridge writes a disposable snapshot file before a planned reboot
+and replays it afterwards. It is not live topology authority—tmux remains the
+source of truth. Fleet publishes no general semantic command.
 
 Host aliases come from `~/.config/agent-fleet/hosts`. Routing and credentials
 belong to OpenSSH configuration. Machine labels are single-cell (`N L B T Œ`),
