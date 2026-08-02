@@ -259,7 +259,8 @@ def next_waiting_key(sessions, active):
 
 def next_waiting():
     from .ui import ordered
-    sessions, _, _ = ordered()
+    projected, _, _ = ordered()
+    sessions = [item.session for item in projected]
     key = next_waiting_key(sessions, dict(viewer.slots()).get("main"))
     if key is None:
         subprocess.run(["tmux", "display-message", "-t", "fleet@muster",

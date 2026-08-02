@@ -4,7 +4,7 @@ import os
 import threading
 import time
 import textwrap
-from dataclasses import replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +12,14 @@ import loop
 import networkx as nx
 
 from .model import ServerRef, Session, SessionRef
+
+
+@dataclass(frozen=True)
+class Projected:
+    session: Session
+    depth: int
+    child_count: int
+    expanded: bool
 
 
 class Watcher:
@@ -139,7 +147,7 @@ def inventory(host, actor_descriptors):
     return sessions
 
 
-def project(sessions, graph, show_language=False, show_python=False):
+def project(sessions, graph, expanded=(), show_python=False):
     descriptors = {actor["addr"]: actor for actor in graph.graph.get("actors", [])}
     ancestry = nx.DiGraph()
     ancestry.add_nodes_from(descriptors)
@@ -164,31 +172,49 @@ def project(sessions, graph, show_language=False, show_python=False):
         [root] = candidates
         roots[actor] = root if root in descriptors else None
 
-    result = []
-    for session in sessions:
-        if session.ref.server.kind != "alan":
-            result.append(session)
-            continue
-        actor = session.ref.session_id
-        descriptor = descriptors[actor]
-        if roots[actor] != actor or descriptor.get("preset") == "commander" or (
+    expanded = set(expanded)
+    children = {}
+    eligible = set()
+    session_order = [session.ref.session_id for session in sessions
+                     if session.ref.server.kind == "alan"]
+    for root in session_order:
+        descriptor = descriptors[root]
+        if roots[root] != root or descriptor.get("preset") == "commander" or (
             descriptor["kind"] == "python" and not show_python
         ):
             continue
-        result.append(session)
-        for descendant in sessions:
-            if descendant.ref.server.kind != "alan":
+        eligible.add(root)
+        visible = [actor for actor in session_order
+                   if roots[actor] == root
+                   and descriptors[actor].get("preset") != "commander"
+                   and (descriptors[actor]["kind"] != "python" or show_python)]
+        visible_set = set(visible)
+        children[root] = []
+        for actor in visible:
+            if actor == root:
                 continue
-            child = descendant.ref.session_id
-            if child == actor or roots[child] != actor:
-                continue
-            kind = descriptors[child]["kind"]
-            if descriptors[child].get("preset") == "commander":
-                continue
-            if (kind == "python" and show_python) or (
-                kind in {"llm", "claude", "codex"} and show_language
-            ):
-                result.append(replace(descendant, name="  ↳ " + descendant.name))
+            candidates = nx.ancestors(ancestry, actor) & visible_set
+            parent = max(candidates,
+                         key=lambda item: nx.shortest_path_length(ancestry, root, item))
+            children.setdefault(parent, []).append(actor)
+            children.setdefault(actor, [])
+
+    def emit(actor, depth):
+        session = actor_sessions[actor]
+        descendants = children[actor]
+        yield Projected(session, depth, len(descendants), actor in expanded)
+        if actor in expanded:
+            for child in descendants:
+                yield from emit(child, depth + 1)
+
+    result = []
+    for session in sessions:
+        if session.ref.server.kind != "alan":
+            result.append(Projected(session, 0, 0, False))
+            continue
+        actor = session.ref.session_id
+        if actor in eligible:
+            result.extend(emit(actor, 0))
     return result
 
 

@@ -213,12 +213,14 @@ def actor_session(addr, kind):
     )
 
 
-def test_projection_derives_roots_and_reveals_descendants_by_class():
+def test_projection_derives_recursive_visible_tree():
     root = "codex-root@newton"
     language = "claude-child@lovelace"
     python = "python-child@newton"
     nested = "codex-nested@lovelace"
+    python_nested = "claude-through-python@lovelace"
     commander = "llm-commander@newton"
+    commander_child = "claude-commander-child@newton"
     nested_commander = "llm-nested-commander@lovelace"
     direct_python = "python-root@newton"
     missing = "codex-missing-child@lovelace"
@@ -228,18 +230,22 @@ def test_projection_derives_roots_and_reveals_descendants_by_class():
         {"addr": language, "kind": "claude"},
         {"addr": python, "kind": "python"},
         {"addr": nested, "kind": "codex"},
+        {"addr": python_nested, "kind": "claude"},
         {"addr": commander, "kind": "llm", "preset": "commander"},
+        {"addr": commander_child, "kind": "claude"},
         {"addr": nested_commander, "kind": "llm", "preset": "commander"},
         {"addr": direct_python, "kind": "python"},
         {"addr": missing, "kind": "codex"},
     ]
-    for actor in (root, language, python, nested, commander, nested_commander,
-                  direct_python, missing):
+    for actor in (root, language, python, nested, python_nested, commander,
+                  commander_child, nested_commander, direct_python, missing):
         current.add_node(f"{actor}#0", stream=actor, op="create")
     for parent, child, position in (
         (root, language, 1),
         (root, python, 2),
         (language, nested, 1),
+        (python, python_nested, 1),
+        (commander, commander_child, 1),
         (root, nested_commander, 3),
     ):
         source = f"{parent}#{position}"
@@ -254,22 +260,76 @@ def test_projection_derives_roots_and_reveals_descendants_by_class():
     sessions = [standalone] + [
         actor_session(actor, next(item["kind"] for item in current.graph["actors"]
                                   if item["addr"] == actor))
-        for actor in (root, language, python, nested, commander, nested_commander,
-                      direct_python, missing)
+        for actor in (root, language, python, nested, python_nested, commander,
+                      commander_child, nested_commander, direct_python, missing)
     ]
 
-    assert [item.ref.key for item in alan.project(sessions, current)] == [
+    collapsed = alan.project(sessions, current)
+    assert [(item.session.ref.key, item.depth, item.child_count, item.expanded)
+            for item in collapsed] == [
+        (standalone.ref.key, 0, 0, False),
+        (f"alan:{root}", 0, 2, False),
+    ]
+    assert alan.project(sessions, current, expanded={language}) == collapsed
+
+    root_open = alan.project(sessions, current, expanded={root})
+    assert [(item.session.ref.key, item.depth, item.child_count)
+            for item in root_open] == [
+        (standalone.ref.key, 0, 0),
+        (f"alan:{root}", 0, 2),
+        (f"alan:{language}", 1, 1),
+        (f"alan:{python_nested}", 1, 0),
+    ]
+
+    nested_open = alan.project(sessions, current, expanded={root, language})
+    assert [(item.session.ref.key, item.depth) for item in nested_open] == [
+        (standalone.ref.key, 0),
+        (f"alan:{root}", 0),
+        (f"alan:{language}", 1),
+        (f"alan:{nested}", 2),
+        (f"alan:{python_nested}", 1),
+    ]
+    assert [item.session.ref.key for item in alan.project(sessions, current)] == [
         standalone.ref.key, f"alan:{root}",
     ]
-    assert [item.ref.key for item in alan.project(
-        sessions, current, show_language=True
-    )] == [
-        standalone.ref.key, f"alan:{root}", f"alan:{language}", f"alan:{nested}",
+
+    python_open = alan.project(
+        sessions, current, expanded={root, python}, show_python=True
+    )
+    assert [(item.session.ref.key, item.depth, item.child_count)
+            for item in python_open] == [
+        (standalone.ref.key, 0, 0),
+        (f"alan:{root}", 0, 2),
+        (f"alan:{language}", 1, 1),
+        (f"alan:{python}", 1, 1),
+        (f"alan:{python_nested}", 2, 0),
+        (f"alan:{direct_python}", 0, 0),
     ]
-    assert [item.ref.key for item in alan.project(
-        sessions, current, show_python=True
-    )] == [
-        standalone.ref.key, f"alan:{root}", f"alan:{python}", f"alan:{direct_python}",
+
+
+def test_projection_compresses_an_absent_intermediate_inside_an_eligible_tree():
+    root = "codex-root@newton"
+    bridge = "llm-bridge@newton"
+    child = "claude-child@lovelace"
+    current = nx.MultiDiGraph()
+    current.graph["actors"] = [
+        {"addr": root, "kind": "codex"},
+        {"addr": bridge, "kind": "llm"},
+        {"addr": child, "kind": "claude"},
+    ]
+    for actor in (root, bridge, child):
+        current.add_node(f"{actor}#0", stream=actor, op="create")
+    for parent, descendant in ((root, bridge), (bridge, child)):
+        source = f"{parent}#1"
+        current.add_node(source, stream=parent, op="spawn")
+        current.add_edge(source, f"{descendant}#0", key="spawn")
+    sessions = [actor_session(root, "codex"), actor_session(child, "claude")]
+
+    projected = alan.project(sessions, current, expanded={root})
+    assert [(item.session.ref.key, item.depth, item.child_count)
+            for item in projected] == [
+        (f"alan:{root}", 0, 1),
+        (f"alan:{child}", 1, 0),
     ]
 
 
@@ -293,7 +353,8 @@ def test_projection_composes_spawn_ancestry_from_separate_hosts():
     current.graph["actors"] = newton.graph["actors"] + lovelace.graph["actors"]
     sessions = [actor_session(parent, "codex"), actor_session(child, "claude")]
 
-    assert [item.ref.key for item in alan.project(sessions, current)] == [f"alan:{parent}"]
-    assert [item.ref.key for item in alan.project(
-        sessions, current, show_language=True
+    assert [item.session.ref.key for item in alan.project(sessions, current)] == [
+        f"alan:{parent}"]
+    assert [item.session.ref.key for item in alan.project(
+        sessions, current, expanded={parent}
     )] == [f"alan:{parent}", f"alan:{child}"]

@@ -2,6 +2,7 @@ import unittest
 import asyncio
 import os
 import pty
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -957,11 +958,11 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("change-prompt(Search: )", source)
         self.assertIn("c:execute-silent(/usr/lib/agent-fleet/ui create-tab)", source)
         self.assertIn("r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})", source)
-        self.assertIn("l:execute-silent(/usr/lib/agent-fleet/ui toggle language)", source)
-        self.assertIn("p:execute-silent(/usr/lib/agent-fleet/ui toggle python)", source)
+        self.assertIn("l:execute-silent(/usr/lib/agent-fleet/ui fold {1})+transform-header", source)
+        self.assertIn("p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header", source)
         self.assertIn('"--footer-border=bottom"', source)
 
-    def test_muster_controls_independently_project_language_and_python(self):
+    def test_muster_projects_recursive_folds_and_python_independently(self):
         root = "codex-root@newton"
         language = "claude-child@newton"
         python = "python-child@newton"
@@ -984,27 +985,233 @@ class IdentityTests(unittest.TestCase):
         ]
         raw = encode(sessions, graph=graph)
 
-        def projected(language_visible, python_visible):
-            values = {
-                "@fleet_show_language": language_visible,
-                "@fleet_show_python": python_visible,
-            }
+        def projected(opened, python_visible):
             with mock.patch.object(ui, "snapshot", return_value=raw), \
-                 mock.patch.object(ui, "option", side_effect=values.__getitem__):
-                return [item.ref.session_id for item in ui.ordered()[0]]
+                 mock.patch.object(ui, "expanded", return_value=set(opened)), \
+                 mock.patch.object(ui, "option", return_value=python_visible):
+                return [item.session.ref.session_id for item in ui.ordered()[0]]
 
-        self.assertEqual(projected(False, False), [root])
-        self.assertEqual(projected(True, False), [root, language])
-        self.assertEqual(projected(False, True), [root, python])
+        self.assertEqual(projected((), False), [root])
+        self.assertEqual(projected((root,), False), [root, language])
+        self.assertEqual(projected((root,), True), [root, language, python])
 
     def test_toggle_changes_the_named_muster_tmux_option(self):
         with mock.patch.object(ui, "option", return_value=False), \
              mock.patch.object(ui.subprocess, "run") as run:
-            ui.toggle("language")
+            ui.toggle("python")
         run.assert_called_once_with(
-            ["tmux", "set-option", "-t", "=fleet@muster", "@fleet_show_language", "1"],
+            ["tmux", "set-option", "-t", "=fleet@muster:", "@fleet_show_python", "1"],
             check=True,
         )
+
+    def test_fold_changes_only_the_selected_expandable_actor(self):
+        root = Session(
+            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"),
+                       "codex-root@lovelace"),
+            "root", 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting")
+        projection = alan.Projected(root, 0, 2, False)
+        with mock.patch.object(ui, "ordered", return_value=([projection], {}, [])), \
+             mock.patch.object(ui, "expanded", return_value={"claude-other@lovelace"}), \
+             mock.patch.object(ui.subprocess, "run") as run:
+            ui.fold(root.ref.key)
+        run.assert_called_once_with([
+            "tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
+            f"claude-other@lovelace {root.ref.session_id}"], check=True)
+
+        with mock.patch.object(ui, "ordered", return_value=(
+                [replace(projection, expanded=True)], {}, [])), \
+             mock.patch.object(ui, "expanded",
+                               return_value={"claude-other@lovelace",
+                                             root.ref.session_id}), \
+             mock.patch.object(ui.subprocess, "run") as run:
+            ui.fold(root.ref.key)
+        run.assert_called_once_with([
+            "tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
+            "claude-other@lovelace"], check=True)
+
+    def test_fold_ignores_native_and_leaf_rows(self):
+        native = self.session("lovelace")
+        actor = Session(
+            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"),
+                       "claude-leaf@lovelace"),
+            "leaf", 1, 0, 0, 1, "alan", "", "/work", "claude", "waiting")
+        for projection in (alan.Projected(native, 0, 1, False),
+                           alan.Projected(actor, 1, 0, False)):
+            with self.subTest(key=projection.session.ref.key), \
+                 mock.patch.object(ui, "ordered", return_value=([projection], {}, [])), \
+                 mock.patch.object(ui, "expanded") as expanded, \
+                 mock.patch.object(ui.subprocess, "run") as run:
+                ui.fold(projection.session.ref.key)
+            expanded.assert_not_called()
+            run.assert_not_called()
+
+    def test_recursive_folds_use_ephemeral_state_in_an_isolated_tmux_server(self):
+        host = os.uname().nodename
+        root = f"codex-root@{host}"
+        child = f"claude-child@{host}"
+        grandchild = f"llm-grandchild@{host}"
+        python = f"python-child@{host}"
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [
+            {"addr": root, "kind": "codex"},
+            {"addr": child, "kind": "claude"},
+            {"addr": grandchild, "kind": "llm"},
+            {"addr": python, "kind": "python"},
+        ]
+        for actor in (root, child, grandchild, python):
+            graph.add_node(f"{actor}#0", stream=actor, op="create")
+        for position, (parent, descendant) in enumerate((
+                (root, child), (child, grandchild), (root, python)), 1):
+            source = f"{parent}#{position}"
+            graph.add_node(source, stream=parent, op="spawn")
+            graph.add_edge(source, f"{descendant}#0", key="spawn")
+        sessions = [
+            Session(SessionRef(ServerRef(host, "", 0, 0, "alan"), actor),
+                    actor, 1, 0, 0, 1, "alan", "", "/work", kind, "waiting")
+            for actor, kind in ((root, "codex"), (child, "claude"),
+                                (grandchild, "llm"), (python, "python"))
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {key: value for key, value in os.environ.items()
+                           if key != "TMUX"}
+            environment["TMUX_TMPDIR"] = directory
+            subprocess.run(["tmux", "new-session", "-d", "-s", "fleet@muster",
+                            "sleep 30"], check=True, env=environment)
+            try:
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    def projected():
+                        return alan.project(
+                            sessions, graph, expanded=ui.expanded(),
+                            show_python=ui.option("@fleet_show_python"))
+
+                    with mock.patch.object(
+                            ui, "ordered", side_effect=lambda: (projected(), {}, [])):
+                        ui.fold(f"alan:{root}")
+                        self.assertEqual(
+                            [item.session.ref.session_id for item in projected()],
+                            [root, child])
+                        ui.fold(f"alan:{child}")
+                        self.assertEqual(
+                            [item.session.ref.session_id for item in projected()],
+                            [root, child, grandchild])
+                        ui.fold(f"alan:{root}")
+                        self.assertEqual(
+                            [item.session.ref.session_id for item in projected()], [root])
+                        ui.fold(f"alan:{root}")
+                        self.assertEqual(
+                            [item.session.ref.session_id for item in projected()],
+                            [root, child, grandchild])
+                        ui.toggle("python")
+                        self.assertEqual(
+                            [item.session.ref.session_id for item in projected()],
+                            [root, child, grandchild, python])
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment)
+
+    def test_fzf_reload_preserves_child_selection_by_stable_key(self):
+        root = "alan:codex-root@lovelace"
+        child = "alan:claude-child@lovelace"
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            rows = directory / "rows"
+            rows.write_text(f"{root}\troot\n{child}\t  child\n")
+            socket_path = directory / "fzf.sock"
+            tmux_runtime = directory / "tmux"
+            tmux_runtime.mkdir()
+            environment = {key: value for key, value in os.environ.items()
+                           if key != "TMUX"}
+            environment["TMUX_TMPDIR"] = str(tmux_runtime)
+            command = (
+                f"exec fzf --listen {shlex.quote(str(socket_path))} --track --disabled "
+                f"--no-input --delimiter='\\t' --with-nth=2.. --id-nth=1 "
+                f"--layout=reverse --no-sort "
+                f"< {shlex.quote(str(rows))}"
+            )
+            subprocess.run(["tmux", "new-session", "-d", "-s", "fleet@muster",
+                            command], check=True, env=environment)
+            try:
+                for _ in range(100):
+                    if socket_path.exists():
+                        break
+                    time.sleep(.01)
+                self.assertTrue(socket_path.exists())
+                endpoint = ["curl", "-fsS", "--unix-socket", str(socket_path)]
+                state = {}
+                for _ in range(100):
+                    state = json.loads(subprocess.run(
+                        endpoint + ["http://localhost"], check=True,
+                        env=environment, text=True, capture_output=True).stdout)
+                    if len(state.get("matches", [])) == 2:
+                        break
+                    time.sleep(.01)
+                position = next(
+                    index for index, match in enumerate(state["matches"], 1)
+                    if match["text"].partition("\t")[0] == child)
+                subprocess.run(endpoint + ["-XPOST", "-d", f"pos({position})",
+                                           "http://localhost"],
+                               check=True, env=environment,
+                               stdout=subprocess.DEVNULL)
+                for _ in range(100):
+                    state = json.loads(subprocess.run(
+                        endpoint + ["http://localhost"], check=True,
+                        env=environment, text=True, capture_output=True).stdout)
+                    if state.get("current", {}).get("text", "").partition("\t")[0] == child:
+                        break
+                    time.sleep(.01)
+                subprocess.run(endpoint + [
+                    "-XPOST", "-d", f"reload-sync(cat {rows})",
+                    "http://localhost"], check=True, env=environment,
+                    stdout=subprocess.DEVNULL)
+                state = json.loads(subprocess.run(
+                    endpoint + ["http://localhost"], check=True,
+                    env=environment, text=True, capture_output=True).stdout)
+                self.assertEqual(state["current"]["text"].partition("\t")[0], child)
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment)
+
+    def test_private_ui_dispatches_fold_and_rejects_language_toggle(self):
+        with mock.patch.object(ui, "fold") as fold:
+            ui_process.main(["fold", "alan:claude-one@lovelace"])
+        fold.assert_called_once_with("alan:claude-one@lovelace")
+        with mock.patch.object(ui, "toggle") as toggle:
+            ui_process.main(["toggle", "python"])
+        toggle.assert_called_once_with("python")
+        with self.assertRaises(SystemExit):
+            ui_process.main(["toggle", "language"])
+
+    def test_private_ui_opens_the_selected_stable_child_key(self):
+        key = "alan:claude-child@lovelace"
+        with mock.patch.object(viewer, "show") as show:
+            ui_process.main(["show", key, "--slot", "main"])
+        show.assert_called_once_with(key, "main")
+
+    def test_next_waiting_unwraps_projected_sessions(self):
+        active = replace(self.session("lovelace", "$1"), reported_state="waiting")
+        child = replace(self.session("lovelace", "$2"), reported_state="waiting")
+        projected = [alan.Projected(active, 0, 1, True),
+                     alan.Projected(child, 1, 0, False)]
+        with mock.patch.object(ui, "ordered", return_value=(projected, {}, [])), \
+             mock.patch.object(actions.viewer, "slots",
+                               return_value=[("main", active.ref.key)]), \
+             mock.patch.object(actions.viewer, "show") as show:
+            actions.next_waiting()
+        show.assert_called_once_with(child.ref.key, "main")
+
+    def test_header_counts_only_the_current_fold_projection(self):
+        root = replace(self.session("lovelace", "$1"), reported_state="waiting")
+        child = replace(self.session("lovelace", "$2"), reported_state="working")
+        projections = [
+            [alan.Projected(root, 0, 1, False)],
+            [alan.Projected(root, 0, 1, True), alan.Projected(child, 1, 0, False)],
+        ]
+        with mock.patch.object(ui, "ordered",
+                               side_effect=[(projections[0], {}, []),
+                                            (projections[1], {}, [])]):
+            collapsed = ui.header()
+            expanded = ui.header()
+        self.assertIn("0 working  1 waiting  1 total", collapsed)
+        self.assertIn("1 working  1 waiting  2 total", expanded)
 
     def test_footer_contains_only_action_hints(self):
         from agent_fleet.ui import footer
@@ -1012,14 +1219,43 @@ class IdentityTests(unittest.TestCase):
                         return_value=os.terminal_size((100, 24))):
             self.assertEqual(
                 footer(),
-                "Enter open  c create  r rename  R refresh  x archive  l agents  p python")
+                "Enter open  c create  r rename  R refresh  x archive  l fold  p python")
 
     def test_column_header_counts_sessions_by_state(self):
         from agent_fleet.ui import column_header
         states = ["working", "working", "waiting", "needs-action"]
         sessions = [replace(self.session("lovelace", f"${i}"), reported_state=state)
                     for i, state in enumerate(states)]
-        self.assertIn("2 working  1 waiting  4 total", column_header(sessions))
+        projected = [alan.Projected(session, 0, 0, False) for session in sessions]
+        self.assertIn("2 working  1 waiting  4 total", column_header(projected))
+
+    def test_rows_render_fold_count_depth_and_stable_identity(self):
+        root = replace(self.session("lovelace", "$1"), name="root")
+        child = replace(self.session("lovelace", "$2"), name="child")
+        projected = [alan.Projected(root, 0, 2, True),
+                     alan.Projected(child, 1, 0, False)]
+        output = io.StringIO()
+        with mock.patch.object(ui, "ordered", return_value=(projected, {}, [])), \
+             mock.patch.object(ui.time, "time", return_value=1), \
+             contextlib.redirect_stdout(output):
+            ui.rows(include_header=False)
+        rendered = output.getvalue()
+        self.assertIn(f"{root.ref.key}\t", rendered)
+        self.assertIn(f"{child.ref.key}\t", rendered)
+        self.assertIn("▾ 2", rendered)
+        self.assertIn("  child", rendered)
+
+        collapsed = io.StringIO()
+        projected = [alan.Projected(root, 0, 2, False),
+                     alan.Projected(child, 1, 0, False)]
+        with mock.patch.object(ui, "ordered", return_value=(projected, {}, [])), \
+             mock.patch.object(ui.time, "time", return_value=1), \
+             contextlib.redirect_stdout(collapsed):
+            ui.rows(include_header=False)
+        root_line, child_line = collapsed.getvalue().splitlines()
+        self.assertIn("▸ 2", root_line)
+        self.assertNotIn("▸", child_line)
+        self.assertNotIn("▾", child_line)
 
     def test_claude_and_codex_use_distinct_provider_colours(self):
         self.assertNotEqual(AGENT_COLOUR["claude"], AGENT_COLOUR["codex"])

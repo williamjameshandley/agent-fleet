@@ -19,7 +19,9 @@ def main(argv=None):
     command("header", lambda _: print(ui.header()))
     command("cursor", lambda _: print(ui.cursor(), end=""))
     item = command("toggle", lambda args: ui.toggle(args.kind))
-    item.add_argument("kind", choices=("language", "python"))
+    item.add_argument("kind", choices=("python",))
+    item = command("fold", lambda args: ui.fold(args.key))
+    item.add_argument("key")
     command("muster", lambda _: ui.muster())
     command("history-ui", lambda _: ui.history())
     command(
