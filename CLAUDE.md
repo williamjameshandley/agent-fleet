@@ -1,5 +1,8 @@
 # Agent Fleet constitution
 
+Correct, minimal documentation is best. Omission is preferable to an
+unsupported or obsolete claim. Incorrect documentation is worst.
+
 Agent Fleet provides awareness and switching for attachable native sessions
 across machines, operable with one hand and eventually none.
 
@@ -59,7 +62,7 @@ across machines, operable with one hand and eventually none.
 
 Commander proposes typed, non-destructive actions over canonical sources and
 slots; deterministic Fleet code validates and executes them. Alan composition
-is specified in `VOICE_COMPOSER.md`: speech edits a visible draft and only the
+is described in `VOICE_COMPOSER.md`: speech edits a visible draft and only the
 local `Alan, send` control sends its visible snapshot and presses Enter. The
 composer archives recoverable state but never becomes tmux topology authority.
 mdgtd and shared keyboard/mouse control remain later integrations.
