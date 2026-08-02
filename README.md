@@ -110,10 +110,10 @@ socket from `LOOP_SOCKET` or the user's XDG state directory. An unavailable
 Alan socket removes Alan rows but does not invalidate healthy tmux inventory on
 the same host.
 
-Fleet displays direct-root Alan actors by default. Spawned language actors and
-Python actors remain folded beneath their causal root unless their independent
-ephemeral Muster controls are enabled. Fleet creates user-facing Codex and
-Claude actors. There is no native
+Fleet displays direct-root Alan actors by default. Spawned actors form recursive
+folds beneath their nearest visible creator; each visible actor folds
+independently. Python remains hidden unless its global presentation toggle is
+enabled. Fleet creates user-facing Codex and Claude actors. There is no native
 Alan Gemini actor. Already-running standalone Gemini terminals remain ordinary
 legacy tmux rows.
 Muster collects the creation fields and asks that host's Fleet process to call
