@@ -296,9 +296,12 @@ class IdentityTests(unittest.TestCase):
             alan_socket = root / "alan.sock"
             bin_dir = root / "bin"
             bin_dir.mkdir()
-            fleet_executable = Path(__file__).parents[1] / "fleet"
             ssh = bin_dir / "ssh"
-            ssh.write_text(f"#!/bin/sh\nexec {fleet_executable} projection\n")
+            ssh.write_text(
+                "#!/bin/sh\n"
+                f"exec {sys.executable} -c "
+                "'from agent_fleet.daemon import projection; print(projection(), end=\"\")'\n"
+            )
             ssh.chmod(0o755)
             host = os.uname().nodename
             fleet = Fleet()
@@ -616,16 +619,21 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("agent_fleet.alan import create", run.call_args.args[3])
         self.assertEqual(run.call_args.args[-3:], ("codex", "analysis", "/work"))
 
-    def test_remote_creator_is_batch_mode_and_leaves_failure_output_visible(self):
+    def test_remote_command_is_batch_mode_and_leaves_failure_output_visible(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
         with mock.patch("agent_fleet.actions.subprocess.run") as run:
-            actions.host_command(host, "fleet", "actor-create", "codex",
+            actions.host_command(host, "/usr/bin/python", "-c", "print(*__import__('sys').argv[1:])",
                                  "work tree;safe", "/work dir/$literal",
                                  stdout=subprocess.PIPE)
         run.assert_called_once_with(
             ["ssh", "-T", "-o", "BatchMode=yes", host,
-             "fleet actor-create codex 'work tree;safe' '/work dir/$literal'"],
+             "/usr/bin/python -c 'print(*__import__('\"'\"'sys'\"'\"').argv[1:])' "
+             "'work tree;safe' '/work dir/$literal'"],
             text=True, check=True, capture_output=False, stdout=subprocess.PIPE)
+
+    def test_next_waiting_module_uses_the_composable_action(self):
+        source = (Path(__file__).parents[1] / "agent_fleet/next_waiting.py").read_text()
+        self.assertEqual(source, "from .actions import next_waiting\n\n\nnext_waiting()\n")
 
     def test_create_uses_claudes_existing_provider_presentation(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
