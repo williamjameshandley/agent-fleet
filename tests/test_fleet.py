@@ -631,6 +631,10 @@ class IdentityTests(unittest.TestCase):
              "'work tree;safe' '/work dir/$literal'"],
             text=True, check=True, capture_output=False, stdout=subprocess.PIPE)
 
+    def test_next_waiting_module_uses_the_composable_action(self):
+        source = (Path(__file__).parents[1] / "agent_fleet/next_waiting.py").read_text()
+        self.assertEqual(source, "from .actions import next_waiting\n\n\nnext_waiting()\n")
+
     def test_create_uses_claudes_existing_provider_presentation(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
         with mock.patch("agent_fleet.actions.muster_input",
