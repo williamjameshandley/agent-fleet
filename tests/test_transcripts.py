@@ -65,7 +65,7 @@ def test_claude_resume_uses_the_full_verified_native_identity(monkeypatch):
         ["tmux", "new-session", "-d", "-s", "work", "-c", "/work",
          "claude", "--resume", "full-claude-id"], check=True)
     assert run.call_args_list[1] == mock.call(
-        ["tmux", "set-option", "-t", "work", "status", "off"], check=True)
+        ["tmux", "set-option", "-t", "work", "status", "on"], check=True)
 
 
 def test_codex_resume_uses_the_full_verified_native_identity(monkeypatch):
@@ -78,7 +78,7 @@ def test_codex_resume_uses_the_full_verified_native_identity(monkeypatch):
         ["tmux", "new-session", "-d", "-s", "work", "-c", "/work",
          "codex", "resume", "full-codex-id"], check=True)
     assert run.call_args_list[1] == mock.call(
-        ["tmux", "set-option", "-t", "work", "status", "off"], check=True)
+        ["tmux", "set-option", "-t", "work", "status", "on"], check=True)
 
 
 def test_resume_rejects_a_prefix_before_creating_tmux(monkeypatch):

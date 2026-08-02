@@ -106,7 +106,7 @@ def resume(agent, session_id, name):
                else ["codex", "resume", item.session_id])
     subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c",
                     item.cwd() or str(Path.home()), *command], check=True)
-    subprocess.run(["tmux", "set-option", "-t", name, "status", "off"],
+    subprocess.run(["tmux", "set-option", "-t", name, "status", "on"],
                    check=True)
 
 

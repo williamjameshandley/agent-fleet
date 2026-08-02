@@ -47,10 +47,10 @@ def attach(actor, descriptor):
              ])],
             check=True,
         )
-        subprocess.run(["tmux", "set-option", "-t", name, "status", "off"],
-                       check=True)
         subprocess.run(["tmux", "set-option", "-t", name, "mouse", "on"],
                        check=True)
+    subprocess.run(["tmux", "set-option", "-t", name, "status", "on"],
+                   check=True)
     os.execvp("tmux", ["tmux", "attach-session", "-t", target])
 
 

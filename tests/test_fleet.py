@@ -571,8 +571,12 @@ class IdentityTests(unittest.TestCase):
              mock.patch("subprocess.run") as run, \
              mock.patch("os.execvp") as execute:
             viewer.attach(session.ref.key)
-        run.assert_called_once_with(
-            ["tmux", "set-option", "-t", "$1", "mouse", "on"], check=True)
+        self.assertEqual(run.call_args_list, [
+            mock.call(["tmux", "set-option", "-t", "$1", "status", "on"],
+                      check=True),
+            mock.call(["tmux", "set-option", "-t", "$1", "mouse", "on"],
+                      check=True),
+        ])
         execute.assert_called_once_with(
             "tmux", ["tmux", "attach-session", "-t", "$1"])
 
