@@ -3,6 +3,7 @@ import threading
 from unittest import mock
 
 import networkx as nx
+import pytest
 
 from agent_fleet import alan
 from agent_fleet.model import ServerRef, Session, SessionRef
@@ -221,6 +222,13 @@ def actor_session(addr, kind):
     )
 
 
+def principal_root(current, root, principal="will@newton"):
+    current.graph["actors"].append({"addr": principal, "kind": "principal"})
+    current.add_node(f"{principal}#0", stream=principal, op="create")
+    current.add_node(f"{principal}#1", stream=principal, op="spawn")
+    current.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
+
+
 def test_projection_derives_recursive_visible_tree():
     root = "codex-root@newton"
     language = "claude-child@lovelace"
@@ -231,7 +239,6 @@ def test_projection_derives_recursive_visible_tree():
     commander_child = "claude-commander-child@newton"
     nested_commander = "llm-nested-commander@lovelace"
     direct_python = "python-root@newton"
-    missing = "codex-missing-child@lovelace"
     current = nx.MultiDiGraph()
     current.graph["actors"] = [
         {"addr": root, "kind": "codex"},
@@ -243,10 +250,9 @@ def test_projection_derives_recursive_visible_tree():
         {"addr": commander_child, "kind": "claude"},
         {"addr": nested_commander, "kind": "llm", "preset": "commander"},
         {"addr": direct_python, "kind": "python"},
-        {"addr": missing, "kind": "codex"},
     ]
     for actor in (root, language, python, nested, python_nested, commander,
-                  commander_child, nested_commander, direct_python, missing):
+                  commander_child, nested_commander, direct_python):
         current.add_node(f"{actor}#0", stream=actor, op="create")
     for parent, child, position in (
         (root, language, 1),
@@ -259,7 +265,11 @@ def test_projection_derives_recursive_visible_tree():
         source = f"{parent}#{position}"
         current.add_node(source, stream=parent, op="spawn")
         current.add_edge(source, f"{child}#0", key="spawn")
-    current.add_edge("codex-offline@turing#7", f"{missing}#0", key="spawn")
+    principal_root(current, root)
+    current.add_node("will@newton#2", stream="will@newton", op="spawn")
+    current.add_edge("will@newton#2", f"{commander}#0", key="spawn")
+    current.add_node("will@newton#3", stream="will@newton", op="spawn")
+    current.add_edge("will@newton#3", f"{direct_python}#0", key="spawn")
 
     standalone = Session(
         SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$1"),
@@ -269,7 +279,7 @@ def test_projection_derives_recursive_visible_tree():
         actor_session(actor, next(item["kind"] for item in current.graph["actors"]
                                   if item["addr"] == actor))
         for actor in (root, language, python, nested, python_nested, commander,
-                      commander_child, nested_commander, direct_python, missing)
+                      commander_child, nested_commander, direct_python)
     ]
 
     collapsed = alan.project(sessions, current)
@@ -331,6 +341,7 @@ def test_projection_compresses_an_absent_intermediate_inside_an_eligible_tree():
         source = f"{parent}#1"
         current.add_node(source, stream=parent, op="spawn")
         current.add_edge(source, f"{descendant}#0", key="spawn")
+    principal_root(current, root)
     sessions = [actor_session(root, "codex"), actor_session(child, "claude")]
 
     projected = alan.project(sessions, current, expanded={root})
@@ -339,6 +350,16 @@ def test_projection_compresses_an_absent_intermediate_inside_an_eligible_tree():
         (f"alan:{root}", 0, 1),
         (f"alan:{child}", 1, 0),
     ]
+
+
+def test_projection_rejects_an_actor_without_a_principal_root():
+    actor = "codex-rootless@newton"
+    current = nx.MultiDiGraph()
+    current.graph["actors"] = [{"addr": actor, "kind": "codex"}]
+    current.add_node(f"{actor}#0", stream=actor, op="create")
+
+    with pytest.raises(ValueError):
+        alan.project([actor_session(actor, "codex")], current)
 
 
 def test_projection_composes_spawn_ancestry_from_separate_hosts():
@@ -359,6 +380,7 @@ def test_projection_composes_spawn_ancestry_from_separate_hosts():
 
     current = nx.compose(newton, lovelace)
     current.graph["actors"] = newton.graph["actors"] + lovelace.graph["actors"]
+    principal_root(current, parent)
     sessions = [actor_session(parent, "codex"), actor_session(child, "claude")]
 
     assert [item.session.ref.key for item in alan.project(sessions, current)] == [
@@ -366,6 +388,34 @@ def test_projection_composes_spawn_ancestry_from_separate_hosts():
     assert [item.session.ref.key for item in alan.project(
         sessions, current, expanded={parent}
     )] == [f"alan:{parent}", f"alan:{child}"]
+
+
+def test_projection_omits_multiple_principals_and_keeps_their_trees_independent():
+    first = "codex-first@newton"
+    child = "claude-child@lovelace"
+    second = "claude-second@boltzmann"
+    current = nx.MultiDiGraph()
+    current.graph["actors"] = [
+        {"addr": first, "kind": "codex"},
+        {"addr": child, "kind": "claude"},
+        {"addr": second, "kind": "claude"},
+    ]
+    for actor in (first, child, second):
+        current.add_node(f"{actor}#0", stream=actor, op="create")
+    principal_root(current, first, "will@newton")
+    principal_root(current, second, "will@boltzmann")
+    current.add_node(f"{first}#1", stream=first, op="spawn")
+    current.add_edge(f"{first}#1", f"{child}#0", key="spawn")
+    sessions = [actor_session(actor, kind) for actor, kind in (
+        (first, "codex"), (child, "claude"), (second, "claude"))]
+
+    assert [(item.session.ref.key, item.depth) for item in
+            alan.project(sessions, current)] == [
+        (f"alan:{first}", 0), (f"alan:{second}", 0)]
+    assert [(item.session.ref.key, item.depth) for item in
+            alan.project(sessions, current, expanded={first})] == [
+        (f"alan:{first}", 0), (f"alan:{child}", 1),
+        (f"alan:{second}", 0)]
 
 
 def test_outstanding_principal_requests_follow_recursive_folds_and_reply_edges():
@@ -388,6 +438,9 @@ def test_outstanding_principal_requests_follow_recursive_folds_and_reply_edges()
         current.add_node(spawn, stream=parent, op="spawn",
                          time="2026-07-30T12:00:01Z")
         current.add_edge(spawn, f"{descendant}#0", key="spawn")
+    current.add_node(f"{principal}#10", stream=principal, op="spawn",
+                     time="2026-07-30T12:00:00Z")
+    current.add_edge(f"{principal}#10", f"{root}#0", key="spawn")
     for position, (source, text) in enumerate(
             ((child, "first question"), (nested, "latest question")), 1):
         send = f"{source}#2"

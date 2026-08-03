@@ -23,8 +23,8 @@ across machines, operable with one hand and eventually none.
   indices and rows are never identity.
 - Agent status and summaries are derived, disposable projections.
 - fzf renders and selects stable IDs. It is not authoritative state.
-- Muster defaults to standalone native sessions and direct-root Alan actors,
-  excluding identified Fleet infrastructure actors. Spawned actors are causally
+- Muster defaults to standalone native sessions and the immediate children of
+  Alan's Unix principal actors. Principals are not rows. Further descendants are
   derived from Alan's graph and recursively folded beneath their nearest visible
   creator. Each visible actor folds independently; Python has one global
   presentation toggle. Fleet stores no parent IDs.
