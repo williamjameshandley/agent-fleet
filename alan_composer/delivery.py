@@ -3,8 +3,11 @@ import os
 import shlex
 from uuid import uuid4
 
+from .destination import revalidate
+
 
 def send(destination, text):
+    revalidate(destination)
     name = "alan-" + uuid4().hex
     command = [
         "/usr/bin/tmux", "-N", "load-buffer", "-b", name, "-",
