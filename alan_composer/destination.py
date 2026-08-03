@@ -74,4 +74,5 @@ def _active_pane(session):
 
 
 def _remote(host, command):
-    return ["ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(command)]
+    return ["ssh", "-T", "-o", "BatchMode=yes", host,
+            shlex.join(["/bin/sh", "-c", shlex.join(command)])]
