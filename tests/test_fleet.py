@@ -1018,13 +1018,18 @@ class IdentityTests(unittest.TestCase):
         root = "codex-root@newton"
         language = "claude-child@newton"
         python = "python-child@newton"
+        principal = "will@newton"
         graph = nx.MultiDiGraph()
         graph.graph["actors"] = [
             {"addr": root, "kind": "codex"},
             {"addr": language, "kind": "claude"},
             {"addr": python, "kind": "python"},
+            {"addr": principal, "kind": "principal"},
         ]
         graph.add_node(f"{root}#0", stream=root, op="create")
+        graph.add_node(f"{principal}#0", stream=principal, op="create")
+        graph.add_node(f"{principal}#1", stream=principal, op="spawn")
+        graph.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
         for position, child in enumerate((language, python), 1):
             source = f"{root}#{position}"
             graph.add_node(source, stream=root, op="spawn")
@@ -1103,15 +1108,20 @@ class IdentityTests(unittest.TestCase):
         child = f"claude-child@{host}"
         grandchild = f"llm-grandchild@{host}"
         python = f"python-child@{host}"
+        principal = f"will@{host}"
         graph = nx.MultiDiGraph()
         graph.graph["actors"] = [
             {"addr": root, "kind": "codex"},
             {"addr": child, "kind": "claude"},
             {"addr": grandchild, "kind": "llm"},
             {"addr": python, "kind": "python"},
+            {"addr": principal, "kind": "principal"},
         ]
         for actor in (root, child, grandchild, python):
             graph.add_node(f"{actor}#0", stream=actor, op="create")
+        graph.add_node(f"{principal}#0", stream=principal, op="create")
+        graph.add_node(f"{principal}#1", stream=principal, op="spawn")
+        graph.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
         for position, (parent, descendant) in enumerate((
                 (root, child), (child, grandchild), (root, python)), 1):
             source = f"{parent}#{position}"

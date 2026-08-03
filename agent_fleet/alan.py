@@ -174,41 +174,38 @@ def project(sessions, graph, expanded=(), show_python=False):
         for session in sessions
         if session.ref.server.kind == "alan"
     }
-    roots = {}
-    for actor in actor_sessions:
-        candidates = [
-            node for node in nx.ancestors(ancestry, actor) | {actor}
-            if ancestry.in_degree(node) == 0
-        ]
-        [root] = candidates
-        roots[actor] = root if root in descriptors else None
-
     expanded = set(expanded)
     children = {}
     eligible = set()
     session_order = [session.ref.session_id for session in sessions
                      if session.ref.server.kind == "alan"]
-    for root in session_order:
-        descriptor = descriptors[root]
-        if roots[root] != root or descriptor.get("preset") == "commander" or (
-            descriptor["kind"] == "python" and not show_python
+    principals = {addr for addr, descriptor in descriptors.items()
+                  if descriptor["kind"] == "principal"}
+    roots = {}
+    for actor in session_order:
+        candidates = nx.ancestors(ancestry, actor) & principals
+        [principal] = candidates
+        first = nx.shortest_path(ancestry, principal, actor)[1]
+        if descriptors[first].get("preset") == "commander" or (
+            descriptors[first]["kind"] == "python" and not show_python
         ):
             continue
-        eligible.add(root)
-        visible = [actor for actor in session_order
-                   if roots[actor] == root
-                   and descriptors[actor].get("preset") != "commander"
-                   and (descriptors[actor]["kind"] != "python" or show_python)]
-        visible_set = set(visible)
-        children[root] = []
-        for actor in visible:
-            if actor == root:
-                continue
-            candidates = nx.ancestors(ancestry, actor) & visible_set
-            parent = max(candidates,
-                         key=lambda item: nx.shortest_path_length(ancestry, root, item))
+        roots[actor] = principal
+
+    visible = [actor for actor in session_order
+               if actor in roots
+               and descriptors[actor].get("preset") != "commander"
+               and (descriptors[actor]["kind"] != "python" or show_python)]
+    visible_set = set(visible)
+    for actor in visible:
+        candidates = nx.ancestors(ancestry, actor) & visible_set
+        if candidates:
+            parent = max(candidates, key=lambda item: nx.shortest_path_length(
+                ancestry, roots[actor], item))
             children.setdefault(parent, []).append(actor)
-            children.setdefault(actor, [])
+        else:
+            eligible.add(actor)
+        children.setdefault(actor, [])
 
     def visible(actor):
         result = [actor]
