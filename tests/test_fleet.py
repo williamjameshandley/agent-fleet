@@ -215,12 +215,12 @@ class IdentityTests(unittest.TestCase):
     def test_python_actor_attaches_a_fleet_owned_tmux_presentation(self):
         host = os.uname().nodename
         actor = f"python-a@{host}"
-        descriptor = {"addr": actor, "kind": "python", "state": "waiting",
-                      "cwd": "/work"}
-        with mock.patch.object(alan, "actors", return_value=[descriptor]), \
+        session = Session(SessionRef(ServerRef(host, "", 0, 0, "alan"), actor),
+                          "python", 0, 0, 0, 1, "alan", "", "/work", "python")
+        with mock.patch.object(viewer, "find", return_value=session), \
              mock.patch.object(viewer.presentation, "attach") as present:
             viewer.attach(f"alan:{actor}")
-        present.assert_called_once_with(actor, descriptor)
+        present.assert_called_once_with(actor, {"kind": "python", "cwd": "/work"})
 
     def test_preview_daemon_rejects_stale_and_malformed_keys_before_dispatch(self):
         fleet = Fleet()
@@ -1362,25 +1362,23 @@ class IdentityTests(unittest.TestCase):
 
     def test_alan_attachment_uses_the_actor_owned_presentation(self):
         actor = f"claude-1@{os.uname().nodename}"
-        descriptor = {"addr": actor, "kind": "claude", "state": "waiting"}
-        with mock.patch.object(alan, "actors", return_value=[descriptor]), \
+        session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
+                                     actor), "claude", 0, 0, 0, 1, "alan", "", "/work",
+                          "claude")
+        with mock.patch.object(viewer, "find", return_value=session), \
              mock.patch.object(viewer.presentation, "attach") as present:
             viewer.attach(f"alan:{actor}")
-        present.assert_called_once_with(actor, descriptor)
+        present.assert_called_once_with(actor, {"kind": "claude", "cwd": "/work"})
 
     def test_codex_actor_attachment_uses_the_actor_owned_presentation(self):
         actor = f"codex-1@{os.uname().nodename}"
-        descriptor = {
-            "addr": actor,
-            "kind": "codex",
-            "state": "waiting",
-            "cwd": "/work",
-            "capabilities": "full",
-        }
-        with mock.patch.object(alan, "actors", return_value=[descriptor]), \
+        session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
+                                     actor), "codex", 0, 0, 0, 1, "alan", "", "/work",
+                          "codex")
+        with mock.patch.object(viewer, "find", return_value=session), \
              mock.patch.object(viewer.presentation, "attach") as present:
             viewer.attach(f"alan:{actor}")
-        present.assert_called_once_with(actor, descriptor)
+        present.assert_called_once_with(actor, {"kind": "codex", "cwd": "/work"})
 
     def test_alan_preview_captures_the_actor_owned_terminal(self):
         for kind in ("claude", "codex"):
