@@ -311,7 +311,7 @@ class IdentityTests(unittest.TestCase):
             addr = f"codex-one@{host}"
             descriptor = {
                 "addr": addr, "kind": "codex", "host": host,
-                "state": "live", "cwd": str(root),
+                "state": "waiting", "cwd": str(root),
             }
 
             def observed(active):
@@ -329,7 +329,10 @@ class IdentityTests(unittest.TestCase):
                     ])
                 return {
                     "directed": True, "multigraph": True,
-                    "graph": {"actors": [descriptor]},
+                    "graph": {"actors": [{
+                        **descriptor,
+                        "state": "working" if active else "waiting",
+                    }]},
                     "nodes": nodes, "edges": [],
                 }
 

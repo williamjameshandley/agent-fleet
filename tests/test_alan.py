@@ -9,7 +9,7 @@ from agent_fleet import alan
 from agent_fleet.model import ServerRef, Session, SessionRef
 
 
-def graph(*operations, state="live"):
+def graph(*operations, state="waiting"):
     actor = "codex-a@newton"
     result = nx.MultiDiGraph()
     result.graph["actors"] = [{
@@ -29,7 +29,7 @@ def graph(*operations, state="live"):
     return result
 
 
-def test_actor_state_and_native_evidence_are_derived_from_operations():
+def test_live_state_is_authoritative_and_evidence_is_derived_from_operations():
     current = alan.actors(graph(
         {"op": "create"},
         {"op": "input"},
@@ -40,6 +40,7 @@ def test_actor_state_and_native_evidence_are_derived_from_operations():
         }},
         {"op": "input"},
         {"op": "evaluation"},
+        state="working",
     ))[0]
 
     assert current["state"] == "working"
@@ -52,6 +53,19 @@ def test_actor_state_and_native_evidence_are_derived_from_operations():
     assert current["native"]["base_dir"] == "/native"
     assert current["created"] == 1785412800
     assert current["human_activity"] == 0
+
+
+def test_unmatched_historical_evaluation_does_not_make_a_waiting_actor_working():
+    current = alan.actors(graph(
+        {"op": "create"},
+        {"op": "input"},
+        {"op": "evaluation"},
+        state="waiting",
+    ))[0]
+
+    assert current["state"] == "waiting"
+    assert current["active_evaluation"] is None
+    assert current["evaluation_started"] == 0
 
 
 def test_principals_are_not_sessions_and_their_sends_are_human_activity():
