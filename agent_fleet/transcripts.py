@@ -213,7 +213,10 @@ def native_transcript(session):
 
 def native_summary(session):
     item = native_transcript(session)
-    return replace(session, summary=latest_assistant_text(item)) if item else session
+    return (replace(session,
+                    summary=latest_assistant_text(item),
+                    human_activity=max(session.human_activity, last_human_time(item)))
+            if item else session)
 
 
 def codex_state(item):

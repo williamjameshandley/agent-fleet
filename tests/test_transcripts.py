@@ -138,6 +138,25 @@ def test_alan_transcript_uses_the_recorded_native_path(tmp_path):
     assert native_transcript(session).path == path
 
 
+def test_alan_native_activity_advances_fleet_recency(tmp_path):
+    identity = "00000000-0000-0000-0000-000000000001"
+    path = tmp_path / f"rollout-{identity}.jsonl"
+    path.write_text(json.dumps({
+        "type": "event_msg",
+        "timestamp": "2026-07-20T10:00:00Z",
+        "payload": {"type": "user_message", "message": "current prompt"},
+    }) + "\n")
+    source = ServerRef("newton", "", 0, 0, "alan")
+    session = Session(SessionRef(source, "codex-1"), "work", 1, 0, 0, 1,
+                      "alan", "", "/work", "codex", "waiting",
+                      transcript_id=identity, human_activity=2,
+                      transcript_path=str(path))
+
+    projected = transcripts.native_summary(session)
+
+    assert projected.human_activity == 1784541600
+
+
 def test_native_evidence_uses_the_recorded_non_default_path(tmp_path):
     path = tmp_path / "private-corpus" / "rollout-thread-1.jsonl"
     path.parent.mkdir()
