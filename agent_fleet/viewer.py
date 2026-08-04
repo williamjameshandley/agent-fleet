@@ -10,7 +10,7 @@ from .config import RUNTIME, ssh_environment
 from .tmux import inventory
 from .remote import find
 from .model import key_host
-from . import alan, presentation, workstation
+from . import presentation, workstation
 
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -182,8 +182,8 @@ def attach(key):
         host = key_host(key)
         if host != os.uname().nodename:
             raise ValueError(f"identity is for {host}, not {os.uname().nodename}")
-        [descriptor] = [item for item in alan.actors() if item["addr"] == actor]
-        presentation.attach(actor, descriptor)
+        session = find(key)
+        presentation.attach(actor, {"kind": session.agent, "cwd": session.cwd})
         return
     host = key_host(key)
     if host != os.uname().nodename:
