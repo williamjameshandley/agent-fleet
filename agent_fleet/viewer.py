@@ -48,13 +48,17 @@ def request(slot, key):
 
 
 def focus_main():
+    focus("main")
+
+
+def focus(slot):
     result = subprocess.run(
         ["tmux", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
         text=True, capture_output=True, check=True)
     name = result.stdout.strip()
     if not name:
         raise RuntimeError("Muster has no attached workstation")
-    workstation.request(name, {"operation": "focus", "slot": "main"})
+    workstation.request(name, {"operation": "focus", "slot": slot})
 
 
 def slots():
