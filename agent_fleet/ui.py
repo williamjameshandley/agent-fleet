@@ -81,8 +81,6 @@ def muster():
         "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k,l,p)+rebind(esc)",
         "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k,l,p)",
         "--bind=j:down,k:up",
-        "--bind=scroll-up:up+execute-silent(/usr/lib/agent-fleet/ui focus-muster)",
-        "--bind=scroll-down:down+execute-silent(/usr/lib/agent-fleet/ui focus-muster)",
         "--bind=load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)",
         "--bind=enter:execute-silent(/usr/lib/agent-fleet/ui show --slot main {1})",
         "--bind=left-click:execute-silent(/usr/lib/agent-fleet/ui show --slot main {1})",

@@ -24,7 +24,6 @@ def main(argv=None):
         item.set_defaults(function=function)
         return item
 
-    command("focus-muster", lambda _: viewer.focus("muster"))
     item = command("toggle", lambda args: ui.toggle(args.kind))
     item.add_argument("kind", choices=("python",))
     item = command("fold", lambda args: ui.fold(args.key))

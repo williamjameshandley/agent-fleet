@@ -654,14 +654,6 @@ class IdentityTests(unittest.TestCase):
         request.assert_called_once_with(
             "boltzmann", {"operation": "focus", "slot": "main"})
 
-    def test_muster_focus_uses_workstation_reverse_socket(self):
-        with mock.patch("agent_fleet.viewer.subprocess.run") as run, \
-             mock.patch("agent_fleet.viewer.workstation.request") as request:
-            run.return_value.stdout = "boltzmann\n"
-            viewer.focus("muster")
-        request.assert_called_once_with(
-            "boltzmann", {"operation": "focus", "slot": "muster"})
-
     def test_workstation_server_exposes_only_focus_and_prompt(self):
         with mock.patch("agent_fleet.workstation.subprocess.run") as run:
             run.return_value.returncode = 0
