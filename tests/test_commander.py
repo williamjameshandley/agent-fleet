@@ -106,12 +106,15 @@ class CommanderContextTests(unittest.TestCase):
              "human_activity": 3},
             {"addr": f"codex-{identity}@lovelace", "kind": "codex", "state": "retired",
              "label": "work", "cwd": "/work", "created": 2,
-             "human_activity": 4},
+             "human_activity": 4, "native_id": "persisted-native-id"},
         ], "transcripts": [{
-            "agent": "codex", "session_id": identity, "mtime": 4,
+            "agent": "codex", "session_id": "persisted-native-id", "mtime": 4,
             "name": "duplicate", "cwd": "/work",
         }]}]
-        history = Fleet.history_entries([], ["lovelace"], observations)
+        fallback = lambda _addr, kind: "" if kind == "llm" else self.fail(
+            "Codex native identity was not propagated")
+        with mock.patch("agent_fleet.daemon.address_identity", side_effect=fallback):
+            history = Fleet.history_entries([], ["newton"], observations)
         self.assertEqual([item["key"] for item in history], [
             f"alan:codex-{identity}@lovelace", "alan:llm-review@lovelace"])
 
