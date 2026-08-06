@@ -22,7 +22,7 @@ import networkx as nx
 
 from agent_fleet.model import ServerRef, Session, SessionRef
 from agent_fleet.protocol import decode, decode_graph, encode
-from agent_fleet.ui import AGENT_COLOUR, STATE_ORDER, recency
+from agent_fleet.render import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.tmux import split_key
 from agent_fleet.actions import session_name
 from agent_fleet import actions
@@ -31,7 +31,7 @@ from agent_fleet.config import machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
 from agent_fleet.alan import Watcher as AlanWatcher
 from agent_fleet.alan import resume as alan_resume
-from agent_fleet import viewer
+from agent_fleet import hot, render, viewer
 from agent_fleet import workstation
 from agent_fleet import tmux
 from agent_fleet import ui
@@ -77,10 +77,22 @@ class IdentityTests(unittest.TestCase):
     def test_cursor_position_comes_from_musters_loaded_identities(self):
         state = self.muster_state([{"text": "actor:first\tfirst"},
                                    {"text": "actor:focused\tfocused"}])
-        with mock.patch.object(ui.viewer, "slots",
-                               return_value=[("main", "actor:focused")]), \
-                mock.patch("agent_fleet.ui.subprocess.run", return_value=state):
-            self.assertEqual(ui.cursor(), "pos(2)")
+        with mock.patch.object(hot, "active_main", return_value="actor:focused"), \
+                mock.patch.object(hot, "fetch",
+                                  return_value="actor:focused\n") as fetch, \
+                mock.patch("agent_fleet.hot.subprocess.run", return_value=state):
+            self.assertEqual(hot.cursor(), "pos(2)")
+        fetch.assert_called_once_with("cursor actor:focused")
+
+    def test_cursor_falls_back_to_the_daemons_first_waiting_row(self):
+        state = self.muster_state([{"text": "actor:first\tfirst"},
+                                   {"text": "actor:second\tsecond"}])
+        with mock.patch.object(hot, "active_main", return_value=""), \
+                mock.patch.object(hot, "fetch",
+                                  return_value="actor:first\n") as fetch, \
+                mock.patch("agent_fleet.hot.subprocess.run", return_value=state):
+            self.assertEqual(hot.cursor(), "pos(1)")
+        fetch.assert_called_once_with("cursor")
 
     def test_cursor_placement_is_one_action_against_musters_own_list(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -98,11 +110,11 @@ class IdentityTests(unittest.TestCase):
 
     def test_cursor_refuses_a_truncated_match_list(self):
         state = self.muster_state([{"text": "actor:first\tfirst"}], count=2)
-        with mock.patch.object(ui.viewer, "slots",
-                               return_value=[("main", "actor:first")]), \
-                mock.patch("agent_fleet.ui.subprocess.run", return_value=state):
+        with mock.patch.object(hot, "active_main", return_value="actor:first"), \
+                mock.patch.object(hot, "fetch", return_value="actor:first\n"), \
+                mock.patch("agent_fleet.hot.subprocess.run", return_value=state):
             with self.assertRaises(SystemExit):
-                ui.cursor()
+                hot.cursor()
 
     def test_machine_labels_are_single_cell_and_noether_uses_ligature(self):
         self.assertEqual([machine(host) for host in
@@ -185,7 +197,9 @@ class IdentityTests(unittest.TestCase):
         )
 
         fleet = Fleet()
-        fleet.graphs = {"newton": newton, "lovelace": lovelace}
+        fleet.observations = {"newton": encode([], {}, [], newton),
+                              "lovelace": encode([], {}, [], lovelace)}
+        fleet.observed = 1
         composed = fleet.composed_graph()
 
         self.assertEqual(
@@ -206,6 +220,47 @@ class IdentityTests(unittest.TestCase):
             "schedule:550e8400-e29b-41d4-a716-446655440000@lovelace#0",
             composed,
         )
+
+    def test_composed_graph_recomposes_only_per_observation_generation(self):
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [{"addr": "a@h", "kind": "codex"}]
+        fleet = Fleet()
+        fleet.observations = {"lovelace": encode([], {}, [], graph)}
+        fleet.observed = 1
+        first = fleet.composed_graph()
+        self.assertIs(fleet.composed_graph(), first)
+        fleet.observations["lovelace"] = encode([], {}, [], graph)
+        self.assertIs(fleet.composed_graph(), first)
+        fleet.observed = 2
+        self.assertIsNot(fleet.composed_graph(), first)
+
+    def test_reply_drops_the_render_when_the_client_disconnected(self):
+        fleet = Fleet()
+
+        class Reader:
+            async def readline(self):
+                return b"header\n"
+
+        class Writer:
+            closed = False
+
+            def write(self, payload):
+                pass
+
+            async def drain(self):
+                raise ConnectionResetError
+
+            def close(self):
+                self.closed = True
+
+        async def exercise():
+            writer = Writer()
+            with mock.patch.object(fleet, "projected",
+                                   mock.AsyncMock(return_value=[])):
+                await fleet.reply(Reader(), writer)
+            self.assertTrue(writer.closed)
+
+        asyncio.run(exercise())
 
     def test_alan_key_uses_its_host_bound_actor_identity_once(self):
         ref = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
@@ -314,8 +369,14 @@ class IdentityTests(unittest.TestCase):
                 "state": "waiting", "cwd": str(root),
             }
 
+            principal = f"will@{host}"
+
             def observed(active):
                 nodes = [
+                    {"id": f"{principal}#0", "stream": principal,
+                     "op": "create", "time": "2026-07-30T11:59:58Z"},
+                    {"id": f"{principal}#1", "stream": principal,
+                     "op": "spawn", "time": "2026-07-30T11:59:59Z"},
                     {"id": f"{addr}#0", "stream": addr, "op": "create",
                      "time": "2026-07-30T12:00:00Z", "evidence": "x" * 65536},
                 ]
@@ -329,11 +390,14 @@ class IdentityTests(unittest.TestCase):
                     ])
                 return {
                     "directed": True, "multigraph": True,
-                    "graph": {"actors": [{
-                        **descriptor,
-                        "state": "working" if active else "waiting",
-                    }]},
-                    "nodes": nodes, "edges": [],
+                    "graph": {"actors": [
+                        {**descriptor,
+                         "state": "working" if active else "waiting"},
+                        {"addr": principal, "kind": "principal", "host": host},
+                    ]},
+                    "nodes": nodes,
+                    "edges": [{"source": f"{principal}#1",
+                               "target": f"{addr}#0", "key": "spawn"}],
                 }
 
             config = root / "config"
@@ -343,27 +407,6 @@ class IdentityTests(unittest.TestCase):
             label_path.write_text("needle row\n")
             (config / "agent-fleet").mkdir(parents=True)
             (config / "agent-fleet" / "hosts").write_text(host + "\n")
-
-            def serve_projection():
-                with socket.socket(socket.AF_UNIX) as server:
-                    server.bind(str(fleet_socket))
-                    server.listen()
-                    server.settimeout(.1)
-                    while not stopped.is_set():
-                        try:
-                            connection, _ = server.accept()
-                        except TimeoutError:
-                            continue
-                        with connection:
-                            request = connection.makefile("rb").readline()
-                            if request == b"snapshot\n":
-                                sessions = [
-                                    session for group in fleet.sessions.values()
-                                    for session in group
-                                ]
-                                connection.sendall(
-                                    (encode(sessions, {}, []) + "\n").encode()
-                                )
 
             def serve_watch():
                 with socket.socket(socket.AF_UNIX) as server:
@@ -382,17 +425,13 @@ class IdentityTests(unittest.TestCase):
                                 "graph": observed(emit_update.is_set()),
                             }) + "\n").encode())
 
-            projection_server = threading.Thread(
-                target=serve_projection, daemon=True)
             watch_server = threading.Thread(target=serve_watch, daemon=True)
-            projection_server.start()
             watch_server.start()
-            for path in (fleet_socket, alan_socket):
-                for _ in range(100):
-                    if path.exists():
-                        break
-                    time.sleep(.01)
-                self.assertTrue(path.exists())
+            for _ in range(100):
+                if alan_socket.exists():
+                    break
+                time.sleep(.01)
+            self.assertTrue(alan_socket.exists())
 
             command = (
                 f"printf 'alpha\\nneedle row\\nomega\\n' | "
@@ -439,6 +478,8 @@ class IdentityTests(unittest.TestCase):
                     return json.loads(result.stdout) if result.returncode == 0 else {}
 
                 async def exercise():
+                    reply_server = await asyncio.start_unix_server(
+                        fleet.reply, str(fleet_socket))
                     collector = asyncio.create_task(fleet.collect(host))
                     try:
                         await wait_for(
@@ -485,6 +526,7 @@ class IdentityTests(unittest.TestCase):
                         )
                         self.assertEqual(after["query"], "needle")
                     finally:
+                        reply_server.close()
                         collector.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
                             await collector
@@ -495,7 +537,6 @@ class IdentityTests(unittest.TestCase):
             finally:
                 stopped.set()
                 emit_update.set()
-                projection_server.join(1)
                 watch_server.join(1)
                 if client is not None:
                     client.terminate()
@@ -1279,15 +1320,9 @@ class IdentityTests(unittest.TestCase):
     def test_header_counts_only_the_current_fold_projection(self):
         root = replace(self.session("lovelace", "$1"), reported_state="waiting")
         child = replace(self.session("lovelace", "$2"), reported_state="working")
-        projections = [
-            [alan.Projected(root, 0, 1, False)],
-            [alan.Projected(root, 0, 1, True), alan.Projected(child, 1, 0, False)],
-        ]
-        with mock.patch.object(ui, "ordered",
-                               side_effect=[(projections[0], {}, []),
-                                            (projections[1], {}, [])]):
-            collapsed = ui.header()
-            expanded = ui.header()
+        collapsed = render.header_text([alan.Projected(root, 0, 1, False)], {}, [])
+        expanded = render.header_text([alan.Projected(root, 0, 1, True),
+                                       alan.Projected(child, 1, 0, False)], {}, [])
         self.assertIn("0 working  1 waiting  1 total", collapsed)
         self.assertIn("1 working  1 waiting  2 total", expanded)
 
@@ -1299,8 +1334,23 @@ class IdentityTests(unittest.TestCase):
                 footer(),
                 "Enter open  c create  r rename  R refresh  x archive  l fold  p python")
 
+    def test_column_header_renders_the_exact_icon_bytes(self):
+        from agent_fleet.render import column_header
+        session = replace(self.session("lovelace", "$1"),
+                          reported_state="waiting")
+        projected = [alan.Projected(session, 0, 0, False)]
+        self.assertEqual(
+            column_header(projected),
+            "\uf108 \uf2db  \uf017   \uf111      \uf02b                    \uf036  0 working  1 waiting  1 total")
+
+    def test_header_wrapper_strips_only_the_protocol_framing(self):
+        with mock.patch.object(ui.hot, "fetch",
+                               return_value="Claude u\nOpenAI u\ncolumns\n") as fetch:
+            self.assertEqual(ui.header(), "Claude u\nOpenAI u\ncolumns")
+        fetch.assert_called_once_with("header")
+
     def test_column_header_counts_sessions_by_state(self):
-        from agent_fleet.ui import column_header
+        from agent_fleet.render import column_header
         states = ["working", "working", "waiting", "needs-action"]
         sessions = [replace(self.session("lovelace", f"${i}"), reported_state=state)
                     for i, state in enumerate(states)]
@@ -1312,28 +1362,27 @@ class IdentityTests(unittest.TestCase):
         child = replace(self.session("lovelace", "$2"), name="child")
         projected = [alan.Projected(root, 0, 2, True),
                      alan.Projected(child, 1, 0, False)]
-        output = io.StringIO()
-        with mock.patch.object(ui, "ordered", return_value=(projected, {}, [])), \
-             mock.patch.object(ui.time, "time", return_value=1), \
-             contextlib.redirect_stdout(output):
-            ui.rows(include_header=False)
-        rendered = output.getvalue()
+        rendered = render.rows_text(projected, [], 100, now=1)
         self.assertIn(f"{root.ref.key}\t", rendered)
         self.assertIn(f"{child.ref.key}\t", rendered)
         self.assertIn("▾ 2", rendered)
         self.assertIn("  child", rendered)
 
-        collapsed = io.StringIO()
         projected = [alan.Projected(root, 0, 2, False),
                      alan.Projected(child, 1, 0, False)]
-        with mock.patch.object(ui, "ordered", return_value=(projected, {}, [])), \
-             mock.patch.object(ui.time, "time", return_value=1), \
-             contextlib.redirect_stdout(collapsed):
-            ui.rows(include_header=False)
-        root_line, child_line = collapsed.getvalue().splitlines()
+        root_line, child_line = render.rows_text(projected, [], 100,
+                                                 now=1).splitlines()
         self.assertIn("▸ 2", root_line)
         self.assertNotIn("▸", child_line)
         self.assertNotIn("▾", child_line)
+
+    def test_rows_size_their_summary_to_the_requested_width(self):
+        session = replace(self.session("lovelace", "$1"),
+                          summary="s" * 300)
+        projected = [alan.Projected(session, 0, 0, False)]
+        narrow = render.rows_text(projected, [], 100, now=1)
+        wide = render.rows_text(projected, [], 140, now=1)
+        self.assertEqual(len(wide) - len(narrow), 40)
 
     def test_claude_and_codex_use_distinct_provider_colours(self):
         self.assertNotEqual(AGENT_COLOUR["claude"], AGENT_COLOUR["codex"])

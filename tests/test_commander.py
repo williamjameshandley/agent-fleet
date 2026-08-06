@@ -16,6 +16,7 @@ from agent_fleet.commander import validate_proposal
 from agent_fleet import commander_client
 from agent_fleet.commander_client import render
 from agent_fleet.daemon import Fleet
+from agent_fleet.protocol import encode
 
 
 class CommanderContextTests(unittest.TestCase):
@@ -85,7 +86,8 @@ class CommanderContextTests(unittest.TestCase):
 
     def test_history_uses_no_alan_query_when_the_graph_is_absent(self):
         fleet = Fleet()
-        fleet.graphs = {"turing": None}
+        fleet.observations = {"turing": encode([], {}, [])}
+        fleet.observed = 1
 
         async def remote(host, *command):
             self.assertEqual(host, "turing")

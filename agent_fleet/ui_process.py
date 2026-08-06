@@ -1,12 +1,21 @@
 """Private fzf process adapter for the Muster interface."""
 
-import argparse
+import sys
 
-from . import actions, ui, viewer
+HOT = {"items", "header", "cursor", "preview"}
 
 
 def main(argv=None):
     """Dispatch one private Muster request."""
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in HOT:
+        from . import hot
+        return hot.main(argv)
+
+    import argparse
+
+    from . import actions, ui, viewer
+
     parser = argparse.ArgumentParser(prog="/usr/lib/agent-fleet/ui")
     commands = parser.add_subparsers(required=True)
 
@@ -15,9 +24,6 @@ def main(argv=None):
         item.set_defaults(function=function)
         return item
 
-    command("items", lambda _: ui.rows(include_header=False))
-    command("header", lambda _: print(ui.header()))
-    command("cursor", lambda _: print(ui.cursor(), end=""))
     item = command("toggle", lambda args: ui.toggle(args.kind))
     item.add_argument("kind", choices=("python",))
     item = command("fold", lambda args: ui.fold(args.key))
@@ -43,13 +49,6 @@ def main(argv=None):
     item.add_argument("key")
     item = command("archive", lambda args: actions.archive_report(args.key))
     item.add_argument("key")
-    item = command(
-        "preview",
-        lambda args: print(actions.pane_preview(args.key, args.columns, args.lines), end=""),
-    )
-    item.add_argument("key")
-    item.add_argument("columns", type=int, nargs="?", default=0)
-    item.add_argument("lines", type=int, nargs="?", default=0)
     item = command("open-history", lambda args: actions.open_history_report(args.key))
     item.add_argument("key")
 

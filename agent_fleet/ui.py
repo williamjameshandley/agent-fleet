@@ -1,98 +1,24 @@
 import os
-import json
-import subprocess
-import time
 import shutil
-import re
+import subprocess
 import textwrap
+import time
 
-from .config import RUNTIME, machine
+from .config import RUNTIME
 from .daemon import snapshot
 from .protocol import decode_graph, decode_message
-from . import alan, viewer
+from . import hot, render
 
 
-STATE_ORDER = {"working": 0, "needs-action": 1, "waiting": 2, "finished": 3}
-RESET = "\033[0m"
-BOLD = "\033[1m"
-STATE_COLOUR = {
-    "working": "\033[30;42m",
-    "needs-action": "\033[1;37;41m",
-    "waiting": "\033[30;43m",
-    "finished": "\033[37;100m",
-}
-HOST_COLOUR = {
-    "newton": "\033[34m",
-    "lovelace": "\033[35m",
-    "boltzmann": "\033[33m",
-    "turing": "\033[36m",
-    "noether": "\033[32m",
-}
-AGENT_COLOUR = {"claude": "\033[38;5;173m", "codex": "\033[38;5;75m"}
 FZF_COLOUR = "16,fg:-1,bg:-1,fg+:-1,bg+:8,hl:3,hl+:3,info:4,prompt:2,pointer:1,marker:1,spinner:6,header:4,gutter:-1,border:8"
-COLUMN_ICONS = {"machine": "", "agent": "", "time": "",
-                "status": "", "title": "", "summary": ""}
-
-
-def rows(include_header=True):
-    projected, usage, unavailable = ordered()
-    now = int(time.time())
-    empty = "5h [--------]   0%/0h  7d [--------]   0%/0h"
-    claude = usage.get("claude", empty)
-    codex = usage.get("codex", empty)
-    offline = f"  |  offline {' '.join(unavailable)}" if unavailable else ""
-    if include_header:
-        print(f"Claude {claude}{offline}")
-        print(f"OpenAI {codex}")
-        print(column_header(projected))
-    width = shutil.get_terminal_size((100, 24)).columns
-    for projection in projected:
-        session = projection.session
-        timestamp = recency(session)
-        age = max(0, now - timestamp)
-        elapsed = ("?" if not timestamp else
-                   f"{age // 60}m" if age < 3600 else f"{age // 3600}h")
-        marker = ("?" if session.ref.server.host in unavailable else
-                  {"needs-action": "!", "working": "*", "waiting": ".",
-                   "finished": "-"}[session.state])
-        agent = {"codex": "X", "shell": ""}.get(
-            session.agent, session.agent[:1].upper())
-        summary = " ".join(
-            (session.title if session.agent == "shell" else session.summary).split()
-        )
-        summary = re.sub(r"^[\u2800-\u28ff✳●*]+\s*", "", summary)
-        fold = ("" if not projection.child_count else
-                f"{'▾' if projection.expanded else '▸'} {projection.child_count}")
-        name = "  " * projection.depth + session.name
-        room = max(8, width - 1 - 1 - 1 - 1 - 4 - 1 - 1 - 1 - 4 - 1 - 20 - 1)
-        host_colour = HOST_COLOUR.get(session.ref.server.host, "")
-        agent_colour = AGENT_COLOUR.get(session.agent, "")
-        state_colour = ("\033[37;41m" if marker == "?" else STATE_COLOUR[session.state])
-        emphasis = BOLD if session.state in {"working", "needs-action"} else ""
-        visible = (f"{emphasis}{host_colour}{machine(session.ref.server.host)}{RESET}{emphasis} "
-                   f"{agent_colour}{agent:1}{RESET}{emphasis} {elapsed:>4} "
-                   f"{state_colour}{marker}{RESET}{emphasis} "
-                   f"{fold:<4} {name:<20.20} {summary:<{room}.{room}}{RESET}")
-        print(f"{session.ref.key}\t{visible}")
-
-
 def ordered():
     raw = snapshot()
     sessions, usage, unavailable = decode_message(raw)
-    sessions.sort(key=lambda s: (s.ref.server.host in unavailable,
-                                 STATE_ORDER.get(s.state, 2),
-                                 -recency(s), s.ref.key))
     graph = decode_graph(raw)
-    if graph is not None:
-        sessions = alan.project(
-            sessions,
-            graph,
-            expanded=expanded(),
-            show_python=option("@fleet_show_python"),
-        )
-    else:
-        sessions = [alan.Projected(session, 0, 0, False) for session in sessions]
-    return sessions, usage, unavailable
+    projected = render.order(sessions, unavailable, graph,
+                             expanded=expanded(),
+                             show_python=option("@fleet_show_python"))
+    return projected, usage, unavailable
 
 
 def option(name):
@@ -137,20 +63,6 @@ def fold(key):
     )
 
 
-def recency(session):
-    return session.human_activity or session.created
-
-
-def column_header(sessions):
-    icon = COLUMN_ICONS
-    sessions = [item.session for item in sessions]
-    working = sum(1 for session in sessions if session.state == "working")
-    waiting = sum(1 for session in sessions if session.state == "waiting")
-    return (f"{icon['machine']} {icon['agent']} {icon['time']:^4} {icon['status']} "
-            f"{'':4} {icon['title']:<20} {icon['summary']}  "
-            f"{working} working  {waiting} waiting  {len(sessions)} total")
-
-
 def muster():
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     sock = RUNTIME / "muster.sock"
@@ -188,12 +100,7 @@ def muster():
 
 
 def header():
-    projected, usage, unavailable = ordered()
-    empty = "5h [--------]   0%/0h  7d [--------]   0%/0h"
-    offline = f"  |  offline {' '.join(unavailable)}" if unavailable else ""
-    return (f"Claude {usage.get('claude', empty)}{offline}\n"
-            f"OpenAI {usage.get('codex', empty)}\n"
-            f"{column_header(projected)}")
+    return hot.fetch("header").removesuffix("\n")
 
 
 def footer():
@@ -201,23 +108,6 @@ def footer():
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)
-
-
-def cursor():
-    active = dict(viewer.slots()).get("main")
-    if not active:
-        projected, _, _ = ordered()
-        active = next((item.session.ref.key for item in projected
-                       if item.session.state == "waiting"), None)
-    result = subprocess.run(
-        ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(RUNTIME / "muster.sock"),
-         "http://localhost"], capture_output=True, text=True, check=True)
-    status = json.loads(result.stdout)
-    if len(status["matches"]) != status["matchCount"]:
-        raise SystemExit("Muster reported a truncated match list")
-    position = next((i for i, match in enumerate(status["matches"], 1)
-                     if match["text"].partition("\t")[0] == active), None)
-    return f"pos({position})" if position else ""
 
 
 def select():
