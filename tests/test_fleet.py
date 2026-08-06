@@ -528,8 +528,11 @@ class IdentityTests(unittest.TestCase):
 
     def test_migrated_codex_uses_its_persisted_native_identity(self):
         actor = "codex-actor-id@newton"
+        environment = {**os.environ, "XDG_STATE_HOME": ""}
+        environment.pop("LOOP_STORE_DIR", None)
         with tempfile.TemporaryDirectory() as state, \
-             mock.patch.dict(os.environ, {"XDG_STATE_HOME": state}):
+             mock.patch.dict(os.environ, {**environment,
+                                          "XDG_STATE_HOME": state}, clear=True):
             native = alan.native_dir(actor)
             native.mkdir(parents=True)
             (native / "thread_id").write_text("native-id\n")

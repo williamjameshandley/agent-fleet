@@ -31,6 +31,7 @@ def graph(*operations, state="waiting"):
 
 def test_live_state_is_authoritative_and_evidence_is_derived_from_operations(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("LOOP_STORE_DIR", raising=False)
     native = alan.native_dir("codex-a@newton")
     native.mkdir(parents=True)
     (native / "thread_id").write_text("native-a\n")
