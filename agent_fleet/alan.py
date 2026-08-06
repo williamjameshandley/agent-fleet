@@ -84,6 +84,15 @@ def _timestamp(value):
 def provider_identity(addr, kind):
     if kind not in {"claude", "codex"}:
         return ""
+    binding = native_dir(addr) / "thread_id"
+    if binding.exists():
+        return binding.read_text().strip()
+    return address_identity(addr, kind)
+
+
+def address_identity(addr, kind):
+    if kind not in {"claude", "codex"}:
+        return ""
     return addr.split("-", 1)[1].rsplit("@", 1)[0]
 
 
@@ -124,6 +133,7 @@ def actors(graph=None):
 
         descriptor["created"] = _timestamp(stream[0][1]["time"]) if stream else 0
         descriptor["label"] = label(addr)
+        descriptor["native_id"] = provider_identity(addr, descriptor["kind"])
         working = descriptor["state"] == "working"
         descriptor["active_evaluation"] = active if working else None
         descriptor["evaluation_started"] = active_started if working else 0
@@ -144,7 +154,8 @@ def inventory(host, actor_descriptors):
         if actor["state"] in {"retired", "unavailable"}:
             continue
         native = actor.get("native") or {}
-        transcript_id = provider_identity(actor["addr"], actor["kind"])
+        transcript_id = actor.get("native_id") or provider_identity(
+            actor["addr"], actor["kind"])
         transcript_path = native.get("path", "") if transcript_id else ""
         sessions.append(Session(
             SessionRef(source, actor["addr"]), actor.get("label") or label(actor["addr"]),

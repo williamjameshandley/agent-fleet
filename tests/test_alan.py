@@ -29,7 +29,12 @@ def graph(*operations, state="waiting"):
     return result
 
 
-def test_live_state_is_authoritative_and_evidence_is_derived_from_operations():
+def test_live_state_is_authoritative_and_evidence_is_derived_from_operations(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("LOOP_STORE_DIR", raising=False)
+    native = alan.native_dir("codex-a@newton")
+    native.mkdir(parents=True)
+    (native / "thread_id").write_text("native-a\n")
     current = alan.actors(graph(
         {"op": "create"},
         {"op": "input"},
@@ -51,6 +56,7 @@ def test_live_state_is_authoritative_and_evidence_is_derived_from_operations():
     assert current["native"]["path"] == "/native/rollout-a.jsonl"
     assert "id" not in current["native"]
     assert current["native"]["base_dir"] == "/native"
+    assert current["native_id"] == "native-a"
     assert current["created"] == 1785412800
     assert current["human_activity"] == 0
 

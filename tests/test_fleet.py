@@ -526,12 +526,25 @@ class IdentityTests(unittest.TestCase):
             mock.call("claude-1@newton", "resume"),
         ])
 
+    def test_migrated_codex_uses_its_persisted_native_identity(self):
+        actor = "codex-actor-id@newton"
+        environment = {**os.environ, "XDG_STATE_HOME": ""}
+        environment.pop("LOOP_STORE_DIR", None)
+        with tempfile.TemporaryDirectory() as state, \
+             mock.patch.dict(os.environ, {**environment,
+                                          "XDG_STATE_HOME": state}, clear=True):
+            native = alan.native_dir(actor)
+            native.mkdir(parents=True)
+            (native / "thread_id").write_text("native-id\n")
+            self.assertEqual(alan.provider_identity(actor, "codex"), "native-id")
+
     def test_inventory_projects_visible_actor_kinds_without_loop_presentation(self):
         identity = "00000000-0000-4000-8000-000000000001"
         codex = f"codex-{identity}@newton"
         descriptors = [
             {"addr": codex, "kind": "codex", "state": "working",
              "cwd": "/work", "created": 1, "human_activity": 2,
+             "native_id": "persisted-native-id",
              "active_evaluation": f"{codex}#2", "evaluation_started": 3,
              "native": {"path": f"/native/rollout-{identity}.jsonl"}},
             {"addr": "python-1@newton", "kind": "python", "state": "waiting",
@@ -546,7 +559,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual([item.ref.session_id for item in projected],
                          [codex, "python-1@newton"])
         self.assertEqual(projected[0].state, "working")
-        self.assertEqual(projected[0].transcript_id, identity)
+        self.assertEqual(projected[0].transcript_id, "persisted-native-id")
         self.assertEqual(projected[0].transcript_path,
                          f"/native/rollout-{identity}.jsonl")
         self.assertEqual(projected[0].evaluation, f"{codex}#2")
