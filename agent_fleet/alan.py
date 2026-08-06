@@ -134,13 +134,12 @@ def actors(graph=None):
         descriptor["created"] = _timestamp(stream[0][1]["time"]) if stream else 0
         descriptor["label"] = label(addr)
         descriptor["native_id"] = provider_identity(addr, descriptor["kind"])
-        descriptor["active_evaluation"] = active
-        descriptor["evaluation_started"] = active_started
+        working = descriptor["state"] == "working"
+        descriptor["active_evaluation"] = active if working else None
+        descriptor["evaluation_started"] = active_started if working else 0
         descriptor["human_activity"] = human_activity
         if native:
             descriptor["native"] = native
-        if descriptor["state"] == "live":
-            descriptor["state"] = "working" if active else "waiting"
         if last_output and last_output.get("status") == "error":
             descriptor["last_error"] = last_output.get("error", "")
         elif last_output and isinstance(last_output.get("value"), str):
