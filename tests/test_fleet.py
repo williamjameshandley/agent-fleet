@@ -197,7 +197,9 @@ class IdentityTests(unittest.TestCase):
         )
 
         fleet = Fleet()
-        fleet.graphs = {"newton": newton, "lovelace": lovelace}
+        fleet.observations = {"newton": encode([], {}, [], newton),
+                              "lovelace": encode([], {}, [], lovelace)}
+        fleet.observed = 1
         composed = fleet.composed_graph()
 
         self.assertEqual(
@@ -218,6 +220,47 @@ class IdentityTests(unittest.TestCase):
             "schedule:550e8400-e29b-41d4-a716-446655440000@lovelace#0",
             composed,
         )
+
+    def test_composed_graph_recomposes_only_per_observation_generation(self):
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [{"addr": "a@h", "kind": "codex"}]
+        fleet = Fleet()
+        fleet.observations = {"lovelace": encode([], {}, [], graph)}
+        fleet.observed = 1
+        first = fleet.composed_graph()
+        self.assertIs(fleet.composed_graph(), first)
+        fleet.observations["lovelace"] = encode([], {}, [], graph)
+        self.assertIs(fleet.composed_graph(), first)
+        fleet.observed = 2
+        self.assertIsNot(fleet.composed_graph(), first)
+
+    def test_reply_drops_the_render_when_the_client_disconnected(self):
+        fleet = Fleet()
+
+        class Reader:
+            async def readline(self):
+                return b"header\n"
+
+        class Writer:
+            closed = False
+
+            def write(self, payload):
+                pass
+
+            async def drain(self):
+                raise ConnectionResetError
+
+            def close(self):
+                self.closed = True
+
+        async def exercise():
+            writer = Writer()
+            with mock.patch.object(fleet, "projected",
+                                   mock.AsyncMock(return_value=[])):
+                await fleet.reply(Reader(), writer)
+            self.assertTrue(writer.closed)
+
+        asyncio.run(exercise())
 
     def test_alan_key_uses_its_host_bound_actor_identity_once(self):
         ref = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
