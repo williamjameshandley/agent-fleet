@@ -17,6 +17,7 @@ from .protocol import decode_graph, decode_message, encode
 from .model import key_host
 from .tmux import capture, event_stream
 from .quota import read as quota_read
+from . import render
 
 
 def events(host):
@@ -155,6 +156,17 @@ class Fleet:
         if request == "snapshot":
             payload = encode([s for group in self.sessions.values() for s in group], self.usage,
                              sorted(self.unavailable), self.composed_graph())
+        elif request.startswith("items "):
+            projected = await self.projected()
+            payload = render.rows_text(projected, sorted(self.unavailable),
+                                       int(request.removeprefix("items ")))
+        elif request == "header":
+            projected = await self.projected()
+            payload = render.header_text(projected, self.usage,
+                                         sorted(self.unavailable))
+        elif request == "cursor" or request.startswith("cursor "):
+            active = request.removeprefix("cursor").strip()
+            payload = active or await self.first_waiting()
         elif request.startswith("preview "):
             key, columns, lines = request.removeprefix("preview ").rsplit(" ", 2)
             payload = await self.preview(key, int(columns), int(lines))
@@ -167,6 +179,29 @@ class Fleet:
         writer.write(payload.encode())
         await writer.drain()
         writer.close()
+
+    async def projected(self):
+        expanded, show_python = await asyncio.gather(
+            self.muster_option("@fleet_expanded"),
+            self.muster_option("@fleet_show_python"))
+        return render.order(
+            [s for group in self.sessions.values() for s in group],
+            sorted(self.unavailable), self.composed_graph(),
+            expanded=set(expanded.split()),
+            show_python=show_python.strip() == "1")
+
+    async def first_waiting(self):
+        projected = await self.projected()
+        return next((item.session.ref.key for item in projected
+                     if item.session.state == "waiting"), "")
+
+    @staticmethod
+    async def muster_option(name):
+        process = await asyncio.create_subprocess_exec(
+            "tmux", "show-options", "-qv", "-t", "=fleet@muster:", name,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await process.communicate()
+        return stdout.decode()
 
     def composed_graph(self):
         graphs = [graph for graph in self.graphs.values() if graph is not None]
