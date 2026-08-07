@@ -40,6 +40,12 @@ from agent_fleet import ui_process as cli
 from agent_fleet.daemon import Fleet
 
 
+def without_tmux_client():
+    """$TMUX overrides TMUX_TMPDIR, so a fixture server needs it removed."""
+    return {name: value for name, value in os.environ.items()
+            if name not in {"TMUX", "TMUX_PANE"}}
+
+
 class IdentityTests(unittest.TestCase):
     def session(self, host, sid="$1"):
         return Session(SessionRef(ServerRef(host, "/tmp/tmux/default", 12, 10), sid),
@@ -52,7 +58,7 @@ class IdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             environment = {
-                **os.environ,
+                **without_tmux_client(),
                 "HOME": str(root / "home"),
                 "TMUX_TMPDIR": str(root / "tmux"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
@@ -438,7 +444,7 @@ class IdentityTests(unittest.TestCase):
                 f"exec fzf --listen {muster_socket}"
             )
             environment = {
-                **os.environ,
+                **without_tmux_client(),
                 "LOOP_SOCKET": str(alan_socket),
                 "PYTHONPATH": (
                     f"{Path(loop.__file__).parents[1]}:"
@@ -531,7 +537,7 @@ class IdentityTests(unittest.TestCase):
                         with contextlib.suppress(asyncio.CancelledError):
                             await collector
 
-                with mock.patch.dict(os.environ, environment), \
+                with mock.patch.dict(os.environ, environment, clear=True), \
                      mock.patch("agent_fleet.daemon.RUNTIME", runtime):
                     asyncio.run(exercise())
             finally:
@@ -1448,13 +1454,9 @@ class IdentityTests(unittest.TestCase):
                 self.assert_actor_preview_captures_terminal(kind)
 
     def assert_actor_preview_captures_terminal(self, kind):
-        actor = {
-            "addr": f"{kind}-1@newton", "kind": kind,
-            "cwd": "/work",
-        }
         session = mock.Mock(session_name="fleet@alan-hash")
         server = mock.Mock(sessions=[session])
-        with mock.patch("agent_fleet.tmux.alan.actors", return_value=[actor]), \
+        with mock.patch.object(tmux.alan.loop, "observe") as observe, \
              mock.patch("agent_fleet.tmux.alan.runtime_name", return_value="hash"), \
              mock.patch("agent_fleet.tmux.server", return_value=server), \
              mock.patch("agent_fleet.tmux.capture_pane",
@@ -1463,11 +1465,10 @@ class IdentityTests(unittest.TestCase):
                 tmux.capture(f"alan:{kind}-1@newton", 80, 20),
                 "conversation\n")
         preview.assert_called_once_with(session, 80, 20)
+        observe.assert_not_called()
 
     def test_alan_preview_has_no_transcript_fallback(self):
-        actor = {"addr": "codex-1@newton", "kind": "codex"}
-        with mock.patch("agent_fleet.tmux.alan.actors", return_value=[actor]), \
-             mock.patch("agent_fleet.tmux.alan.runtime_name", return_value="hash"), \
+        with mock.patch("agent_fleet.tmux.alan.runtime_name", return_value="hash"), \
              mock.patch("agent_fleet.tmux.server",
                         return_value=mock.Mock(sessions=[])):
             with self.assertRaisesRegex(RuntimeError, "terminal is unavailable"):

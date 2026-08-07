@@ -54,17 +54,14 @@ def mutate(key, operation, arguments):
 def capture(key, columns=0, lines=0):
     if key.startswith("alan:"):
         addr = key.removeprefix("alan:")
-        actor = next((item for item in alan.actors()
-                      if item["addr"] == addr), None)
-        if actor is None:
-            raise RuntimeError(f"Alan actor disappeared: {addr}")
-        if actor["kind"] in {"claude", "codex"}:
+        kind = addr.split("-", 1)[0]
+        if kind in {"claude", "codex"}:
             name = "fleet@alan-" + alan.runtime_name(addr)
             session = next((item for item in server().sessions
                             if item.session_name == name), None)
             if session is None:
                 raise RuntimeError(
-                    f"{actor['kind'].capitalize()} evaluator terminal is unavailable: {addr}"
+                    f"{kind.capitalize()} evaluator terminal is unavailable: {addr}"
                 )
             return capture_pane(session, columns, lines)
         return alan.preview(addr, columns, lines)
