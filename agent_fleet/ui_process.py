@@ -26,7 +26,8 @@ def main(argv=None):
 
     item = command("toggle", lambda args: ui.toggle(args.kind))
     item.add_argument("kind", choices=("python",))
-    item = command("fold", lambda args: ui.fold(args.key))
+    item = command("fold", lambda args: ui.fold(args.action, args.key))
+    item.add_argument("action", choices=("open", "close"))
     item.add_argument("key")
     command("muster", lambda _: ui.muster())
     command("history-ui", lambda _: ui.history())
