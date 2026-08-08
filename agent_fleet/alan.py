@@ -170,18 +170,25 @@ def inventory(host, actor_descriptors):
 
 
 def projection_graph(graph):
-    descriptors = {actor["addr"]: actor
-                   for actor in graph.graph.get("actors", [])}
     projected = nx.MultiDiGraph()
     projected.graph["actors"] = graph.graph.get("actors", [])
-    projected.graph["outstanding_requests"] = _outstanding_requests(
-        graph, descriptors)
+
+    def add_reference(reference):
+        stream = graph.nodes[reference].get("stream")
+        projected.add_node(reference, **({"stream": stream}
+                                         if stream is not None else {}))
+
     for source, target, relation in graph.edges(keys=True):
-        if relation != "spawn":
+        if relation not in {"spawn", "send", "reply"}:
             continue
-        projected.add_node(source, stream=graph.nodes[source].get("stream"))
-        projected.add_node(target, stream=graph.nodes[target]["stream"])
+        add_reference(source)
+        add_reference(target)
         projected.add_edge(source, target, key=relation)
+    fields = {"op", "to", "reply", "stream", "time", "payload"}
+    for reference, operation in graph.nodes(data=True):
+        if operation.get("op") == "send":
+            projected.add_node(reference, **{
+                key: operation[key] for key in fields if key in operation})
     return projected
 
 
@@ -249,10 +256,7 @@ def project(sessions, graph, expanded=(), show_python=False):
         emitted.update(visible(root))
 
     attention = {}
-    requests = graph.graph.get("outstanding_requests")
-    if requests is None:
-        requests = _outstanding_requests(graph, descriptors)
-    for source, request in requests:
+    for source, request in _outstanding_requests(graph, descriptors):
         candidates = (nx.ancestors(ancestry, source) | {source}) & emitted
         if not candidates:
             continue

@@ -7,6 +7,7 @@ import pytest
 
 from agent_fleet import alan
 from agent_fleet.model import ServerRef, Session, SessionRef
+from agent_fleet.protocol import decode_graph, encode
 
 
 def graph(*operations, state="waiting"):
@@ -386,7 +387,8 @@ def test_projection_derives_recursive_visible_tree():
         (f"alan:{direct_python}", 0, 0),
     ]
     compact = alan.projection_graph(current)
-    assert all(set(operation) == {"stream"}
+    assert all(set(operation) <= {
+        "op", "to", "reply", "stream", "time", "payload"}
                for _, operation in compact.nodes(data=True))
     assert alan.project(
         sessions, compact,
@@ -539,6 +541,9 @@ def test_outstanding_principal_requests_follow_recursive_folds_and_reply_edges()
     [collapsed] = alan.project(sessions, current)
     assert collapsed.session.state == "needs-action"
     assert collapsed.session.summary == "2 awaiting — latest question"
+    compact = decode_graph(encode([], graph=alan.projection_graph(current)))
+    [compact_collapsed] = alan.project(sessions, compact)
+    assert compact_collapsed == collapsed
 
     root_open = alan.project(sessions, current, expanded={root})
     assert root_open[0].session.state == "waiting"
@@ -558,3 +563,16 @@ def test_outstanding_principal_requests_follow_recursive_folds_and_reply_edges()
 
     [collapsed] = alan.project(sessions, current)
     assert collapsed.session.summary == "1 awaiting — latest question"
+
+    reply_evidence = nx.MultiDiGraph()
+    reply_evidence.graph["actors"] = []
+    reply_evidence.add_node(f"{child}#2")
+    reply_evidence.add_node(reply, stream=principal)
+    reply_evidence.add_edge(f"{child}#2", reply, key="reply")
+    request_graph = compact
+    reply_graph = decode_graph(encode(
+        [], graph=alan.projection_graph(reply_evidence)))
+    composed = nx.compose(request_graph, reply_graph)
+    composed.graph["actors"] = request_graph.graph["actors"]
+    [composed_collapsed] = alan.project(sessions, composed)
+    assert composed_collapsed == collapsed
