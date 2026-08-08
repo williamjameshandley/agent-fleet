@@ -229,10 +229,14 @@ class Fleet:
                              "cwd": session.cwd}
             payload = json.dumps(value, separators=(",", ":"))
         elif request.startswith("switch "):
-            value = json.loads(request.removeprefix("switch "))
-            target, duration = await self.switch(value["key"], value["client"])
-            payload = json.dumps({"target": target, "duration": duration},
-                                 separators=(",", ":"))
+            try:
+                value = json.loads(request.removeprefix("switch "))
+                target, duration = await self.switch(value["key"], value["client"])
+                response = {"target": target, "duration": duration}
+            except (KeyError, LookupError, OSError, RuntimeError, ValueError,
+                    json.JSONDecodeError) as error:
+                response = {"error": str(error)}
+            payload = json.dumps(response, separators=(",", ":"))
         elif request.startswith("items "):
             projected = await self.projected()
             payload = render.rows_text(projected, sorted(self.unavailable),

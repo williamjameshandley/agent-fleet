@@ -1,11 +1,30 @@
 #!/bin/sh
 tmux() { /usr/bin/tmux -L agent-fleet-ui "$@"; }
+detach_displays() {
+    tmux list-clients -t "fleet@$slot" -f '#{==:#{client_control_mode},0}' \
+        -F '#{client_name}' 2>/dev/null | while IFS= read -r client; do
+        [ -n "$client" ] && tmux detach-client -t "$client"
+    done
+}
+if [ "${1:-}" = --destroy ]; then
+    slot=${2:-}
+    case "$slot" in *[!A-Za-z0-9_-]*|'') exit 2;; esac
+    if [ "$(hostname -s)" != lovelace ]; then
+        exec ssh -T -o BatchMode=yes lovelace fleet-viewer --destroy "$slot"
+    fi
+    runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet
+    if tmux has-session -t "fleet@$slot" 2>/dev/null; then
+        printf 'SHUTDOWN\n' | /usr/bin/nc -U "$runtime/viewer-$slot.sock" || exit
+        tmux kill-session -t "fleet@$slot"
+    fi
+    exit
+fi
 slot=${1:-main}
 case "$slot" in *[!A-Za-z0-9_-]*|'') exit 2;; esac
+if [ "$(hostname -s)" != lovelace ]; then
+    exec ssh -tt -o BatchMode=yes lovelace fleet-viewer "$slot"
+fi
 if [ "$slot" = main ]; then
-    if [ "$(hostname -s)" != lovelace ]; then
-        exec ssh -tt -o BatchMode=yes lovelace fleet-viewer main
-    fi
     if tmux has-session -t fleet@main 2>/dev/null && ! printf 'STATUS\n' | /usr/bin/nc -U "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet/viewer-main.sock" >/dev/null 2>&1; then
         tmux kill-session -t fleet@main
     fi
@@ -17,6 +36,19 @@ if [ "$slot" = main ]; then
     fi
     tmux set-option -t fleet@main status off
     tmux set-option -t fleet@main mouse on
+    detach_displays
     exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session -t fleet@main
 fi
-exec python -c 'import sys; from agent_fleet.viewer import serve; serve(sys.argv[1])' "$slot"
+if tmux has-session -t "fleet@$slot" 2>/dev/null && ! printf 'STATUS\n' | /usr/bin/nc -U "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet/viewer-$slot.sock" >/dev/null 2>&1; then
+    tmux kill-session -t "fleet@$slot"
+fi
+if ! tmux has-session -t "fleet@$slot" 2>/dev/null; then
+    tmux new-session -d -s "fleet@$slot" "exec env -u TMUX -u TMUX_PANE python -c 'import sys; from agent_fleet.viewer import serve; serve(sys.argv[1])' '$slot'"
+    tmux set-option -t "fleet@$slot" prefix None
+    tmux set-option -t "fleet@$slot" prefix2 None
+    tmux set-option -t "fleet@$slot" window-size latest
+fi
+tmux set-option -t "fleet@$slot" status off
+tmux set-option -t "fleet@$slot" mouse on
+detach_displays
+exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session -t "fleet@$slot"

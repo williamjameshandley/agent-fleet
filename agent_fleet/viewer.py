@@ -2,11 +2,11 @@ import os
 import json
 import re
 import shlex
-import signal
 import socket
 import subprocess
 import syslog
 import time
+import queue
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,11 +14,10 @@ from .config import HUB, RUNTIME, ssh_environment
 from .daemon import request as daemon_request
 from .model import key_host
 from . import alan, presentation, workstation
-from .tmux import client_ready, split_key, switch_session
+from .tmux import ControlClient, split_key
 
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
-SWITCH = "/usr/lib/agent-fleet/fleet-switch"
 EXPECTED = (LookupError, OSError, RuntimeError, ValueError,
             subprocess.CalledProcessError)
 
@@ -45,17 +44,13 @@ def exchange(slot, message):
 
 
 def focus(slot):
-    if slot == "main":
-        result = subprocess.run(
-            ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "fleet@muster",
-             "@fleet_workstation"], text=True, capture_output=True, check=True)
-        name = result.stdout.strip()
-        if not name:
-            raise RuntimeError("Muster has no attached workstation")
-        workstation.request(name, {"operation": "focus", "slot": "main"})
-    else:
-        subprocess.run(["i3-msg", f'[instance="fleet-{slot}"] focus'],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result = subprocess.run(
+        ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "fleet@muster",
+         "@fleet_workstation"], text=True, capture_output=True, check=True)
+    name = result.stdout.strip()
+    if not name:
+        raise RuntimeError("Muster has no attached workstation")
+    workstation.request(name, {"operation": "focus", "slot": slot})
 
 
 def viewer_error(value):
@@ -129,32 +124,24 @@ def process_alive(identity):
         return False
 
 
-def stop_child(child, sig=signal.SIGHUP):
-    if not child or child.poll() is not None:
-        return
-    os.killpg(child.pid, sig)
-    if sig == signal.SIGSTOP:
-        return
-    try:
-        child.wait(timeout=.1)
-    except subprocess.TimeoutExpired:
-        os.killpg(child.pid, signal.SIGKILL)
-        child.wait()
-
-
 class Attachment:
-    def __init__(self, slot, tty):
+    def __init__(self, slot, tty, ui=None):
         self.slot = slot
         self.tty = tty
         self.source = ""
         self.host = ""
-        self.child = None
-        self.master = None
-        self.remote_tty = None
-        self.remote_file = None
         self.daemon_socket = None
         self.daemon_master = None
         self.switch_duration = 0.0
+        self.attachments = {}
+        self.ui_process = None
+        if ui is None:
+            self.ui_process = subprocess.Popen(
+                ["/usr/bin/tmux", "-L", "agent-fleet-ui", "-C", "attach-session",
+                 "-t", f"fleet@{slot}"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, bufsize=1)
+            ui = ControlClient(self.ui_process, queue.Queue())
+        self.ui = ui
 
     def ssh(self, host, *arguments, capture=False, check=True):
         command = ["ssh", "-o", "BatchMode=yes", host, *arguments]
@@ -237,6 +224,84 @@ class Attachment:
             return value
         return self.socket_request(self.daemon_socket, message)
 
+    def resident_switch(self, key, client):
+        value = json.loads(self.daemon("switch " + json.dumps(
+            {"key": key, "client": client}, separators=(",", ":"))))
+        if set(value) == {"error"}:
+            raise RuntimeError(value["error"])
+        if set(value) != {"target", "duration"}:
+            raise RuntimeError("invalid Fleet switch response")
+        self.switch_duration = value["duration"]
+        return tuple(value["target"])
+
+    def prove_switch(self, key, client, timeout=3):
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                return self.resident_switch(key, client)
+            except RuntimeError as error:
+                if "can't find client" not in str(error) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.02)
+
+    def ui_value(self, window, value):
+        output = self.ui.command(["display-message", "-p", "-t", window, value])
+        if len(output) != 1:
+            raise RuntimeError(f"UI server did not report {value}")
+        return output[0]
+
+    def create_host(self, host, key):
+        local = os.uname().nodename.split(".", 1)[0]
+        remote_file = None
+        if host == local:
+            expected = self.resolve(key)
+            command = shlex.join(["env", "-u", "TMUX", "-u", "TMUX_PANE",
+                                  "/usr/lib/agent-fleet/fleet-tmux", "attach-session",
+                                  "-t", expected[3]])
+        else:
+            self.ensure_master(host)
+            expected = self.resolve(key, remote=True)
+            owner = local
+            remote_file = (f"${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}/agent-fleet/"
+                           f"viewer-{owner}-{self.slot}-{host}.tty")
+            self.ssh(host, f"rm -f {remote_file}")
+            body = (f"mkdir -p \"$(dirname {remote_file})\"; "
+                    f"chmod 700 \"$(dirname {remote_file})\"; tty > {remote_file}; "
+                    f"exec /usr/lib/agent-fleet/fleet-tmux attach-session "
+                    f"-t {shlex.quote(expected[3])}")
+            command = shlex.join(["ssh", "-tt", "-o", "BatchMode=yes", host, body])
+        output = self.ui.command(["new-window", "-d", "-P", "-F", "#{window_id}",
+                                  "-t", f"fleet@{self.slot}", "-n", host, command])
+        if len(output) != 1:
+            raise RuntimeError("UI server did not create one presentation window")
+        window = output[0]
+        try:
+            if host == local:
+                client = self.ui_value(window, "#{pane_tty}")
+            else:
+                deadline = time.monotonic() + 3
+                client = ""
+                while time.monotonic() < deadline:
+                    result = self.ssh(host, f"cat {remote_file} 2>/dev/null || :",
+                                      capture=True)
+                    client = result.stdout.strip()
+                    if client:
+                        break
+                    time.sleep(.02)
+                if not client:
+                    raise RuntimeError("remote tmux did not report the viewer attachment")
+            self.prove_switch(key, client)
+            return SimpleNamespace(host=host, window=window, client=client,
+                                   source=key, previous="", remote_file=remote_file)
+        except Exception:
+            self.ui.command(["kill-window", "-t", window])
+            if remote_file:
+                self.ssh(host, f"rm -f {remote_file}", check=False)
+            raise
+
+    def select_host(self, entry):
+        self.ui.command(["select-window", "-t", entry.window])
+
     def find(self, key):
         value = json.loads(self.daemon(f"resolve {key}"))
         if set(value) == {"error"}:
@@ -274,155 +339,34 @@ class Attachment:
             raise RuntimeError(f"{session.agent.capitalize()} evaluator terminal is unavailable: {actor}")
         return values[0], int(values[1]), int(values[2]), values[3]
 
-    def wait_local(self, expected, child, timeout=3):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if child.poll() is not None:
-                raise RuntimeError("tmux attachment exited before becoming ready")
-            if client_ready(expected, self.tty):
-                return
-            time.sleep(.02)
-        raise RuntimeError("tmux did not report the viewer attachment")
-
-    def start_local(self, key):
-        began = time.monotonic()
-        expected = self.resolve(key)
-        environment = {name: value for name, value in ssh_environment().items()
-                       if name not in {"TMUX", "TMUX_PANE"}}
-        child = subprocess.Popen(["/usr/bin/tmux", "-N", "attach-session", "-t", expected[3]],
-                                 env=environment, start_new_session=True)
-        try:
-            self.wait_local(expected, child)
-        except Exception:
-            stop_child(child)
-            raise
-        self.switch_duration = time.monotonic() - began
-        return child
-
-    def switch_local(self, key):
-        expected = self.resolve(key)
-        self.switch_duration = switch_session(*expected, self.tty)
-
-    def start_remote(self, host, key):
-        environment = ssh_environment()
-        child = None
-        try:
-            master = self.ensure_master(host)
-            expected = self.resolve(key, remote=True)
-            owner = os.uname().nodename.split(".", 1)[0]
-            remote_file = (f"${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}/agent-fleet/"
-                           f"viewer-{owner}-{self.slot}.tty")
-            self.ssh(host, f"rm -f {remote_file}")
-            body = (f"mkdir -p \"$(dirname {remote_file})\"; chmod 700 \"$(dirname {remote_file})\"; "
-                    f"tty > {remote_file}; exec /usr/lib/agent-fleet/fleet-tmux attach-session "
-                    f"-t {shlex.quote(expected[3])}")
-            child = subprocess.Popen(["ssh", "-tt", "-o", "BatchMode=yes", host, body],
-                                     env=environment, start_new_session=True)
-            deadline = time.monotonic() + 3
-            remote_tty = ""
-            while time.monotonic() < deadline and child.poll() is None:
-                result = self.ssh(host, f"cat {remote_file} 2>/dev/null || :", capture=True)
-                remote_tty = result.stdout.strip()
-                if remote_tty:
-                    check = self.ssh(
-                        host, shlex.join([SWITCH, *map(str, expected), remote_tty]),
-                        capture=True, check=False)
-                    if check.returncode:
-                        if "can't find client" in check.stderr:
-                            time.sleep(.02)
-                            continue
-                        check.check_returncode()
-                    self.switch_duration = float(check.stdout.strip())
-                    break
-                time.sleep(.02)
-            else:
-                raise RuntimeError("remote tmux did not report the viewer attachment")
-            self.remote_tty = remote_tty
-            return child, master, remote_file
-        except Exception:
-            stop_child(child)
-            if 'remote_file' in locals():
-                subprocess.run(["ssh", "-o", "BatchMode=yes", host, f"rm -f {remote_file}"],
-                               env=environment,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            raise
-
-    def close_pair(self, child, master_host, remote_file=None):
-        stop_child(child)
-        if remote_file:
-            subprocess.run(["ssh", "-o", "BatchMode=yes", master_host,
-                            f"rm -f {remote_file}"], env=ssh_environment(),
-                           stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
-
-    def suspend(self):
-        local = os.uname().nodename.split(".", 1)[0]
-        if self.host == local:
-            subprocess.run(["/usr/bin/tmux", "-N", "suspend-client", "-t", self.tty],
-                           check=True)
-        else:
-            self.ssh(self.host, shlex.join(
-                ["/usr/bin/tmux", "-N", "suspend-client", "-t", self.remote_tty]))
-
-    def resume(self):
-        local = os.uname().nodename.split(".", 1)[0]
-        if self.host == local:
-            os.killpg(self.child.pid, signal.SIGCONT)
-        else:
-            result = self.ssh(
-                self.host,
-                shlex.join(["/usr/bin/tmux", "-N", "display-message", "-p",
-                            "-c", self.remote_tty, "#{client_pid}"]), capture=True)
-            self.ssh(self.host, shlex.join(["/usr/bin/kill", "-CONT",
-                                            str(int(result.stdout.strip()))]))
-
     def open(self, key, selected=None):
         started = time.monotonic()
         new_host = key_host(key) if key else ""
         local = os.uname().nodename.split(".", 1)[0]
-        if self.master and not process_alive(self.master):
-            self.abandon()
-            self.source = self.host = ""
-            raise RuntimeError("current viewer SSH master exited unexpectedly")
-        if self.child and self.child.poll() is not None:
-            self.close()
-            self.source = self.host = ""
-            raise RuntimeError("current viewer attachment exited unexpectedly")
-        if self.source and new_host == self.host:
-            if new_host == local:
-                self.switch_local(key)
-            else:
-                expected = self.resolve(key, remote=True)
-                result = self.ssh(new_host,
-                                  shlex.join([SWITCH, *map(str, expected), self.remote_tty]),
-                                  capture=True)
-                self.switch_duration = float(result.stdout.strip())
-        elif new_host == local:
-            old = (self.child, self.host, self.remote_file)
-            if self.child:
-                self.suspend()
+        entry = self.attachments.get(new_host)
+        if entry is None:
+            entry = self.create_host(new_host, key)
+            self.attachments[new_host] = entry
             try:
-                candidate = self.start_local(key)
+                self.select_host(entry)
             except Exception:
-                if old[0]:
-                    self.resume()
+                self.remove_host(new_host)
                 raise
-            self.close_pair(*old)
-            self.child, self.master = candidate, None
-            self.remote_tty = self.remote_file = None
+        elif new_host == self.host:
+            self.resident_switch(key, entry.client)
+            entry.source = key
         else:
-            old = (self.child, self.host, self.remote_file)
-            if self.child:
-                self.suspend()
+            previous = entry.source
+            self.resident_switch(key, entry.client)
             try:
-                candidate, master, remote_file = self.start_remote(new_host, key)
+                self.select_host(entry)
             except Exception:
-                if old[0]:
-                    self.resume()
+                try:
+                    self.resident_switch(previous, entry.client)
+                except Exception:
+                    self.remove_host(new_host)
                 raise
-            self.close_pair(*old)
-            self.child, self.master = candidate, master
-            self.remote_file = remote_file
+            entry.source = key
         self.source, self.host = key, new_host
         duration = time.monotonic() - started
         acknowledged = time.clock_gettime(time.CLOCK_BOOTTIME)
@@ -434,28 +378,40 @@ class Attachment:
                       f"revalidate_switch_duration={self.switch_duration:.6f}")
 
     def clear(self):
-        self.close()
+        for host in list(self.attachments):
+            self.remove_host(host)
         self.source = self.host = ""
 
-    def close(self):
-        self.close_pair(self.child, self.host, self.remote_file)
-        self.child = self.master = self.remote_tty = self.remote_file = None
-
-    def abandon(self):
-        stop_child(self.child)
-        self.child = self.master = self.remote_tty = self.remote_file = None
+    def remove_host(self, host, missing_ok=False):
+        entry = self.attachments.pop(host)
+        try:
+            try:
+                self.ui.command(["kill-window", "-t", entry.window])
+            except EXPECTED:
+                if not missing_ok:
+                    raise
+        finally:
+            if entry.remote_file:
+                self.ssh(host, f"rm -f {entry.remote_file}", check=False)
 
     def check(self):
-        if self.master and not process_alive(self.master):
-            self.abandon(); self.source = self.host = ""
-            return "Viewer SSH master exited unexpectedly"
-        if self.child and self.child.poll() is not None:
-            self.close(); self.source = self.host = ""
-            return "Viewer attachment exited unexpectedly"
+        for host, entry in list(self.attachments.items()):
+            try:
+                dead = self.ui_value(entry.window, "#{pane_dead}") == "1"
+            except RuntimeError:
+                dead = True
+            if dead:
+                self.remove_host(host, missing_ok=True)
+                if host == self.host:
+                    self.source = self.host = ""
+                    return "Viewer attachment exited unexpectedly"
         return ""
 
     def shutdown(self):
-        self.close()
+        self.clear()
+        if self.ui_process and self.ui_process.poll() is None:
+            self.ui_process.terminate()
+            self.ui_process.wait()
         if self.daemon_socket:
             self.cancel_daemon_forward()
 
@@ -504,6 +460,9 @@ def serve(slot):
                     try:
                         if message == "CLEAR":
                             state.clear()
+                        elif message == "SHUTDOWN":
+                            connection.sendall(b"OK\n")
+                            break
                         elif message.startswith("OPEN "):
                             values = message.removeprefix("OPEN ").split(" ", 1)
                             key = values[0]
