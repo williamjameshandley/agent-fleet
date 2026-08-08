@@ -1614,6 +1614,8 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})", source)
         self.assertIn("l:execute-silent(/usr/lib/agent-fleet/ui fold open {1})+transform-header", source)
         self.assertIn("h:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header", source)
+        self.assertIn("right:execute-silent(/usr/lib/agent-fleet/ui fold open {1})+transform-header", source)
+        self.assertIn("left:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header", source)
         self.assertIn("p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header", source)
         self.assertIn('"--footer-border=bottom"', source)
         self.assertNotIn('"--preview=', source)
