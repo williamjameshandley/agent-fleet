@@ -179,6 +179,21 @@ class Fleet:
         elif request == "snapshot":
             payload = encode([s for group in self.sessions.values() for s in group], self.usage,
                              sorted(self.unavailable), self.composed_graph())
+        elif request.startswith("resolve "):
+            key = request.removeprefix("resolve ")
+            matches = [session for group in self.sessions.values() for session in group
+                       if session.ref.key == key]
+            if len(matches) != 1:
+                value = {"error": f"session disappeared: {key}"}
+            else:
+                session = matches[0]
+                if session.ref.server.host in self.unavailable:
+                    value = {"error": (f"{session.ref.server.host} is disconnected; "
+                                       "refusing action")}
+                else:
+                    value = {"agent": session.agent, "state": session.state,
+                             "cwd": session.cwd}
+            payload = json.dumps(value, separators=(",", ":"))
         elif request.startswith("items "):
             projected = await self.projected()
             payload = render.rows_text(projected, sorted(self.unavailable),
