@@ -20,6 +20,40 @@ from agent_fleet.protocol import encode
 
 
 class CommanderContextTests(unittest.TestCase):
+    def test_history_queries_only_available_source_hosts(self):
+        fleet = Fleet()
+        fleet.unavailable = {"noether"}
+        fleet.sessions = {}
+        fleet.history_observation = mock.AsyncMock(return_value={
+            "host": "lovelace", "actors": [], "transcripts": [],
+        })
+        with mock.patch("agent_fleet.daemon.hosts",
+                        return_value=["lovelace", "noether"]):
+            self.assertEqual(asyncio.run(fleet.history()), [])
+        fleet.history_observation.assert_awaited_once_with("lovelace")
+
+    def test_one_disconnected_history_host_does_not_erase_other_hosts(self):
+        fleet = Fleet()
+        fleet.unavailable = set()
+        fleet.sessions = {}
+
+        async def history(host):
+            if host == "noether":
+                raise RuntimeError("connection closed")
+            return {"host": host, "actors": [], "transcripts": [{
+                "agent": "codex", "session_id": "thread", "mtime": 1,
+                "cwd": "/work", "name": "retained",
+            }]}
+
+        fleet.history_observation = history
+        with mock.patch("agent_fleet.daemon.hosts",
+                        return_value=["lovelace", "noether"]):
+            self.assertEqual(asyncio.run(fleet.history()), [{
+                "key": "lovelace:codex:thread", "host": "lovelace",
+                "agent": "codex", "name": "retained", "cwd": "/work",
+                "mtime": 1,
+            }])
+
     def context(self, unavailable=(), profile_suffix="", transcript_name="old", sessions=()):
         fleet = Fleet()
         fleet.unavailable = set(unavailable)

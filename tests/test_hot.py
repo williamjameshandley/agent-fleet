@@ -78,6 +78,7 @@ class HotCommands(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.environment = {**os.environ,
                             "XDG_RUNTIME_DIR": self.directory.name,
+                            "TMUX_TMPDIR": self.directory.name,
                             "COLUMNS": "97", "LINES": "24"}
 
     def invoke(self, *arguments):

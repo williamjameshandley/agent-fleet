@@ -7,7 +7,8 @@ from pathlib import Path
 
 from .config import hosts
 from .remote import find
-from .daemon import action as fleet_action, commander_context as commander_projection, history_search, preview as pane_preview, snapshot
+from .daemon import action as fleet_action, history as history_projection, history_search
+from .daemon import preview as pane_preview, snapshot
 from .protocol import decode_message
 from . import viewer
 from . import workstation
@@ -134,7 +135,7 @@ def preview(key, columns=0, lines=0):
 
 
 def history():
-    entries = json.loads(commander_projection())["history"]
+    entries = json.loads(history_projection())
     return [tuple(item[key] for key in ("key", "host", "agent", "name", "cwd"))
             for item in sorted(entries, key=lambda row: row["mtime"], reverse=True)]
 
