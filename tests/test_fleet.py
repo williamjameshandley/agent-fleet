@@ -1789,6 +1789,18 @@ class IdentityTests(unittest.TestCase):
             state.resolve(f"alan:{actor}")
         target.assert_not_called()
 
+    def test_remote_actor_resolution_survives_the_remote_shell(self):
+        actor = "codex-1@newton"
+        session = mock.Mock(agent="codex", state="waiting", cwd="/work")
+        state = viewer.Attachment("main", "/dev/pts/9")
+        listed = mock.Mock(
+            stdout="/tmp/tmux-1000/default 2548 1784382062 \\$191\n")
+        with mock.patch.object(state, "find", return_value=session), \
+                mock.patch.object(state, "ssh", return_value=listed) as ssh:
+            self.assertEqual(state.resolve(f"alan:{actor}", remote=True),
+                             ("/tmp/tmux-1000/default", 2548, 1784382062, "$191"))
+        self.assertIn("#{q:socket_path}", ssh.call_args.args[1])
+
     def test_alan_preview_captures_the_actor_owned_terminal(self):
         for kind in ("claude", "codex"):
             with self.subTest(kind=kind):
