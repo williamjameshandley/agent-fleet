@@ -188,6 +188,8 @@ class ProtocolCorrelationTests(unittest.TestCase):
              mock.patch("agent_fleet.tmux.alan_inventory", return_value=[]) as inventory, \
              mock.patch("agent_fleet.tmux.observe",
                         side_effect=lambda current, _catalog: current), \
+             mock.patch("agent_fleet.tmux.alan_projection_graph",
+                        side_effect=lambda graph: graph), \
              mock.patch("agent_fleet.tmux.native_transcripts.catalog",
                         return_value={}):
             stream = event_stream("fixture", consumer, changed=changed)

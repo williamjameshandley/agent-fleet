@@ -576,3 +576,37 @@ def test_outstanding_principal_requests_follow_recursive_folds_and_reply_edges()
     composed.graph["actors"] = request_graph.graph["actors"]
     [composed_collapsed] = alan.project(sessions, composed)
     assert composed_collapsed == collapsed
+
+
+def test_compact_requests_reconcile_a_principal_descriptor_from_another_host():
+    actor = "codex-child@lovelace"
+    principal = "will@newton"
+    request = nx.MultiDiGraph()
+    request.graph["actors"] = [{"addr": actor, "kind": "codex"}]
+    request.add_node(f"{actor}#0", stream=actor, op="create")
+    request.add_node(f"{actor}#1", stream=actor, op="send", to=principal,
+                     payload="question", time="2026-07-30T12:00:01Z")
+    request.add_node(f"{principal}#1", stream=principal, op="input")
+    request.add_edge(f"{actor}#1", f"{principal}#1", key="send")
+
+    ancestry = nx.MultiDiGraph()
+    ancestry.graph["actors"] = [{"addr": principal, "kind": "principal"}]
+    ancestry.add_node(f"{principal}#0", stream=principal, op="spawn")
+    ancestry.add_node(f"{actor}#0", stream=actor)
+    ancestry.add_edge(f"{principal}#0", f"{actor}#0", key="spawn")
+
+    def compose(graphs):
+        result = nx.compose_all(graphs)
+        result.graph["actors"] = [actor for graph in graphs
+                                  for actor in graph.graph["actors"]]
+        return result
+
+    full = compose([request, ancestry])
+    compact = compose([
+        decode_graph(encode([], graph=alan.projection_graph(graph)))
+        for graph in (request, ancestry)])
+    sessions = [actor_session(actor, "codex")]
+    assert alan.project(sessions, compact) == alan.project(sessions, full)
+    [projected] = alan.project(sessions, compact)
+    assert projected.session.state == "needs-action"
+    assert projected.session.summary == "1 awaiting — question"
