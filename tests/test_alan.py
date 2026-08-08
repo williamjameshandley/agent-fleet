@@ -385,8 +385,11 @@ def test_projection_derives_recursive_visible_tree():
         (f"alan:{python_nested}", 2, 0),
         (f"alan:{direct_python}", 0, 0),
     ]
+    compact = alan.projection_graph(current)
+    assert all(set(operation) == {"stream"}
+               for _, operation in compact.nodes(data=True))
     assert alan.project(
-        sessions, alan.projection_graph(current),
+        sessions, compact,
         expanded={root, python}, show_python=True) == python_open
 
 

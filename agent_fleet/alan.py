@@ -179,8 +179,8 @@ def projection_graph(graph):
     for source, target, relation in graph.edges(keys=True):
         if relation != "spawn":
             continue
-        projected.add_node(source, **graph.nodes[source])
-        projected.add_node(target, **graph.nodes[target])
+        projected.add_node(source, stream=graph.nodes[source].get("stream"))
+        projected.add_node(target, stream=graph.nodes[target]["stream"])
         projected.add_edge(source, target, key=relation)
     return projected
 
