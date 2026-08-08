@@ -63,6 +63,12 @@ tmux set-option -t fleet@muster mouse off
 tmux list-windows -t fleet@muster -F '#{window_name}' | grep -qx history ||
     tmux new-window -d -t fleet@muster -n history 'exec /usr/lib/agent-fleet/ui history-rows | exec /usr/lib/agent-fleet/ui history-ui'
 [ -z "$workstation" ] || tmux set-option -t fleet@muster @fleet_workstation "$workstation"
+if [ -n "$workstation" ]; then
+    for viewer_socket in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet"/viewer-*.sock; do
+        [ -S "$viewer_socket" ] || continue
+        printf 'WORKSTATION %s\n' "$workstation" | /usr/bin/nc -U "$viewer_socket" >/dev/null || :
+    done
+fi
 if [ -z "$helper" ]; then
     exec /usr/bin/tmux -N -u attach-session -t fleet@muster
 fi

@@ -45,13 +45,14 @@ socket and reports its current closed/open/paused mode.
 Lovelace alone runs `fleet.service`. It maintains one long-lived,
 non-interactive SSH event stream per configured host. The host helper combines
 tmux control-mode lifecycle notifications, polling of Alan's observation graph and
-transcript filesystem events, then publishes disposable snapshots. Navigation,
-sorting and preview never run SSH.
+transcript filesystem events, then publishes disposable snapshots. Cursor
+motion, sorting and preview never run SSH.
 The first open of a remote host in a viewer slot creates one long-lived
 interactive SSH attachment with `BatchMode=yes`. The slot retains that attachment
 in its dedicated `agent-fleet-ui` tmux session. Warm source and host changes use
-the existing daemon, host and UI control streams and create no process, SSH
-channel, PTY or tmux client.
+the existing daemon, host and UI control streams. Fzf invokes one finite local
+socket adapter for the selected canonical key; the switch creates no SSH
+channel, PTY, tmux client, Python interpreter or presentation process.
 
 Tmux previews use `capture-pane -eN`, reconstruct the terminal grid with
 libvterm, and apply tmux's `screen_write_preview` cursor-centred crop. Live Alan

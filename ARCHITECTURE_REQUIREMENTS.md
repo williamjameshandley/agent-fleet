@@ -126,8 +126,9 @@ a row drops into the real session for keyboard, mouse or voice input.
   resident viewer slots on Lovelace. Each slot retains one presentation window
   and tmux client per opened source host; remote hosts additionally retain one
   interactive BatchMode SSH channel. Warm navigation uses only the existing
-  Fleet socket, host control stream and UI tmux control connection: it creates
-  no process, SSH channel, PTY or tmux client.
+  Fleet socket, host control stream and UI tmux control connection. Stock fzf
+  invokes only the finite local selection adapter; the switch creates no SSH
+  channel, PTY, tmux client, Python interpreter or presentation process.
 - Disconnecting, sleeping or moving a workstation between networks detaches
   only its display client. Viewer slots and their host presentations remain on
   Lovelace until explicit owner-side destruction. A later workstation attach

@@ -642,6 +642,35 @@ class IdentityTests(unittest.TestCase):
         request.assert_called_once_with("main", session.ref.key)
         select.assert_called_once_with()
 
+    def test_fzf_open_adapter_sends_one_exact_timed_socket_request(self):
+        root = Path(__file__).parents[1]
+        key = "newton:/tmp/tmux-1000/default:12:10:$1"
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            socket_dir = runtime / "agent-fleet"
+            socket_dir.mkdir()
+            path = socket_dir / "viewer-main.sock"
+            received = []
+            ready = threading.Event()
+
+            def answer():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(path)); server.listen(); ready.set()
+                    connection, _ = server.accept()
+                    with connection:
+                        received.append(connection.makefile().readline().strip())
+                        connection.sendall(b"OK\n")
+
+            thread = threading.Thread(target=answer); thread.start(); ready.wait(1)
+            result = subprocess.run([root / "fleet-open", "main", key],
+                                    env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
+                                    text=True, capture_output=True)
+            thread.join(1)
+        self.assertEqual(result.returncode, 0)
+        operation, actual, selected = received[0].split(" ")
+        self.assertEqual((operation, actual), ("OPEN", key))
+        self.assertGreater(float(selected), 0)
+
     def test_public_show_api_places_an_explicit_named_slot(self):
         with mock.patch.object(viewer, "slots", return_value=[("main", "old")]), \
              mock.patch.object(viewer, "request") as request:
@@ -1020,10 +1049,8 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(local.name, "viewer-left-fleet.sock")
 
     def test_main_viewer_focus_uses_workstation_reverse_socket(self):
-        with mock.patch("agent_fleet.viewer.subprocess.run") as run, \
-             mock.patch("agent_fleet.viewer.workstation.request") as request:
-            run.return_value.stdout = "boltzmann\n"
-            viewer.focus("main")
+        with mock.patch("agent_fleet.viewer.workstation.request") as request:
+            viewer.focus("main", "boltzmann")
         request.assert_called_once_with(
             "boltzmann", {"operation": "focus", "slot": "main"})
 
@@ -1510,7 +1537,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_muster_always_opens_the_global_main_viewer(self):
         source = (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text()
-        self.assertIn("/usr/lib/agent-fleet/fleet-open main {1}", source)
+        self.assertIn("exec /usr/lib/agent-fleet/fleet-open main {1}", source)
         self.assertNotIn("/usr/lib/agent-fleet/ui show", source)
         self.assertIn("load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)", source)
         self.assertIn('"--no-sort"', source)

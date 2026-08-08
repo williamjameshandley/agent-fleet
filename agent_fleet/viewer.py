@@ -43,11 +43,14 @@ def exchange(slot, message):
         return reply
 
 
-def focus(slot):
+def attached_workstation():
     result = subprocess.run(
         ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "fleet@muster",
-         "@fleet_workstation"], text=True, capture_output=True, check=True)
-    name = result.stdout.strip()
+         "@fleet_workstation"], text=True, capture_output=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def focus(slot, name):
     if not name:
         raise RuntimeError("Muster has no attached workstation")
     workstation.request(name, {"operation": "focus", "slot": slot})
@@ -135,6 +138,7 @@ class Attachment:
         self.switch_duration = 0.0
         self.attachments = {}
         self.ui_process = None
+        self.workstation = ""
         if ui is None:
             self.ui_process = subprocess.Popen(
                 ["/usr/bin/tmux", "-L", "agent-fleet-ui", "-C", "attach-session",
@@ -142,6 +146,7 @@ class Attachment:
                 stderr=subprocess.PIPE, text=True, bufsize=1)
             ui = ControlClient(self.ui_process, queue.Queue())
             ui.command(["refresh-client", "-f", "no-output"])
+            self.workstation = attached_workstation()
         self.ui = ui
 
     def ssh(self, host, *arguments, capture=False, check=True):
@@ -439,7 +444,7 @@ class Attachment:
 def activate(state, slot, key, selected=None):
     state.open(key, selected)
     try:
-        focus(slot)
+        focus(slot, state.workstation)
     except EXPECTED as error:
         return f"Focus failed: {error}"
     return ""
@@ -481,6 +486,11 @@ def serve(slot):
                     try:
                         if message == "CLEAR":
                             state.clear()
+                        elif message.startswith("WORKSTATION "):
+                            name = message.removeprefix("WORKSTATION ")
+                            if not SLOT.fullmatch(name):
+                                raise ValueError(f"invalid workstation {name!r}")
+                            state.workstation = name
                         elif message == "SHUTDOWN":
                             state.shutdown()
                             shut_down = True
