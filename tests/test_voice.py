@@ -99,7 +99,8 @@ class VoiceModelTests(unittest.TestCase):
             self.assertEqual(destination._active_pane(session), "%9")
         self.assertEqual(run.call_args.args[0][5], (
             "/bin/sh -c "
-            "'tmux display-message -p -t =fleet@alan-abc123: '\"'\"'#{pane_id}'\"'\"''"))
+            "'/usr/bin/tmux -N display-message -p -t =fleet@alan-abc123: "
+            "'\"'\"'#{pane_id}'\"'\"''"))
 
     def test_remote_python_source_survives_a_real_shell(self):
         source = "import sys; print('slot=' + sys.argv[1])"

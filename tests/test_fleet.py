@@ -41,8 +41,10 @@ from agent_fleet.daemon import Fleet
 
 def without_tmux_client():
     """$TMUX overrides TMUX_TMPDIR, so a fixture server needs it removed."""
-    return {name: value for name, value in os.environ.items()
-            if name not in {"TMUX", "TMUX_PANE"}}
+    environment = {name: value for name, value in os.environ.items()
+                   if name not in {"TMUX", "TMUX_PANE"}}
+    environment["FLEET_TMUX"] = str(Path(__file__).parents[1] / "fleet-tmux")
+    return environment
 
 
 class IdentityTests(unittest.TestCase):
