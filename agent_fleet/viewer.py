@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import shlex
 import signal
@@ -7,11 +8,11 @@ import subprocess
 import syslog
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from .config import HUB, RUNTIME, ssh_environment
 from .daemon import request as daemon_request
 from .model import key_host
-from .protocol import decode_message
 from . import alan, presentation, workstation
 from .tmux import client_ready, split_key, switch_session
 
@@ -204,19 +205,19 @@ class Attachment:
         local.unlink(missing_ok=True)
 
     @staticmethod
-    def socket_projection(path):
+    def socket_request(path, message):
         with socket.socket(socket.AF_UNIX) as client:
             client.connect(str(path))
-            client.sendall(b"snapshot\n")
+            client.sendall((message + "\n").encode())
             chunks = []
             while chunk := client.recv(65536):
                 chunks.append(chunk)
         return b"".join(chunks).decode()
 
-    def projection(self):
+    def daemon(self, message):
         local = os.uname().nodename.split(".", 1)[0]
         if local == HUB:
-            return daemon_request("snapshot")
+            return daemon_request(message)
         if self.daemon_socket and not process_alive(self.daemon_master):
             self.daemon_socket.unlink(missing_ok=True)
             self.daemon_socket = self.daemon_master = None
@@ -228,23 +229,21 @@ class Attachment:
                 subprocess.run(
                     ["ssh", "-O", "forward", "-o", "StreamLocalBindUnlink=yes",
                      "-L", specification, HUB], check=True, env=ssh_environment())
-                value = self.socket_projection(forwarded)
+                value = self.socket_request(forwarded, message)
             except Exception:
                 self.cancel_daemon_forward()
                 raise
             self.daemon_socket = forwarded
             return value
-        return self.socket_projection(self.daemon_socket)
+        return self.socket_request(self.daemon_socket, message)
 
     def find(self, key):
-        sessions, _, unavailable = decode_message(self.projection())
-        for session in sessions:
-            if session.ref.key == key:
-                if session.ref.server.host in unavailable:
-                    raise RuntimeError(
-                        f"{session.ref.server.host} is disconnected; refusing action")
-                return session
-        raise LookupError(f"session disappeared: {key}")
+        value = json.loads(self.daemon(f"resolve {key}"))
+        if set(value) == {"error"}:
+            raise RuntimeError(value["error"])
+        if set(value) != {"agent", "state", "cwd"}:
+            raise RuntimeError("invalid Fleet resolver response")
+        return SimpleNamespace(**value)
 
     def resolve(self, key, remote=False):
         if not key.startswith("alan:"):

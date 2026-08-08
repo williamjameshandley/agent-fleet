@@ -270,6 +270,25 @@ class IdentityTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_daemon_resolves_one_exact_live_descriptor_without_snapshot(self):
+        fleet = Fleet()
+        session = self.session("lovelace")
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable = set()
+        writer = mock.Mock()
+        writer.drain = mock.AsyncMock()
+
+        async def exercise():
+            reader = asyncio.StreamReader()
+            reader.feed_data(f"resolve {session.ref.key}\n".encode())
+            reader.feed_eof()
+            await fleet.reply(reader, writer)
+
+        asyncio.run(exercise())
+        self.assertEqual(json.loads(writer.write.call_args.args[0]),
+                         {"agent": session.agent, "state": session.state,
+                          "cwd": session.cwd})
+
     def test_alan_key_uses_its_host_bound_actor_identity_once(self):
         ref = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
                          "codex-a@newton")
@@ -818,8 +837,8 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(state, "ensure_master", return_value=(82, 10)), \
              mock.patch.object(viewer, "process_alive", return_value=True), \
              mock.patch.object(viewer.socket, "socket", return_value=client):
-            self.assertEqual(state.projection(), "projection")
-            self.assertEqual(state.projection(), "projection")
+            self.assertEqual(state.daemon("resolve source"), "projection")
+            self.assertEqual(state.daemon("resolve source"), "projection")
         self.assertEqual(run.call_count, 2)
         cancel, forward = run.call_args_list
         self.assertIn("cancel", cancel.args[0])
@@ -843,7 +862,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(state, "cancel_daemon_forward") as cancel, \
              mock.patch.object(viewer.subprocess, "run") as run, \
              mock.patch.object(viewer.socket, "socket", return_value=client):
-            self.assertEqual(state.projection(), "projection")
+            self.assertEqual(state.daemon("resolve source"), "projection")
         unlink.assert_called_once_with(missing_ok=True)
         cancel.assert_called_once_with()
         self.assertIn("forward", run.call_args.args[0])
