@@ -1290,6 +1290,9 @@ class IdentityTests(unittest.TestCase):
                       muster)
         self.assertIn("new-session -d -s fleet@main", main)
         self.assertIn("/usr/bin/tmux -L agent-fleet-ui", main)
+        self.assertIn(
+            "exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session "
+            "-t fleet@main", main)
         self.assertIn("set-option -t fleet@main prefix None", main)
         self.assertIn("set-option -t fleet@main status off", main)
         self.assertIn("set-option -t fleet@main mouse on", main)

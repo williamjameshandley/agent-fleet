@@ -17,6 +17,6 @@ if [ "$slot" = main ]; then
     fi
     tmux set-option -t fleet@main status off
     tmux set-option -t fleet@main mouse on
-    exec /usr/bin/tmux -N -u attach-session -t fleet@main
+    exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session -t fleet@main
 fi
 exec python -c 'import sys; from agent_fleet.viewer import serve; serve(sys.argv[1])' "$slot"
