@@ -33,6 +33,7 @@ package() {
   printf '#!/usr/bin/python\nfrom agent_fleet.ui_process import main\nmain()\n' \
     > "$pkgdir/usr/lib/agent-fleet/ui"
   chmod 755 "$pkgdir/usr/lib/agent-fleet/ui"
+  install -Dm755 "$startdir/fleet-tmux" "$pkgdir/usr/lib/agent-fleet/fleet-tmux"
   cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
     "$startdir/fleet-preview.c" -o "$pkgdir/usr/lib/agent-fleet/fleet-preview" -lvterm
   local purelib="$pkgdir$(python3 -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"

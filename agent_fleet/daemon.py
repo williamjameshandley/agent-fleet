@@ -143,7 +143,7 @@ class Fleet:
     async def wait_for_muster_idle(self):
         while True:
             process = await asyncio.create_subprocess_exec(
-                "tmux", "list-clients", "-t", "=fleet@muster",
+                "/usr/bin/tmux", "-N", "list-clients", "-t", "=fleet@muster",
                 "-F", "#{client_activity}",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             stdout, stderr = await process.communicate()
@@ -206,7 +206,7 @@ class Fleet:
     @staticmethod
     async def muster_option(name):
         process = await asyncio.create_subprocess_exec(
-            "tmux", "show-options", "-qv", "-t", "=fleet@muster:", name,
+            "/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "=fleet@muster:", name,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, _ = await process.communicate()
         return stdout.decode()

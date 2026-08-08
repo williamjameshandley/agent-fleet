@@ -85,20 +85,20 @@ def test_actor_presentation_is_a_nested_tmux_session():
         presentation.attach(actor, details)
 
     assert run.call_args_list == [
-        mock.call(["tmux", "has-session", "-t", "=fleet@alan-hash"],
+        mock.call(["/usr/bin/tmux", "-N", "has-session", "-t", "=fleet@alan-hash"],
                   stdout=presentation.subprocess.DEVNULL,
                   stderr=presentation.subprocess.DEVNULL),
-        mock.call(["tmux", "new-session", "-d", "-s", "fleet@alan-hash",
+        mock.call(["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "fleet@alan-hash",
                    "-c", "/work",
                    "/usr/bin/python -c 'import sys; from agent_fleet.presentation import run; run(sys.argv[1])' llm-a@newton"],
                   check=True),
-        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "mouse", "on"],
+        mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "fleet@alan-hash", "mouse", "on"],
                   check=True),
-        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "status", "on"],
+        mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "fleet@alan-hash", "status", "on"],
                   check=True),
     ]
     execute.assert_called_once_with(
-        "tmux", ["tmux", "attach-session", "-t", "=fleet@alan-hash"])
+        "/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", "=fleet@alan-hash"])
 
 
 def test_existing_actor_presentation_is_reused():
@@ -108,14 +108,14 @@ def test_existing_actor_presentation_is_reused():
          mock.patch.object(presentation.os, "execvp") as execute:
         presentation.attach("python-a@newton", {"cwd": "/work"})
     assert run.call_args_list == [
-        mock.call(["tmux", "has-session", "-t", "=fleet@alan-hash"],
+        mock.call(["/usr/bin/tmux", "-N", "has-session", "-t", "=fleet@alan-hash"],
                   stdout=presentation.subprocess.DEVNULL,
                   stderr=presentation.subprocess.DEVNULL),
-        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "status", "on"],
+        mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "fleet@alan-hash", "status", "on"],
                   check=True),
     ]
     execute.assert_called_once_with(
-        "tmux", ["tmux", "attach-session", "-t", "=fleet@alan-hash"])
+        "/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", "=fleet@alan-hash"])
 
 
 def test_claude_attaches_only_to_its_existing_native_terminal():
@@ -125,14 +125,14 @@ def test_claude_attaches_only_to_its_existing_native_terminal():
          mock.patch.object(presentation.os, "execvp") as execute:
         presentation.attach("claude-a@newton", {"kind": "claude", "cwd": "/work"})
     assert run.call_args_list == [
-        mock.call(["tmux", "has-session", "-t", "=fleet@alan-hash"],
+        mock.call(["/usr/bin/tmux", "-N", "has-session", "-t", "=fleet@alan-hash"],
                   stdout=presentation.subprocess.DEVNULL,
                   stderr=presentation.subprocess.DEVNULL),
-        mock.call(["tmux", "set-option", "-t", "fleet@alan-hash", "status", "on"],
+        mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "fleet@alan-hash", "status", "on"],
                   check=True),
     ]
     execute.assert_called_once_with(
-        "tmux", ["tmux", "attach-session", "-t", "=fleet@alan-hash"])
+        "/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", "=fleet@alan-hash"])
 
 
 def test_claude_does_not_get_a_fleet_owned_fallback_terminal():
@@ -186,7 +186,7 @@ def test_close_kills_the_exact_bare_model_presentation():
          mock.patch.object(presentation.subprocess, "run", return_value=present) as run:
         presentation.close("llm-a@newton")
     run.assert_called_once_with(
-        ["tmux", "kill-session", "-t", "=fleet@alan-hash"], text=True,
+        ["/usr/bin/tmux", "-N", "kill-session", "-t", "=fleet@alan-hash"], text=True,
         stdout=presentation.subprocess.DEVNULL, stderr=presentation.subprocess.PIPE)
 
 

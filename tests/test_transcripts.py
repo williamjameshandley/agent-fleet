@@ -62,10 +62,10 @@ def test_claude_resume_uses_the_full_verified_native_identity(monkeypatch):
     with mock.patch("agent_fleet.transcripts.subprocess.run") as run:
         transcripts.resume("claude", "full-claude-id", "work")
     assert run.call_args_list[0] == mock.call(
-        ["tmux", "new-session", "-d", "-s", "work", "-c", "/work",
+        ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "work", "-c", "/work",
          "claude", "--resume", "full-claude-id"], check=True)
     assert run.call_args_list[1] == mock.call(
-        ["tmux", "set-option", "-t", "work", "status", "on"], check=True)
+        ["/usr/bin/tmux", "-N", "set-option", "-t", "work", "status", "on"], check=True)
 
 
 def test_codex_resume_uses_the_full_verified_native_identity(monkeypatch):
@@ -75,10 +75,10 @@ def test_codex_resume_uses_the_full_verified_native_identity(monkeypatch):
     with mock.patch("agent_fleet.transcripts.subprocess.run") as run:
         transcripts.resume("codex", "full-codex-id", "work")
     assert run.call_args_list[0] == mock.call(
-        ["tmux", "new-session", "-d", "-s", "work", "-c", "/work",
+        ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "work", "-c", "/work",
          "codex", "resume", "full-codex-id"], check=True)
     assert run.call_args_list[1] == mock.call(
-        ["tmux", "set-option", "-t", "work", "status", "on"], check=True)
+        ["/usr/bin/tmux", "-N", "set-option", "-t", "work", "status", "on"], check=True)
 
 
 def test_resume_rejects_a_prefix_before_creating_tmux(monkeypatch):

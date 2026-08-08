@@ -635,13 +635,13 @@ class IdentityTests(unittest.TestCase):
              mock.patch("os.execvp") as execute:
             viewer.attach(session.ref.key)
         self.assertEqual(run.call_args_list, [
-            mock.call(["tmux", "set-option", "-t", "$1", "status", "on"],
+            mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "$1", "status", "on"],
                       check=True),
-            mock.call(["tmux", "set-option", "-t", "$1", "mouse", "on"],
+            mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "$1", "mouse", "on"],
                       check=True),
         ])
         execute.assert_called_once_with(
-            "tmux", ["tmux", "attach-session", "-t", "$1"])
+            "/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", "$1"])
 
     def test_main_viewer_focus_uses_workstation_reverse_socket(self):
         session = self.session(os.uname().nodename)
@@ -777,9 +777,9 @@ class IdentityTests(unittest.TestCase):
                  mock.patch("builtins.print") as output:
                 report = reboot.restore(path)
         self.assertEqual(report, {"panes": [pane], "restored": 1})
-        self.assertEqual(run.call_args_list[0].args[0][:4],
-                         ["tmux", "new-session", "-d", "-s"])
-        self.assertTrue(any(call.args[0][1] == "rename-window" for call in run.call_args_list))
+        self.assertEqual(run.call_args_list[0].args[0][:5],
+                         ["/usr/bin/tmux", "-N", "new-session", "-d", "-s"])
+        self.assertTrue(any(call.args[0][2] == "rename-window" for call in run.call_args_list))
         output.assert_not_called()
 
     def test_projection_readiness_waits_for_the_actor(self):
@@ -951,7 +951,7 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "retire refused"):
                 actions.archive_report("alan:codex-1@lovelace")
         run.assert_called_once_with([
-            "tmux", "display-message", "-t", "fleet@muster",
+            "/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
             "Archive failed: retire refused"])
 
     def test_stale_archive_row_is_visible_in_muster(self):
@@ -961,7 +961,7 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "session disappeared"):
                 actions.archive_report("gone")
         run.assert_called_once_with([
-            "tmux", "display-message", "-t", "fleet@muster",
+            "/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
             "Archive failed: session disappeared"])
 
     def test_history_open_failure_is_visible_in_muster(self):
@@ -971,7 +971,7 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "native identity changed"):
                 actions.open_history_report("alan:codex-1@lovelace")
         run.assert_called_once_with([
-            "tmux", "display-message", "-t", "fleet@muster",
+            "/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
             "Open failed: native identity changed"])
 
     def test_working_recency_is_human_activity(self):
@@ -1130,7 +1130,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(ui.subprocess, "run") as run:
             ui.toggle("python")
         run.assert_called_once_with(
-            ["tmux", "set-option", "-t", "=fleet@muster:", "@fleet_show_python", "1"],
+            ["/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", "@fleet_show_python", "1"],
             check=True,
         )
 
@@ -1155,7 +1155,7 @@ class IdentityTests(unittest.TestCase):
                  mock.patch.object(ui.subprocess, "run") as run:
                 ui.fold(action, root.ref.key)
             run.assert_called_once_with([
-                "tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
+                "/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
                 expected], check=True)
 
     def test_fold_ignores_native_and_leaf_rows(self):
@@ -1406,7 +1406,7 @@ class IdentityTests(unittest.TestCase):
         with mock.patch("subprocess.run") as run:
             actions.create_tab()
         run.assert_called_once_with(
-            ["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
+            ["/usr/bin/tmux", "-N", "new-window", "-t", "fleet@muster", "-n", "create",
              "exec /usr/lib/agent-fleet/ui create"], check=True)
 
     def test_rename_opens_inside_the_muster(self):
@@ -1414,7 +1414,7 @@ class IdentityTests(unittest.TestCase):
         with mock.patch("subprocess.run") as run:
             actions.rename_tab(key)
         run.assert_called_once_with(
-            ["tmux", "new-window", "-t", "fleet@muster", "-n", "rename",
+            ["/usr/bin/tmux", "-N", "new-window", "-t", "fleet@muster", "-n", "rename",
              "exec /usr/lib/agent-fleet/ui rename-prompt 'lovelace:/tmp/tmux:1:2:$3'"], check=True)
 
     def test_named_viewers_remain_local(self):

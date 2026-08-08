@@ -1,4 +1,5 @@
 #!/bin/sh
+tmux() { /usr/bin/tmux -N "$@"; }
 slot=${1:-main}
 case "$slot" in *[!A-Za-z0-9_-]*|'') exit 2;; esac
 if [ "$slot" = main ]; then
@@ -16,6 +17,6 @@ if [ "$slot" = main ]; then
     fi
     tmux set-option -t fleet@main status off
     tmux set-option -t fleet@main mouse on
-    exec tmux -u attach-session -t fleet@main
+    exec /usr/bin/tmux -N -u attach-session -t fleet@main
 fi
 exec python -c 'import sys; from agent_fleet.viewer import serve; serve(sys.argv[1])' "$slot"

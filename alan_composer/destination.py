@@ -50,7 +50,7 @@ def capture():
 
 
 def _active_pane(host, session_id):
-    command = ["tmux", "display-message", "-p", "-t", session_id, "#{pane_id}"]
+    command = ["/usr/bin/tmux", "-N", "display-message", "-p", "-t", session_id, "#{pane_id}"]
     if host != os.uname().nodename:
         command = ["ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(command)]
     return subprocess.run(command, check=True, capture_output=True, text=True).stdout.strip()

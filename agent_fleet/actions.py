@@ -34,7 +34,7 @@ def host_python(host, source, *arguments, capture_output=False, stdout=None):
 
 def desktop_input(prompt, values=(), fixed=False):
     result = subprocess.run(
-        ["tmux", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
+        ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
         text=True, capture_output=True, check=True)
     name = result.stdout.strip()
     if not name:
@@ -87,7 +87,7 @@ def session_name(value):
 
 
 def create_tab():
-    subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
+    subprocess.run(["/usr/bin/tmux", "-N", "new-window", "-t", "fleet@muster", "-n", "create",
                     "exec /usr/lib/agent-fleet/ui create"], check=True)
 
 
@@ -123,7 +123,7 @@ def create_prompt():
 
 def rename_tab(key):
     command = shlex.join(("exec", "/usr/lib/agent-fleet/ui", "rename-prompt", key))
-    subprocess.run(["tmux", "new-window", "-t", "fleet@muster", "-n", "rename",
+    subprocess.run(["/usr/bin/tmux", "-N", "new-window", "-t", "fleet@muster", "-n", "rename",
                     command], check=True)
 
 
@@ -204,7 +204,7 @@ def archive_report(key):
     except (LookupError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
                   and error.stderr else str(error))
-        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+        subprocess.run(["/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
                         f"Archive failed: {reason}"])
         raise SystemExit(reason)
 
@@ -229,7 +229,7 @@ def refresh_report(key):
     except (LookupError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
                   and error.stderr else str(error))
-        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+        subprocess.run(["/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
                         f"Refresh failed: {reason}"])
         raise SystemExit(reason)
 
@@ -261,7 +261,7 @@ def next_waiting():
     sessions = [item.session for item in projected]
     key = next_waiting_key(sessions, dict(viewer.slots()).get("main"))
     if key is None:
-        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+        subprocess.run(["/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
                         "No waiting sessions"])
         return
     viewer.show(key, "main")
@@ -312,7 +312,7 @@ def open_history_report(key):
     except (LookupError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         reason = (error.stderr.strip() if isinstance(error, subprocess.CalledProcessError)
                   and error.stderr else str(error))
-        subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+        subprocess.run(["/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
                         f"Open failed: {reason}"])
         raise SystemExit(reason)
 
@@ -321,15 +321,15 @@ def arrive(profile, available=False):
     sessions, _, unavailable = decode_message(snapshot())
     if unavailable and not available:
         raise RuntimeError("inventory incomplete; unavailable: " + " ".join(unavailable))
-    result = subprocess.run(["tmux", "show-options", "-gv",
+    result = subprocess.run(["/usr/bin/tmux", "-N", "show-options", "-gv",
                              "@fleet_profile"], text=True, capture_output=True)
     current = result.stdout.strip() if result.returncode == 0 else ""
     if current == profile:
         return
     epoch = str(time.time_ns())
-    subprocess.run(["tmux", "set-option", "-g", "@fleet_profile", profile],
+    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-g", "@fleet_profile", profile],
                    check=True)
-    subprocess.run(["tmux", "set-option", "-g", "@fleet_epoch", epoch],
+    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-g", "@fleet_epoch", epoch],
                    check=True)
     placements = viewer.slots()
     free = [slot for slot, source in placements if not source]
@@ -346,7 +346,7 @@ def arrive(profile, available=False):
 
 def context():
     sessions, _, unavailable = decode_message(snapshot())
-    profile = subprocess.run(["tmux", "show-options", "-gv",
+    profile = subprocess.run(["/usr/bin/tmux", "-N", "show-options", "-gv",
                               "@fleet_profile"], text=True, capture_output=True).stdout.strip()
     data = {
         "profile": profile,

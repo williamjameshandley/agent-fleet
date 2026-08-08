@@ -7,7 +7,7 @@ from uuid import uuid4
 def send(destination, text):
     name = "alan-" + uuid4().hex
     command = [
-        "tmux", "load-buffer", "-b", name, "-",
+        "/usr/bin/tmux", "-N", "load-buffer", "-b", name, "-",
         ";", "paste-buffer", "-b", name, "-d", "-t", destination.pane_id,
         ";", "send-keys", "-t", destination.pane_id, "Enter",
     ]
