@@ -17,6 +17,7 @@ from unittest import mock
 
 from agent_fleet.tmux import ControlClient
 from agent_fleet.daemon import Fleet
+from agent_fleet import daemon
 from agent_fleet.model import ServerRef, SessionRef, Session
 
 
@@ -225,7 +226,7 @@ class DaemonBoundaryTests(unittest.TestCase):
         ref = SessionRef(ServerRef("fixture", "/tmp/tmux/default", 12, 10), "$1")
         return Session(ref, "one", 1, 1, 0, 1, "zsh", "", "/tmp")
 
-    def test_preview_and_switch_share_tagged_host_stream(self):
+    def test_preview_switch_and_cleanup_share_tagged_host_stream(self):
         class Input:
             def __init__(self): self.writes = []
             def write(self, value): self.writes.append(json.loads(value))
@@ -237,18 +238,22 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet.processes = {"fixture": mock.Mock(stdin=stdin)}
             preview = asyncio.create_task(fleet.preview(session.ref.key, 80, 20))
             switch = asyncio.create_task(fleet.switch(session.ref.key, "/dev/pts/9"))
+            cleanup = asyncio.create_task(fleet.cleanup("fixture", "lovelace", "main"))
             await asyncio.sleep(0)
             self.assertEqual({next(iter(item)) for item in stdin.writes},
-                             {"preview", "switch"})
+                             {"preview", "switch", "cleanup"})
             preview_request = next(item for item in stdin.writes if "preview" in item)
             switch_request = next(item for item in stdin.writes if "switch" in item)
+            cleanup_request = next(item for item in stdin.writes if "cleanup" in item)
             fleet.host_reply({"switch": switch_request["switch"],
                               "target": ["/tmp/tmux/default", 12, 10, "$1"],
                               "duration": .001})
             fleet.host_reply({"preview": preview_request["preview"], "text": "screen"})
+            fleet.host_reply({"cleanup": cleanup_request["cleanup"]})
             self.assertEqual(await preview, "screen")
             self.assertEqual(await switch,
                              (("/tmp/tmux/default", 12, 10, "$1"), .001))
+            self.assertIsNone(await cleanup)
 
         asyncio.run(exercise())
 
@@ -259,17 +264,32 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet.observations = {"fixture": b"observation"}
             loop = asyncio.get_running_loop()
             preview = loop.create_future(); switch = loop.create_future()
+            cleanup = loop.create_future()
             fleet.previews[1] = ("fixture", preview)
             fleet.switches[2] = ("fixture", switch)
+            fleet.cleanups[3] = ("fixture", cleanup)
             await fleet.host_disconnected("fixture")
             self.assertNotIn("fixture", fleet.sessions)
             self.assertNotIn("fixture", fleet.observations)
             self.assertFalse(fleet.previews); self.assertFalse(fleet.switches)
-            for future in (preview, switch):
+            self.assertFalse(fleet.cleanups)
+            for future in (preview, switch, cleanup):
                 with self.assertRaisesRegex(RuntimeError, "fixture disconnected"):
                     await future
 
         asyncio.run(exercise())
+
+    def test_resident_host_removes_only_its_exact_viewer_marker(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(daemon, "RUNTIME", Path(directory)):
+            marker = Path(directory) / "viewer-lovelace-main-fixture.tty"
+            other = Path(directory) / "viewer-lovelace-side-fixture.tty"
+            marker.write_text("/dev/pts/8\n"); other.write_text("/dev/pts/9\n")
+            daemon.remove_viewer_marker("fixture", "lovelace", "main")
+            self.assertFalse(marker.exists())
+            self.assertTrue(other.exists())
+            with self.assertRaisesRegex(ValueError, "invalid"):
+                daemon.remove_viewer_marker("fixture", "../escape", "main")
 
 
 if __name__ == "__main__":

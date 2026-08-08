@@ -234,6 +234,15 @@ class Attachment:
         self.switch_duration = value["duration"]
         return tuple(value["target"])
 
+    def reclaim_marker(self, host, owner):
+        value = json.loads(self.daemon("cleanup " + json.dumps(
+            {"host": host, "owner": owner, "slot": self.slot},
+            separators=(",", ":"))))
+        if set(value) == {"error"}:
+            raise RuntimeError(value["error"])
+        if value != {"ok": True}:
+            raise RuntimeError("invalid Fleet cleanup response")
+
     def prove_switch(self, key, client, timeout=3):
         deadline = time.monotonic() + timeout
         while True:
@@ -253,18 +262,20 @@ class Attachment:
     def create_host(self, host, key):
         local = os.uname().nodename.split(".", 1)[0]
         remote_file = None
+        owner = ""
+        master = None
         if host == local:
             expected = self.resolve(key)
             command = shlex.join(["env", "-u", "TMUX", "-u", "TMUX_PANE",
                                   "/usr/lib/agent-fleet/fleet-tmux", "attach-session",
                                   "-t", expected[3]])
         else:
-            self.ensure_master(host)
+            master = self.ensure_master(host)
             expected = self.resolve(key, remote=True)
             owner = local
             remote_file = (f"${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}/agent-fleet/"
                            f"viewer-{owner}-{self.slot}-{host}.tty")
-            self.ssh(host, f"rm -f {remote_file}")
+            self.reclaim_marker(host, owner)
             body = (f"mkdir -p \"$(dirname {remote_file})\"; "
                     f"chmod 700 \"$(dirname {remote_file})\"; tty > {remote_file}; "
                     f"exec /usr/lib/agent-fleet/fleet-tmux attach-session "
@@ -292,11 +303,15 @@ class Attachment:
                     raise RuntimeError("remote tmux did not report the viewer attachment")
             self.prove_switch(key, client)
             return SimpleNamespace(host=host, window=window, client=client,
-                                   source=key, previous="", remote_file=remote_file)
+                                   source=key, remote_file=remote_file,
+                                   owner=owner, master=master)
         except Exception:
             self.ui.command(["kill-window", "-t", window])
             if remote_file:
-                self.ssh(host, f"rm -f {remote_file}", check=False)
+                try:
+                    self.reclaim_marker(host, owner)
+                except RuntimeError:
+                    pass
             raise
 
     def select_host(self, entry):
@@ -383,24 +398,28 @@ class Attachment:
         self.source = self.host = ""
 
     def remove_host(self, host, missing_ok=False):
-        entry = self.attachments.pop(host)
-        try:
+        entry = self.attachments[host]
+        if entry.remote_file:
             try:
-                self.ui.command(["kill-window", "-t", entry.window])
-            except EXPECTED:
-                if not missing_ok:
+                self.reclaim_marker(host, entry.owner)
+            except RuntimeError as error:
+                if "disconnected; refusing cleanup" not in str(error):
                     raise
-        finally:
-            if entry.remote_file:
-                self.ssh(host, f"rm -f {entry.remote_file}", check=False)
+        self.attachments.pop(host)
+        try:
+            self.ui.command(["kill-window", "-t", entry.window])
+        except EXPECTED:
+            if not missing_ok:
+                raise
 
     def check(self):
         for host, entry in list(self.attachments.items()):
+            master_dead = entry.master is not None and not process_alive(entry.master)
             try:
                 dead = self.ui_value(entry.window, "#{pane_dead}") == "1"
             except RuntimeError:
                 dead = True
-            if dead:
+            if master_dead or dead:
                 self.remove_host(host, missing_ok=True)
                 if host == self.host:
                     self.source = self.host = ""
@@ -434,6 +453,7 @@ def serve(slot):
     state = Attachment(slot, tty)
     viewer_error("")
     reported = False
+    shut_down = False
     with socket.socket(socket.AF_UNIX) as server:
         server.bind(str(path)); os.chmod(path, 0o600); server.listen(); server.settimeout(.25)
         try:
@@ -461,8 +481,11 @@ def serve(slot):
                         if message == "CLEAR":
                             state.clear()
                         elif message == "SHUTDOWN":
+                            state.shutdown()
+                            shut_down = True
+                            path.unlink(missing_ok=True)
                             connection.sendall(b"OK\n")
-                            break
+                            return
                         elif message.startswith("OPEN "):
                             values = message.removeprefix("OPEN ").split(" ", 1)
                             key = values[0]
@@ -481,4 +504,6 @@ def serve(slot):
                     else:
                         connection.sendall(b"OK\n")
         finally:
-            state.shutdown(); path.unlink(missing_ok=True)
+            if not shut_down:
+                state.shutdown()
+            path.unlink(missing_ok=True)

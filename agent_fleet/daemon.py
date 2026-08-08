@@ -9,6 +9,7 @@ import hashlib
 import time
 import threading
 import queue
+import re
 from pathlib import Path
 
 import networkx as nx
@@ -20,6 +21,16 @@ from .model import key_host
 from .tmux import capture, event_stream, split_key
 from .quota import read as quota_read
 from . import render
+
+
+MARKER_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def remove_viewer_marker(host, owner, slot):
+    if not MARKER_COMPONENT.fullmatch(owner) or not MARKER_COMPONENT.fullmatch(slot):
+        raise ValueError("invalid viewer marker identity")
+    path = RUNTIME / f"viewer-{owner}-{slot}-{host}.tty"
+    path.unlink(missing_ok=True)
 
 
 def events(host):
@@ -48,10 +59,14 @@ def events(host):
                         duration = control.switch(target, request["client"])
                         response = {"switch": request["switch"], "duration": duration,
                                     "target": target}
+                    elif "cleanup" in request:
+                        remove_viewer_marker(host, request["owner"], request["slot"])
+                        response = {"cleanup": request["cleanup"]}
                     else:
                         raise RuntimeError("unknown host request")
-                except RuntimeError as error:
-                    tag = "preview" if "preview" in request else "switch"
+                except (KeyError, OSError, RuntimeError, ValueError) as error:
+                    tag = next(name for name in ("preview", "switch", "cleanup")
+                               if name in request)
                     response = {tag: request[tag], "error": str(error)}
                 emit(json.dumps(response, separators=(",", ":")))
         finally:
@@ -77,6 +92,8 @@ class Fleet:
         self.next_preview = 0
         self.switches = {}
         self.next_switch = 0
+        self.cleanups = {}
+        self.next_cleanup = 0
         self.changed = asyncio.Condition()
         self.action_error = ""
 
@@ -143,6 +160,13 @@ class Fleet:
             else:
                 future.set_result((tuple(message["target"]), message["duration"]))
             return True
+        if "cleanup" in message:
+            _, future = self.cleanups.pop(message["cleanup"])
+            if "error" in message:
+                future.set_exception(RuntimeError(message["error"]))
+            else:
+                future.set_result(None)
+            return True
         return False
 
     async def host_disconnected(self, host):
@@ -152,7 +176,7 @@ class Fleet:
         self.observed += 1
         async with self.changed:
             self.changed.notify_all()
-        for pending in (self.previews, self.switches):
+        for pending in (self.previews, self.switches, self.cleanups):
             for number, (owner, future) in list(pending.items()):
                 if owner == host:
                     future.set_exception(RuntimeError(f"{host} disconnected"))
@@ -233,6 +257,15 @@ class Fleet:
                 value = json.loads(request.removeprefix("switch "))
                 target, duration = await self.switch(value["key"], value["client"])
                 response = {"target": target, "duration": duration}
+            except (KeyError, LookupError, OSError, RuntimeError, ValueError,
+                    json.JSONDecodeError) as error:
+                response = {"error": str(error)}
+            payload = json.dumps(response, separators=(",", ":"))
+        elif request.startswith("cleanup "):
+            try:
+                value = json.loads(request.removeprefix("cleanup "))
+                await self.cleanup(value["host"], value["owner"], value["slot"])
+                response = {"ok": True}
             except (KeyError, LookupError, OSError, RuntimeError, ValueError,
                     json.JSONDecodeError) as error:
                 response = {"error": str(error)}
@@ -684,6 +717,20 @@ class Fleet:
         process.stdin.write((json.dumps(payload) + "\n").encode())
         await process.stdin.drain()
         return await future
+
+    async def cleanup(self, host, owner, slot):
+        if host in self.unavailable:
+            raise RuntimeError(f"{host} is disconnected; refusing cleanup")
+        self.next_cleanup += 1
+        number = self.next_cleanup
+        future = asyncio.get_running_loop().create_future()
+        self.cleanups[number] = (host, future)
+        process = self.processes[host]
+        assert process.stdin
+        process.stdin.write((json.dumps({"cleanup": number, "owner": owner,
+                                         "slot": slot}) + "\n").encode())
+        await process.stdin.drain()
+        await future
 
 
 def request(message):
