@@ -1680,6 +1680,19 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
                          [root, language, python])
 
+    def test_host_observation_updates_availability_and_usage_before_projection(self):
+        fleet = Fleet()
+        host = "lovelace"
+        fleet._view_cache = ("stale",)
+        usage = {"claude": {"five_hour": {"utilization": 37}}}
+        raw = encode([self.session(host)], usage)
+        with mock.patch("agent_fleet.daemon.hosts", return_value=[host]):
+            fleet.update_host(host, raw)
+        self.assertNotIn(host, fleet.unavailable)
+        self.assertEqual(fleet.usage, usage)
+        self.assertIsNone(fleet._view_cache)
+        self.assertNotIn("offline lovelace", fleet.view(100)[2])
+
     def test_hidden_orphan_python_does_not_break_the_projection(self):
         fleet, root, _, python = self.fold_fleet()
         graph = fleet._composed[1]

@@ -131,17 +131,9 @@ class Fleet:
                     message = json.loads(raw)
                     if self.host_reply(message):
                         continue
-                    sessions, usage, _ = decode_message(raw)
-                    self.sessions[host] = sessions
-                    self.observations[host] = raw
-                    self.observed += 1
-                    self.view_revision += 1
-                    self._view_cache = None
+                    self.update_host(host, raw)
                     async with self.changed:
                         self.changed.notify_all()
-                    self.unavailable.discard(host)
-                    if host == hosts()[0] and usage:
-                        self.usage = usage
                     self.schedule_refresh()
                 await drain
             finally:
@@ -153,6 +145,17 @@ class Fleet:
                 await self.host_disconnected(host)
             self.schedule_refresh()
             await asyncio.sleep(1)
+
+    def update_host(self, host, raw):
+        sessions, usage, _ = decode_message(raw)
+        self.sessions[host] = sessions
+        self.observations[host] = raw
+        self.unavailable.discard(host)
+        if host == hosts()[0] and usage:
+            self.usage = usage
+        self.observed += 1
+        self.view_revision += 1
+        self._view_cache = None
 
     def host_reply(self, message):
         if "preview" in message:
