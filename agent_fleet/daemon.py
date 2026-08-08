@@ -8,6 +8,7 @@ import subprocess
 import hashlib
 import time
 import threading
+import queue
 from pathlib import Path
 
 import networkx as nx
@@ -16,7 +17,7 @@ from .config import HUB, RUNTIME, hosts, ssh_environment
 from .alan import address_identity
 from .protocol import decode_graph, decode_message, encode
 from .model import key_host
-from .tmux import capture, event_stream
+from .tmux import capture, event_stream, split_key
 from .quota import read as quota_read
 from . import render
 
@@ -25,6 +26,7 @@ def events(host):
     """Stream one host's session events and answer preview requests."""
     lock = threading.Lock()
     consumer = threading.Event()
+    controls = queue.Queue(maxsize=1)
 
     def emit(message):
         with lock:
@@ -35,16 +37,27 @@ def events(host):
             for line in sys.stdin:
                 request = json.loads(line)
                 try:
-                    text = capture(request["key"], request["columns"], request["lines"])
-                    response = {"preview": request["preview"], "text": text}
+                    if "preview" in request:
+                        text = capture(request["key"], request["columns"], request["lines"])
+                        response = {"preview": request["preview"], "text": text}
+                    elif "switch" in request:
+                        control = controls.queue[0]
+                        target = (control.alan_target(request["actor"])
+                                  if "actor" in request else tuple(request["target"]))
+                        duration = control.switch(target, request["client"])
+                        response = {"switch": request["switch"], "duration": duration,
+                                    "target": target}
+                    else:
+                        raise RuntimeError("unknown host request")
                 except RuntimeError as error:
-                    response = {"preview": request["preview"], "error": str(error)}
+                    tag = "preview" if "preview" in request else "switch"
+                    response = {tag: request[tag], "error": str(error)}
                 emit(json.dumps(response, separators=(",", ":")))
         finally:
             consumer.set()
 
     threading.Thread(target=requests, daemon=True).start()
-    for sessions, graph in event_stream(host, consumer):
+    for sessions, graph in event_stream(host, consumer, controls):
         usage = quota_read() if host == hosts()[0] else {}
         emit(encode(sessions, usage, graph=graph))
 
@@ -61,6 +74,8 @@ class Fleet:
         self.processes = {}
         self.previews = {}
         self.next_preview = 0
+        self.switches = {}
+        self.next_switch = 0
         self.changed = asyncio.Condition()
         self.action_error = ""
 
@@ -95,6 +110,13 @@ class Fleet:
                         else:
                             future.set_result(message["text"])
                         continue
+                    if "switch" in message:
+                        _, future = self.switches.pop(message["switch"])
+                        if "error" in message:
+                            future.set_exception(RuntimeError(message["error"]))
+                        else:
+                            future.set_result((tuple(message["target"]), message["duration"]))
+                        continue
                     sessions, usage, _ = decode_message(raw)
                     self.sessions[host] = sessions
                     self.observations[host] = raw
@@ -121,6 +143,10 @@ class Fleet:
                     if owner == host:
                         future.set_exception(RuntimeError(f"{host} disconnected"))
                         del self.previews[number]
+                for number, (owner, future) in list(self.switches.items()):
+                    if owner == host:
+                        future.set_exception(RuntimeError(f"{host} disconnected"))
+                        del self.switches[number]
             self.unavailable.add(host)
             self.schedule_refresh()
             await asyncio.sleep(1)
@@ -195,6 +221,11 @@ class Fleet:
                     value = {"agent": session.agent, "state": session.state,
                              "cwd": session.cwd}
             payload = json.dumps(value, separators=(",", ":"))
+        elif request.startswith("switch "):
+            value = json.loads(request.removeprefix("switch "))
+            target, duration = await self.switch(value["key"], value["client"])
+            payload = json.dumps({"target": target, "duration": duration},
+                                 separators=(",", ":"))
         elif request.startswith("items "):
             projected = await self.projected()
             payload = render.rows_text(projected, sorted(self.unavailable),
@@ -617,6 +648,29 @@ class Fleet:
         self.previews[number] = (host, future)
         process.stdin.write((json.dumps({"preview": number, "key": key,
                                          "columns": columns, "lines": lines}) + "\n").encode())
+        await process.stdin.drain()
+        return await future
+
+    async def switch(self, key, client):
+        matches = [session for group in self.sessions.values() for session in group
+                   if session.ref.key == key]
+        if len(matches) != 1:
+            raise RuntimeError(f"session disappeared: {key}")
+        host = key_host(key)
+        if host in self.unavailable:
+            raise RuntimeError(f"{host} is disconnected; refusing action")
+        self.next_switch += 1
+        number = self.next_switch
+        future = asyncio.get_running_loop().create_future()
+        self.switches[number] = (host, future)
+        payload = {"switch": number, "client": client}
+        if key.startswith("alan:"):
+            payload["actor"] = key.removeprefix("alan:")
+        else:
+            payload["target"] = split_key(key)[1:]
+        process = self.processes[host]
+        assert process.stdin
+        process.stdin.write((json.dumps(payload) + "\n").encode())
         await process.stdin.drain()
         return await future
 

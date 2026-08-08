@@ -83,6 +83,85 @@ def client_ready(target_value, client):
     return client in attached.stdout
 
 
+class ControlClient:
+    """Serialize commands and notifications on one tmux control client."""
+    def __init__(self, process, changed):
+        self.process = process
+        self.changed = changed
+        self.lock = threading.Lock()
+        self.pending = None
+        self.closed = False
+        self.ready = threading.Event()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        response = None
+        for raw in self.process.stdout:
+            line = raw.rstrip("\n")
+            if line.startswith("%begin "):
+                response = [] if self.pending else None
+            elif line.startswith(("%end ", "%error ")):
+                if response is not None and self.pending:
+                    self.pending.put((line.startswith("%end "), response))
+                    response = None
+                else:
+                    self.ready.set()
+            elif response is not None and not line.startswith("%"):
+                response.append(line)
+            elif line.startswith(("%sessions-changed", "%session-renamed", "%session-changed",
+                                  "%window-add", "%window-close", "%window-renamed",
+                                  "%unlinked-window-add", "%unlinked-window-close",
+                                  "%layout-change", "%client-session-changed")):
+                self.changed.put("tmux")
+        self.closed = True
+        if self.pending:
+            self.pending.put((False, ["tmux control client closed"]))
+        self.changed.put("closed")
+
+    def command(self, arguments):
+        with self.lock:
+            self.ready.wait()
+            if self.closed or self.process.poll() is not None:
+                raise RuntimeError("tmux control client closed")
+            reply = queue.Queue(maxsize=1)
+            self.pending = reply
+            try:
+                self.process.stdin.write(shlex.join(arguments) + "\n")
+                self.process.stdin.flush()
+                success, output = reply.get()
+            finally:
+                self.pending = None
+            if not success:
+                raise RuntimeError("\n".join(output) or "tmux command failed")
+            return output
+
+    def switch(self, target, client):
+        socket, pid, started, session_id = target
+        condition = ("#{&&:#{==:#{socket_path},%s},"
+                     "#{&&:#{==:#{pid},%s},"
+                     "#{&&:#{==:#{start_time},%s},"
+                     "#{==:#{session_id},%s}}}}" % target)
+        began = time.monotonic()
+        output = self.command([
+            "if-shell", "-t", session_id, "-F", condition,
+            shlex.join(["switch-client", "-c", client, "-t", session_id]),
+            "display-message -p FLEET_STALE"])
+        if output == ["FLEET_STALE"]:
+            raise RuntimeError("source or viewer client identity changed")
+        return time.monotonic() - began
+
+    def alan_target(self, actor):
+        name = "fleet@alan-" + alan.runtime_name(actor)
+        output = self.command([
+            "list-sessions", "-f", f"#{{==:#{{session_name}},{name}}}", "-F",
+            "#{q:socket_path} #{pid} #{start_time} #{q:session_id}"])
+        matches = [shlex.split(line) for line in output if line]
+        if len(matches) != 1 or len(matches[0]) != 4:
+            raise RuntimeError(f"Alan evaluator terminal is unavailable or ambiguous: {actor}")
+        socket, pid, started, session_id = matches[0]
+        return socket, int(pid), int(started), session_id
+
+
 def capture(key, columns=0, lines=0):
     if key.startswith("alan:"):
         addr = key.removeprefix("alan:")
@@ -140,7 +219,7 @@ def inventory(host):
     return sessions
 
 
-def event_stream(host, consumer=None):
+def event_stream(host, consumer=None, controls=None):
     changed = queue.Queue()
     alan = AlanWatcher(changed, consumer)
     if consumer:
@@ -178,16 +257,9 @@ def event_stream(host, consumer=None):
     process.stdin.write("refresh-client -f no-output\n")
     process.stdin.flush()
 
-    def topology():
-        assert process.stdout
-        for line in process.stdout:
-            if line.startswith(("%sessions-changed", "%session-renamed", "%session-changed",
-                                "%window-add", "%window-close", "%window-renamed",
-                                "%unlinked-window-add", "%unlinked-window-close",
-                                "%layout-change", "%client-session-changed")):
-                changed.put("tmux")
-        changed.put("closed")
-    threading.Thread(target=topology, daemon=True).start()
+    control = ControlClient(process, changed)
+    if controls is not None:
+        controls.put(control)
     previous = None
     force = False
     agent_cache = {}
