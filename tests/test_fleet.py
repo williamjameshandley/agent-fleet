@@ -1036,6 +1036,13 @@ class IdentityTests(unittest.TestCase):
             viewer.focus_projected(state, "main", "source-a")
         focus.assert_called_once_with("main", "boltzmann")
 
+    def test_project_skips_an_already_projected_source(self):
+        state = mock.Mock(source="source-a")
+        viewer.project(state, "source-a", 12.0)
+        state.open.assert_not_called()
+        viewer.project(state, "source-b", 13.0)
+        state.open.assert_called_once_with("source-b", 13.0)
+
     def test_dead_attachment_clears_the_advertised_source_without_an_open(self):
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         state.source = "source"
@@ -1743,8 +1750,8 @@ class IdentityTests(unittest.TestCase):
                              [root, child])
             self.assertIn("reload-sync(/usr/bin/cat", action)
             self.assertTrue(action.startswith("transform-header(/usr/bin/cat"))
-            self.assertIn("+unbind(focus)+reload-sync", action)
-            self.assertTrue(action.endswith("+rebind(focus)"))
+            self.assertNotIn("unbind(focus)", action)
+            self.assertTrue(action.endswith(")"))
             self.assertEqual(action.count("/usr/bin/rm -f"), 2)
             fleet.mutate_view(
                 f"fold\tclose\t{key}\t{fleet.view_revision}\t100")
@@ -1762,7 +1769,7 @@ class IdentityTests(unittest.TestCase):
             action = fleet.mutate_view(
                 f"fold\topen\talan:{root}\t{displayed}\t100")
         self.assertIn(root, fleet.expanded)
-        self.assertIn("unbind(focus)", action)
+        self.assertNotIn("unbind(focus)", action)
 
     def test_fold_rejections_preserve_state_and_are_visible_at_fzf(self):
         for case in ("missing", "non-parent"):
