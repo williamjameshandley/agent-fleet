@@ -91,7 +91,6 @@ def events(host):
 class Fleet:
     def __init__(self):
         self.sessions = {}
-        self.observations = {}
         self.graphs = {}
         self.observed = 0
         self._composed = (None, nx.MultiDiGraph())
@@ -164,7 +163,6 @@ class Fleet:
     def update_host(self, host, raw):
         sessions, usage, _, graph = decode_observation(raw)
         self.sessions[host] = sessions
-        self.observations[host] = raw
         self.graphs[host] = graph
         self.unavailable.discard(host)
         if host == hosts()[0] and usage:
@@ -207,7 +205,6 @@ class Fleet:
     async def host_disconnected(self, host):
         self.processes.pop(host, None)
         self.sessions.pop(host, None)
-        self.observations.pop(host, None)
         self.graphs.pop(host, None)
         self.unavailable.add(host)
         self.observed += 1

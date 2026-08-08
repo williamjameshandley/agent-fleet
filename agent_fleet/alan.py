@@ -170,6 +170,8 @@ def inventory(host, actor_descriptors):
 
 
 def projection_graph(graph):
+    if graph is None:
+        return None
     projected = nx.MultiDiGraph()
     projected.graph["actors"] = graph.graph.get("actors", [])
 
