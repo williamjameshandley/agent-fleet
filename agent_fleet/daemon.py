@@ -8,6 +8,7 @@ import subprocess
 import hashlib
 import time
 import threading
+from pathlib import Path
 
 import networkx as nx
 
@@ -213,6 +214,14 @@ class Fleet:
         elif request == "commander-context":
             payload = json.dumps(await self.commander_context(), sort_keys=True,
                                  separators=(",", ":"))
+        elif request.startswith("history-search "):
+            try:
+                query = json.loads(request.removeprefix("history-search "))
+                value = {"ok": True, "value": await self.search_history(query)}
+            except (KeyError, LookupError, OSError, RuntimeError, ValueError,
+                    json.JSONDecodeError) as error:
+                value = {"ok": False, "error": str(error)}
+            payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
         else:
             raise ValueError(f"unknown daemon request {request!r}")
         payload += "\n"
@@ -481,6 +490,50 @@ class Fleet:
         )
         return {"host": host, "actors": actors, "transcripts": transcripts}
 
+    async def search_observation(self, host, query):
+        return await self.remote_json(
+            host, sys.executable, "-c",
+            "import json,sys; from agent_fleet.alan import actors; "
+            "from agent_fleet.transcripts import search; "
+            "print(json.dumps({'actors': actors(), 'hits': search(sys.argv[1])}))",
+            query,
+        )
+
+    async def search_history(self, query):
+        if not isinstance(query, str) or not query:
+            raise ValueError("history search query is required")
+        source_hosts = sorted(hosts())
+        observations = await asyncio.gather(
+            *(self.search_observation(host, query) for host in source_hosts))
+        rows = []
+        for host, observation in zip(source_hosts, observations):
+            owners = {}
+            for actor in observation["actors"]:
+                if actor.get("kind") not in {"claude", "codex"}:
+                    continue
+                identity = actor["kind"], address_identity(actor["addr"], actor["kind"])
+                owners.setdefault(identity, []).append(actor)
+            for hit in observation["hits"]:
+                matches = owners.get((hit["agent"], hit["session_id"]), [])
+                if len(matches) > 1:
+                    addresses = ", ".join(sorted(actor["addr"] for actor in matches))
+                    raise RuntimeError(
+                        f"ambiguous {hit['agent']} transcript ownership "
+                        f"{hit['session_id']}: {addresses}"
+                    )
+                if matches:
+                    actor = matches[0]
+                    source = f"alan:{actor['addr']}"
+                    name = actor.get("label") or actor["addr"]
+                    lifecycle = actor.get("state") or ""
+                else:
+                    source = f"{host}:{hit['agent']}:{hit['session_id']}"
+                    name = Path(hit["cwd"]).name or hit["agent"]
+                    lifecycle = "standalone"
+                rows.append({**hit, "host": host, "source": source,
+                             "name": name, "lifecycle": lifecycle})
+        return rows
+
     @staticmethod
     def history_entries(sessions, source_hosts, observations):
         live = {(item["host"], item["agent"], item.get("transcript_id"))
@@ -488,12 +541,14 @@ class Fleet:
         authorities = set(live)
         entries = []
         for host, observation in zip(source_hosts, observations):
+            claimed = {}
             for actor in observation["actors"]:
-                native_id = actor.get("native_id") or address_identity(
-                    actor["addr"], actor.get("kind"))
+                native_id = address_identity(actor["addr"], actor.get("kind"))
                 identity = host, actor.get("kind"), native_id
                 retained = (actor.get("kind") == "llm" or
                             actor.get("kind") in {"claude", "codex"})
+                if native_id:
+                    claimed.setdefault(identity, []).append(actor["addr"])
                 if retained and actor.get("state") in {"retired", "unavailable"}:
                     if native_id:
                         authorities.add(identity)
@@ -503,6 +558,14 @@ class Fleet:
                                     "cwd": actor.get("cwd") or "",
                                     "mtime": max(actor.get("human_activity", 0),
                                                  actor.get("created", 0))})
+            duplicates = {identity: addresses for identity, addresses in claimed.items()
+                          if len(addresses) > 1}
+            if duplicates:
+                identity, addresses = next(iter(duplicates.items()))
+                raise RuntimeError(
+                    f"ambiguous {identity[1]} transcript ownership {identity[2]}: "
+                    + ", ".join(sorted(addresses)))
+            authorities.update(claimed)
             for item in observation["transcripts"]:
                 if (host, item["agent"], item["session_id"]) not in authorities:
                     entries.append({"key": f'{host}:{item["agent"]}:{item["session_id"]}',
@@ -573,6 +636,15 @@ def preview(key, columns=0, lines=0):
 
 def commander_context():
     return request("commander-context")
+
+
+def history_search(query):
+    response = json.loads(request("history-search " + json.dumps(query)))
+    if set(response) == {"ok", "error"} and response["ok"] is False:
+        raise RuntimeError(response["error"])
+    if set(response) != {"ok", "value"} or response["ok"] is not True:
+        raise RuntimeError("invalid Fleet history search response")
+    return response["value"]
 
 
 def action(envelope):

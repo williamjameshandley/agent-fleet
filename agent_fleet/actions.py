@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .config import hosts
 from .remote import find
-from .daemon import action as fleet_action, commander_context as commander_projection, preview as pane_preview, snapshot
+from .daemon import action as fleet_action, commander_context as commander_projection, history_search, preview as pane_preview, snapshot
 from .protocol import decode_message
 from . import viewer
 from . import workstation
@@ -143,6 +143,21 @@ def open_history(key):
     name = "" if key.startswith("alan:") else desktop_input("new session name")
     value = fleet_action({"operation": "restore", "history": key, "name": name})
     viewer.open_main(value["source"])
+
+
+def search_history(query):
+    return [(
+        item["source"], item["host"], item["agent"], item["name"],
+        f"{item['path']}:{item['line']}", item["role"], item["cwd"],
+        " ".join(item["text"].split()),
+    ) for item in history_search(query)]
+
+
+def search_history_prompt():
+    query = muster_input("search", title="Search history")
+    if query:
+        from .ui import search_history as show
+        show(query)
 
 
 def arrive(profile, available=False):

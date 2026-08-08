@@ -16,7 +16,7 @@ from .model import ServerRef, Session, SessionRef
 from .agent import observe
 from .config import RUNTIME
 from .alan import Watcher as AlanWatcher, inventory as alan_inventory
-from . import alan
+from . import alan, transcripts as native_transcripts
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
 
@@ -199,7 +199,7 @@ def event_stream(host, consumer=None):
             alan_error = alan.error
             current = inventory(host) + alan_inventory(host, alan.actors)
             try:
-                current = observe(current)
+                current = observe(current, native_transcripts.catalog())
                 agent_cache = {session.ref: session for session in current}
             except RuntimeError as error:
                 print(f"agent adapter: {error}", file=sys.stderr, flush=True)

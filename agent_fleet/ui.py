@@ -135,9 +135,25 @@ def history():
         "fzf", "--track", "--delimiter=\t", "--with-nth=2..",
         f"--color={FZF_COLOUR}",
         "--id-nth=1", "--layout=reverse", "--no-sort", "--no-multi",
-        "--header=History  Enter open  Tab live",
+        "--header=History  Enter open  s search  Tab live",
         "--bind=enter:execute-silent(/usr/lib/agent-fleet/ui open-history {1})+reload-sync(/usr/lib/agent-fleet/ui history-rows)",
+        "--bind=s:execute(/usr/lib/agent-fleet/ui search-history)",
         "--bind=tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:live)",
         "--bind=shift-tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:live)",
     ]
     os.execvp(command[0], command)
+
+
+def search_history(query):
+    command = [
+        "fzf", "--track", "--delimiter=\t", "--with-nth=2..",
+        f"--color={FZF_COLOUR}", "--id-nth=1", "--layout=reverse",
+        "--no-sort", "--no-multi", "--header=Search history  Enter open",
+    ]
+    rows = subprocess.run(
+        ["/usr/lib/agent-fleet/ui", "search-history-rows", query],
+        text=True, capture_output=True, check=True).stdout
+    selected = subprocess.run(command, input=rows, text=True, capture_output=True)
+    if selected.returncode == 0:
+        from .actions import open_history
+        open_history(selected.stdout.split("\t", 1)[0])

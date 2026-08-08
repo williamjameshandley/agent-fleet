@@ -110,15 +110,62 @@ class CommanderContextTests(unittest.TestCase):
              "label": "work", "cwd": "/work", "created": 2,
              "human_activity": 4, "native_id": "persisted-native-id"},
         ], "transcripts": [{
-            "agent": "codex", "session_id": "persisted-native-id", "mtime": 4,
+            "agent": "codex", "session_id": identity, "mtime": 4,
             "name": "duplicate", "cwd": "/work",
         }]}]
-        fallback = lambda _addr, kind: "" if kind == "llm" else self.fail(
-            "Codex native identity was not propagated")
-        with mock.patch("agent_fleet.daemon.address_identity", side_effect=fallback):
-            history = Fleet.history_entries([], ["newton"], observations)
+        history = Fleet.history_entries([], ["newton"], observations)
         self.assertEqual([item["key"] for item in history], [
             f"alan:codex-{identity}@lovelace", "alan:llm-review@lovelace"])
+
+    def test_mdjudge_search_joins_exact_retired_tablet_actor(self):
+        identity = "00000000-0000-4000-8000-000000000001"
+        actor = f"codex-{identity}@lovelace"
+        fleet = Fleet()
+
+        async def observation(host, query):
+            self.assertEqual((host, query), ("lovelace", "mdjudge"))
+            return {"actors": [{
+                "addr": actor, "kind": "codex", "state": "retired",
+                "label": "tablet", "cwd": "/work",
+            }], "hits": [{
+                "agent": "codex", "session_id": identity,
+                "path": "/native/rollout.jsonl", "line": 9, "role": "user",
+                "cwd": "/work", "text": "build mdjudge",
+            }]}
+
+        fleet.search_observation = observation
+        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]):
+            [result] = asyncio.run(fleet.search_history("mdjudge"))
+        self.assertEqual(result["source"], f"alan:{actor}")
+        self.assertEqual(result["name"], "tablet")
+        self.assertEqual(result["lifecycle"], "retired")
+
+    def test_unowned_search_hit_remains_standalone_provider_history(self):
+        fleet = Fleet()
+        fleet.search_observation = mock.AsyncMock(return_value={
+            "actors": [], "hits": [{
+                "agent": "claude", "session_id": "full-id", "path": "/native/a.jsonl",
+                "line": 2, "role": "assistant", "cwd": "/work", "text": "topic",
+            }]})
+        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]):
+            [result] = asyncio.run(fleet.search_history("topic"))
+        self.assertEqual(result["source"], "lovelace:claude:full-id")
+        self.assertEqual(result["lifecycle"], "standalone")
+
+    def test_multiple_actors_claiming_search_identity_fail_visibly(self):
+        fleet = Fleet()
+        identity = "00000000-0000-4000-8000-000000000001"
+        fleet.search_observation = mock.AsyncMock(return_value={
+            "actors": [
+                {"addr": f"codex-{identity}@lovelace", "kind": "codex"},
+                {"addr": f"codex-{identity}@newton", "kind": "codex"},
+            ], "hits": [{"agent": "codex", "session_id": identity,
+                          "path": "/native/a", "line": 1, "role": "user",
+                          "cwd": "/work", "text": "topic"}],
+        })
+        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]), \
+             self.assertRaisesRegex(RuntimeError, "ambiguous codex transcript ownership"):
+            asyncio.run(fleet.search_history("topic"))
 
 
 class ProposalTests(unittest.TestCase):
