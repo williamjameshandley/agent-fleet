@@ -6,7 +6,7 @@ if [ "$slot" = main ]; then
     if [ "$(hostname -s)" != lovelace ]; then
         exec ssh -tt -o BatchMode=yes lovelace fleet-viewer main
     fi
-    if tmux has-session -t fleet@main 2>/dev/null && ! python -c 'from agent_fleet.viewer import exchange; print(exchange("main", "STATUS"))' >/dev/null 2>&1; then
+    if tmux has-session -t fleet@main 2>/dev/null && ! printf 'STATUS\n' | /usr/bin/nc -U "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet/viewer-main.sock" >/dev/null 2>&1; then
         tmux kill-session -t fleet@main
     fi
     if ! tmux has-session -t fleet@main 2>/dev/null; then

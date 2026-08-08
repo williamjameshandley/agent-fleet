@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+[ "$#" -eq 5 ] || exit 2
+socket=$1 pid=$2 started=$3 session=$4 client=$5
+read -r began _ < /proc/uptime
+condition='#{&&:#{==:#{socket_path},'"$socket"'},#{&&:#{==:#{pid},'"$pid"'},#{&&:#{==:#{start_time},'"$started"'},#{==:#{session_id},'"$session"'}}}}'
+result=$(/usr/bin/tmux -N if-shell -t "$session" -F "$condition" \
+    "switch-client -c $(printf %s "$client" | sed "s/'/'\\\\''/g; s/^/'/; s/$/'/") -t $(printf %s "$session" | sed "s/'/'\\\\''/g; s/^/'/; s/$/'/")" \
+    'display-message -p FLEET_STALE')
+[ "$result" != FLEET_STALE ] || { echo 'source or viewer client identity changed' >&2; exit 1; }
+read -r ended _ < /proc/uptime
+awk "BEGIN { printf \"%.6f\\n\", $ended - $began }"

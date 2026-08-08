@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+[ "$#" -eq 1 ] || exit 2
+slot=$1
+case "$slot" in *[!A-Za-z0-9_-]*|'') exit 2;; esac
+runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet
+printf 'STATUS\n' | /usr/bin/nc -U "$runtime/viewer-$slot.sock"

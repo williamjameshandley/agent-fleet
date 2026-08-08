@@ -25,11 +25,11 @@ def python_console(actor, connection_file):
     console.start()
 
 
-def attach(actor, descriptor):
+def target(actor, descriptor):
     name = "fleet@alan-" + alan.runtime_name(actor)
-    target = "=" + name
+    exact = "=" + name
     exists = subprocess.run(
-        ["/usr/bin/tmux", "-N", "has-session", "-t", target],
+        ["/usr/bin/tmux", "-N", "has-session", "-t", exact],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -51,7 +51,12 @@ def attach(actor, descriptor):
                        check=True)
     subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "status", "on"],
                    check=True)
-    os.execvp("/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", target])
+    return exact
+
+
+def attach(actor, descriptor):
+    exact = target(actor, descriptor)
+    os.execvp("/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", exact])
 
 
 def close(actor):

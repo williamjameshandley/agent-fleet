@@ -14,7 +14,7 @@ def main(argv=None):
 
     import argparse
 
-    from . import actions, ui, viewer
+    from . import actions, ui
 
     parser = argparse.ArgumentParser(prog="/usr/lib/agent-fleet/ui")
     commands = parser.add_subparsers(required=True)
@@ -37,9 +37,6 @@ def main(argv=None):
             "\n".join("\t".join(row) for row in actions.history())
         ),
     )
-    item = command("show", lambda args: viewer.show(args.key, args.slot))
-    item.add_argument("key")
-    item.add_argument("--slot")
     command("create-tab", lambda _: actions.create_tab())
     command("create", lambda _: actions.create_prompt())
     item = command("rename-tab", lambda args: actions.rename_tab(args.key))

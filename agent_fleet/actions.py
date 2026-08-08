@@ -125,7 +125,7 @@ def next_waiting():
         subprocess.run(["/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
                         "No waiting sessions"])
         return
-    viewer.show(key, "main")
+    viewer.open_main(key)
 
 
 def preview(key, columns=0, lines=0):

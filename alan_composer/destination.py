@@ -29,9 +29,7 @@ def capture():
     if not instance.startswith("fleet-") or instance in {"fleet-muster", "fleet-commander"}:
         return None
     slot = instance.removeprefix("fleet-")
-    command = ["python", "-c",
-               "import sys; from agent_fleet.viewer import exchange; print(exchange(sys.argv[1], 'STATUS'))",
-               slot]
+    command = ["/usr/lib/agent-fleet/fleet-status", slot]
     if slot == "main" and os.uname().nodename.split(".", 1)[0] != HUB:
         command = _remote(HUB, command)
     status = subprocess.run(command, capture_output=True, text=True)
