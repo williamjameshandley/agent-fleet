@@ -64,6 +64,19 @@ def all_transcripts(agent=None):
     return sorted(found, key=lambda item: item.mtime, reverse=True)
 
 
+def catalog():
+    result = {}
+    for item in all_transcripts():
+        key = item.agent, item.session_id
+        if key in result:
+            raise ValueError(
+                f"duplicate {item.agent} transcript identity {item.session_id}: "
+                f"{result[key].path} and {item.path}"
+            )
+        result[key] = item
+    return result
+
+
 def find(session_id, agent=None):
     matches = [item for item in all_transcripts(agent)
                if item.session_id.startswith(session_id)]
@@ -84,12 +97,7 @@ def verify(agent, session_id):
 
 def history(limit=100):
     rows = []
-    seen = set()
-    for item in all_transcripts():
-        key = item.agent, item.session_id
-        if key in seen:
-            continue
-        seen.add(key)
+    for item in sorted(catalog().values(), key=lambda value: value.mtime, reverse=True):
         cwd = item.cwd() or str(Path.home())
         name = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(cwd).name).strip("-")
         rows.append({"agent": item.agent, "session_id": item.session_id,
@@ -97,6 +105,38 @@ def history(limit=100):
                      "name": name or f"{item.agent}-{item.session_id[:8]}"})
         if len(rows) == limit:
             break
+    return rows
+
+
+def search(query):
+    query = query.casefold()
+    rows = []
+    for item in catalog().values():
+        cwd = ""
+        matches = []
+        with item.path.open() as stream:
+            for line_number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                if item.agent == "claude" and not cwd and "cwd" in event:
+                    cwd = event["cwd"]
+                elif (item.agent == "codex" and not cwd
+                      and event.get("type") == "session_meta"):
+                    cwd = event["payload"]["cwd"]
+                for role in ("user", "assistant"):
+                    text = event_text(item.agent, event, role)
+                    if text and query in text.casefold():
+                        matches.append({
+                            "agent": item.agent,
+                            "session_id": item.session_id,
+                            "path": str(item.path),
+                            "line": line_number,
+                            "role": role,
+                            "text": text,
+                        })
+                        break
+        rows.extend({**match, "cwd": cwd} for match in matches)
     return rows
 
 
@@ -150,27 +190,22 @@ def render_preview(item, columns=0, lines=0):
     return rendered + ("\n" if rendered else "")
 
 
-def native_evidence(native):
-    path = Path(native["path"])
-    if not path.exists():
-        raise RuntimeError(f"{native['kind']} native evidence disappeared: {path}")
-    return transcript(native["kind"], path)
-
-
 def reverse_events(path):
-    with open(path, "rb") as stream, mmap.mmap(
-            stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-        end = len(data)
-        while end > 0:
-            start = data.rfind(b"\n", 0, end)
-            if start < 0:
-                line = data[:end]
-                end = 0
-            else:
-                line = data[start + 1:end]
-                end = start
-            if line:
-                yield json.loads(line)
+    with open(path, "rb") as stream:
+        if os.fstat(stream.fileno()).st_size == 0:
+            return
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            end = len(data)
+            while end > 0:
+                start = data.rfind(b"\n", 0, end)
+                if start < 0:
+                    line = data[:end]
+                    end = 0
+                else:
+                    line = data[start + 1:end]
+                    end = start
+                if line:
+                    yield json.loads(line)
 
 
 def last_event_time(path):
@@ -204,19 +239,21 @@ def latest_assistant_text(item):
     return ""
 
 
-def native_transcript(session):
-    if session.ref.server.kind != "alan" or not session.transcript_path:
-        return None
-    path = Path(session.transcript_path)
-    return transcript(session.agent, path) if path.exists() else None
-
-
-def native_summary(session):
-    item = native_transcript(session)
-    return (replace(session,
-                    summary=latest_assistant_text(item),
-                    human_activity=max(session.human_activity, last_human_time(item)))
-            if item else session)
+def project_native(sessions, transcripts=None):
+    transcripts = catalog() if transcripts is None else transcripts
+    result = []
+    for session in sessions:
+        if session.ref.server.kind != "alan" or session.agent not in AGENTS:
+            result.append(session)
+            continue
+        item = transcripts.get((session.agent, session.transcript_id))
+        result.append(replace(
+            session, transcript_path=str(item.path) if item else "",
+            summary=latest_assistant_text(item) if item else "",
+            human_activity=max(session.human_activity, last_human_time(item))
+            if item else session.human_activity,
+        ))
+    return result
 
 
 def codex_state(item):
@@ -293,7 +330,8 @@ def indexed_claude_agents(output):
     return {item["pid"]: item for item in json.loads(output) if item.get("pid") is not None}
 
 
-def observe(sessions):
+def observe(sessions, transcripts=None):
+    sessions = project_native(sessions, transcripts)
     claude = indexed_claude_agents(subprocess.run(
         ["claude", "agents", "--json"], text=True, capture_output=True,
         check=True).stdout)
@@ -349,7 +387,7 @@ def observe(sessions):
     for session in sessions:
         row = by_session.get(session.ref.session_id)
         if not row:
-            result.append(native_summary(session))
+            result.append(session)
         elif counts[session.ref.session_id] > 1:
             count = counts[session.ref.session_id]
             result.append(replace(session, agent_name="multiple",

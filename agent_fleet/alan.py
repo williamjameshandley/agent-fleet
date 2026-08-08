@@ -81,15 +81,6 @@ def _timestamp(value):
     return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
 
 
-def provider_identity(addr, kind):
-    if kind not in {"claude", "codex"}:
-        return ""
-    binding = native_dir(addr) / "thread_id"
-    if binding.exists():
-        return binding.read_text().strip()
-    return address_identity(addr, kind)
-
-
 def address_identity(addr, kind):
     if kind not in {"claude", "codex"}:
         return ""
@@ -133,7 +124,7 @@ def actors(graph=None):
 
         descriptor["created"] = _timestamp(stream[0][1]["time"]) if stream else 0
         descriptor["label"] = label(addr)
-        descriptor["native_id"] = provider_identity(addr, descriptor["kind"])
+        descriptor["native_id"] = address_identity(addr, descriptor["kind"])
         working = descriptor["state"] == "working"
         descriptor["active_evaluation"] = active if working else None
         descriptor["evaluation_started"] = active_started if working else 0
@@ -153,10 +144,7 @@ def inventory(host, actor_descriptors):
     for actor in actor_descriptors:
         if actor["state"] in {"retired", "unavailable"}:
             continue
-        native = actor.get("native") or {}
-        transcript_id = actor.get("native_id") or provider_identity(
-            actor["addr"], actor["kind"])
-        transcript_path = native.get("path", "") if transcript_id else ""
+        transcript_id = address_identity(actor["addr"], actor["kind"])
         sessions.append(Session(
             SessionRef(source, actor["addr"]), actor.get("label") or label(actor["addr"]),
             actor["created"], 0, 0, 1, "alan", "",
@@ -164,7 +152,7 @@ def inventory(host, actor_descriptors):
             actor.get("summary") or actor.get("last_error", ""), 0,
             transcript_id,
             actor["human_activity"], actor.get("active_evaluation") or "",
-            actor["evaluation_started"], transcript_path))
+            actor["evaluation_started"], ""))
     return sessions
 
 

@@ -3,8 +3,8 @@ from unittest import mock
 
 import agent_fleet.transcripts as transcripts
 from agent_fleet.transcripts import (PANE_FORMAT, indexed_claude_agents, last_human_time,
-                                    latest_assistant_text, native_transcript, preview,
-                                    select_codex, transcript, verify)
+                                    latest_assistant_text, preview,
+                                    project_native, select_codex, transcript, verify)
 from agent_fleet.model import ServerRef, Session, SessionRef
 
 
@@ -46,6 +46,44 @@ def test_transcript_identity_comes_from_rollout_filename(tmp_path):
     path = tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
     rollout(path, "00000000-0000-0000-0000-000000000001")
     assert transcript("codex", path).session_id == "00000000-0000-0000-0000-000000000001"
+
+
+def test_catalog_rejects_duplicate_full_provider_identity(tmp_path, monkeypatch):
+    identity = "00000000-0000-0000-0000-000000000001"
+    first = tmp_path / f"one-{identity}.jsonl"
+    second = tmp_path / f"two-{identity}.jsonl"
+    first.write_text("{}\n")
+    second.write_text("{}\n")
+    items = [transcript("claude", first), transcript("claude", second)]
+    monkeypatch.setattr(transcripts, "all_transcripts", lambda agent=None: items)
+    with __import__("pytest").raises(ValueError, match="duplicate claude transcript identity"):
+        transcripts.catalog()
+
+
+def test_search_is_literal_case_insensitive_and_one_hit_per_message(tmp_path, monkeypatch):
+    identity = "00000000-0000-0000-0000-000000000001"
+    path = tmp_path / f"rollout-{identity}.jsonl"
+    events = [
+        {"type": "session_meta", "payload": {"cwd": "/srv/mdjudge"}},
+        {"type": "event_msg", "payload": {
+            "type": "user_message", "message": "MDJudge then mdjudge"}},
+        {"type": "event_msg", "payload": {
+            "type": "agent_message", "message": "unrelated"}},
+    ]
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    monkeypatch.setattr(transcripts, "all_transcripts",
+                        lambda agent=None: [transcript("codex", path)])
+
+    assert transcripts.search("mdjudge") == [{
+        "agent": "codex", "session_id": identity, "path": str(path),
+        "line": 2, "role": "user", "cwd": "/srv/mdjudge",
+        "text": "MDJudge then mdjudge",
+    }]
+
+    with path.open("a") as stream:
+        stream.write(json.dumps({"type": "event_msg", "payload": {
+            "type": "agent_message", "message": "new mdjudge result"}}) + "\n")
+    assert [hit["line"] for hit in transcripts.search("mdjudge")] == [2, 4]
 
 
 def test_archive_verifies_the_full_transcript_identity(monkeypatch):
@@ -127,45 +165,60 @@ def test_latest_assistant_text_reads_backwards_from_native_transcript(tmp_path):
     assert latest_assistant_text(transcript("codex", path)) == "latest reply"
 
 
-def test_alan_transcript_uses_the_recorded_native_path(tmp_path):
-    identity = "00000000-0000-0000-0000-000000000001"
-    path = tmp_path / f"{identity}.jsonl"
-    path.write_text("{}\n")
-    source = ServerRef("newton", "", 0, 0, "alan")
-    session = Session(SessionRef(source, "claude-1"), "work", 1, 0, 0, 1,
-                      "tmux", "work", "/work", "claude", "waiting",
-                      transcript_id=identity, transcript_path=str(path))
-    assert native_transcript(session).path == path
+def test_attribution_and_sglang2_recover_summary_recency_and_path_by_full_id(tmp_path):
+    source = ServerRef("lovelace", "", 0, 0, "alan")
+    sessions = []
+    native = {}
+    for offset, name in enumerate(("attribution", "sglang2"), 1):
+        identity = f"00000000-0000-0000-0000-{offset:012d}"
+        actor = f"codex-{identity}@lovelace"
+        path = tmp_path / f"rollout-{identity}.jsonl"
+        path.write_text("".join(json.dumps(event) + "\n" for event in [
+            {"type": "event_msg", "timestamp": f"2026-07-20T10:00:0{offset}Z",
+             "payload": {"type": "user_message", "message": name}},
+            {"type": "event_msg", "payload": {
+                "type": "agent_message", "message": f"{name} summary"}},
+        ]))
+        sessions.append(Session(
+            SessionRef(source, actor), name, 1, 0, 0, 1, "alan", "", "/work",
+            "codex", "waiting", transcript_id=identity))
+        native[("codex", identity)] = transcript("codex", path)
+
+    projected = project_native(sessions, native)
+
+    assert [item.summary for item in projected] == [
+        "attribution summary", "sglang2 summary"]
+    assert all(item.human_activity > 0 for item in projected)
+    assert [item.transcript_path for item in projected] == [
+        str(item.path) for item in native.values()]
 
 
-def test_alan_native_activity_advances_fleet_recency(tmp_path):
-    identity = "00000000-0000-0000-0000-000000000001"
-    path = tmp_path / f"rollout-{identity}.jsonl"
-    path.write_text(json.dumps({
-        "type": "event_msg",
-        "timestamp": "2026-07-20T10:00:00Z",
-        "payload": {"type": "user_message", "message": "current prompt"},
-    }) + "\n")
+def test_unmatched_alan_provider_has_no_invented_summary_or_path():
     source = ServerRef("newton", "", 0, 0, "alan")
     session = Session(SessionRef(source, "codex-1"), "work", 1, 0, 0, 1,
                       "alan", "", "/work", "codex", "waiting",
-                      transcript_id=identity, human_activity=2,
-                      transcript_path=str(path))
+                      summary="Alan output is not a provider summary",
+                      transcript_id="missing", transcript_path="/obsolete/path")
+    [projected] = project_native([session], {})
+    assert projected.summary == ""
+    assert projected.transcript_path == ""
 
-    projected = transcripts.native_summary(session)
 
-    assert projected.human_activity == 1784541600
+def test_empty_native_transcript_projects_blank_state(tmp_path):
+    identity = "00000000-0000-0000-0000-000000000001"
+    path = tmp_path / f"rollout-{identity}.jsonl"
+    path.touch()
+    item = transcript("codex", path)
+    source = ServerRef("newton", "", 0, 0, "alan")
+    session = Session(SessionRef(source, "codex-1"), "work", 1, 0, 0, 1,
+                      "alan", "", "/work", "codex", "waiting",
+                      summary="stale", transcript_id=identity)
 
+    [projected] = project_native([session], {("codex", identity): item})
 
-def test_native_evidence_uses_the_recorded_non_default_path(tmp_path):
-    path = tmp_path / "private-corpus" / "rollout-thread-1.jsonl"
-    path.parent.mkdir()
-    path.write_text("{}\n")
-    item = transcripts.native_evidence({
-        "kind": "codex",
-        "path": str(path),
-    })
-    assert item.path == path
+    assert projected.summary == ""
+    assert projected.human_activity == 0
+    assert projected.transcript_path == str(path)
 
 
 def test_preview_renders_recent_native_conversation(tmp_path, monkeypatch):

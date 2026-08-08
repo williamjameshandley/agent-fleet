@@ -31,6 +31,12 @@ def main(argv=None):
     item.add_argument("key")
     command("muster", lambda _: ui.muster())
     command("history-ui", lambda _: ui.history())
+    command("search-history", lambda _: actions.search_history_prompt())
+    item = command(
+        "search-history-rows",
+        lambda args: print("\n".join("\t".join(row) for row in actions.search_history(args.query))),
+    )
+    item.add_argument("query")
     command(
         "history-rows",
         lambda _: print(
