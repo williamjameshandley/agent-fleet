@@ -15,7 +15,8 @@ from watchfiles import watch
 from .model import ServerRef, Session, SessionRef
 from .agent import observe
 from .config import RUNTIME
-from .alan import Watcher as AlanWatcher, inventory as alan_inventory
+from .alan import (Watcher as AlanWatcher, inventory as alan_inventory,
+                   projection_graph as alan_projection_graph)
 from . import alan, transcripts as native_transcripts
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
@@ -258,7 +259,10 @@ def event_stream(host, consumer=None, controls=None, changed=None):
     if paths:
         def transcripts():
             quota_path = RUNTIME / "quota.changed"
-            for changes in watch(*paths):
+            # One transcript event publishes a full host inventory. Group the
+            # short pauses between streamed token writes instead of promoting
+            # each burst into a Fleet-wide update.
+            for changes in watch(*paths, step=200):
                 events = {watched_event(path, transcript_roots, quota_path)
                           for _, path in changes}
                 for event in events - {None}:
@@ -313,7 +317,7 @@ def event_stream(host, consumer=None, controls=None, changed=None):
                            for session in current]
             serial = tuple(current)
             if serial != previous or force:
-                yield current, graph
+                yield current, alan_projection_graph(graph)
                 previous = serial
                 force = False
                 for barrier in barriers:

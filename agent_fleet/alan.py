@@ -169,6 +169,29 @@ def inventory(host, actor_descriptors):
     return sessions
 
 
+def projection_graph(graph):
+    projected = nx.MultiDiGraph()
+    projected.graph["actors"] = graph.graph.get("actors", [])
+
+    def add_reference(reference):
+        stream = graph.nodes[reference].get("stream")
+        projected.add_node(reference, **({"stream": stream}
+                                         if stream is not None else {}))
+
+    for source, target, relation in graph.edges(keys=True):
+        if relation not in {"spawn", "send", "reply"}:
+            continue
+        add_reference(source)
+        add_reference(target)
+        projected.add_edge(source, target, key=relation)
+    fields = {"op", "to", "reply", "stream", "time", "payload"}
+    for reference, operation in graph.nodes(data=True):
+        if operation.get("op") == "send":
+            projected.add_node(reference, **{
+                key: operation[key] for key in fields if key in operation})
+    return projected
+
+
 def project(sessions, graph, expanded=(), show_python=False):
     descriptors = {actor["addr"]: actor for actor in graph.graph.get("actors", [])}
     ancestry = nx.DiGraph()
