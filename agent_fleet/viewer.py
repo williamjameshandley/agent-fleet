@@ -441,6 +441,12 @@ class Attachment:
             self.cancel_daemon_forward()
 
 
+def focus_projected(state, slot, key):
+    if state.source != key:
+        raise RuntimeError(f"Main projects {state.source or 'nothing'}, not {key}")
+    focus(slot, state.workstation)
+
+
 def activate(state, slot, key, selected=None):
     state.open(key, selected)
     try:
@@ -497,6 +503,13 @@ def serve(slot):
                             path.unlink(missing_ok=True)
                             connection.sendall(b"OK\n")
                             return
+                        elif message.startswith("FOCUS "):
+                            focus_projected(state, slot, message.removeprefix("FOCUS "))
+                        elif message.startswith("PROJECT "):
+                            values = message.removeprefix("PROJECT ").split(" ", 1)
+                            key = values[0]
+                            selected = values[1] if len(values) == 2 else ""
+                            state.open(key, float(selected) if selected else None)
                         elif message.startswith("OPEN "):
                             values = message.removeprefix("OPEN ").split(" ", 1)
                             key = values[0]

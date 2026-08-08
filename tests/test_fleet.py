@@ -671,6 +671,62 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual((operation, actual), ("OPEN", key))
         self.assertGreater(float(selected), 0)
 
+    def test_fzf_project_adapter_sends_one_exact_timed_socket_request(self):
+        root = Path(__file__).parents[1]
+        key = "newton:/tmp/tmux-1000/default:12:10:$1"
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            socket_dir = runtime / "agent-fleet"
+            socket_dir.mkdir()
+            path = socket_dir / "viewer-main.sock"
+            received = []
+            ready = threading.Event()
+
+            def answer():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(path)); server.listen(); ready.set()
+                    connection, _ = server.accept()
+                    with connection:
+                        received.append(connection.makefile().readline().strip())
+                        connection.sendall(b"OK\n")
+
+            thread = threading.Thread(target=answer); thread.start(); ready.wait(1)
+            result = subprocess.run([root / "fleet-open", "project", "main", key],
+                                    env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
+                                    text=True, capture_output=True)
+            thread.join(1)
+        self.assertEqual(result.returncode, 0)
+        operation, actual, selected = received[0].split(" ")
+        self.assertEqual((operation, actual), ("PROJECT", key))
+        self.assertGreater(float(selected), 0)
+
+    def test_fzf_focus_adapter_focuses_without_a_source(self):
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            socket_dir = runtime / "agent-fleet"
+            socket_dir.mkdir()
+            path = socket_dir / "viewer-main.sock"
+            received = []
+            ready = threading.Event()
+
+            def answer():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(path)); server.listen(); ready.set()
+                    connection, _ = server.accept()
+                    with connection:
+                        received.append(connection.makefile().readline().strip())
+                        connection.sendall(b"OK\n")
+
+            thread = threading.Thread(target=answer); thread.start(); ready.wait(1)
+            key = "newton:/tmp/tmux-1000/default:12:10:$1"
+            result = subprocess.run([root / "fleet-open", "focus", "main", key],
+                                    env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
+                                    text=True, capture_output=True)
+            thread.join(1)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(received, [f"FOCUS {key}"])
+
     def test_public_show_api_places_an_explicit_named_slot(self):
         with mock.patch.object(viewer, "slots", return_value=[("main", "old")]), \
              mock.patch.object(viewer, "request") as request:
@@ -916,6 +972,15 @@ class IdentityTests(unittest.TestCase):
         state.open.assert_called_once_with("source", 12.0)
         self.assertEqual(error, "Focus failed: no display")
         report.assert_not_called()
+
+    def test_focus_requires_the_selected_source_to_be_projected(self):
+        state = mock.Mock(source="source-a", workstation="boltzmann")
+        with mock.patch.object(viewer, "focus") as focus:
+            with self.assertRaisesRegex(RuntimeError, "source-a, not source-b"):
+                viewer.focus_projected(state, "main", "source-b")
+            focus.assert_not_called()
+            viewer.focus_projected(state, "main", "source-a")
+        focus.assert_called_once_with("main", "boltzmann")
 
     def test_dead_attachment_clears_the_advertised_source_without_an_open(self):
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
@@ -1537,7 +1602,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_muster_always_opens_the_global_main_viewer(self):
         source = (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text()
-        self.assertIn("exec /usr/lib/agent-fleet/fleet-open main {1}", source)
+        self.assertIn("focus:execute-silent(exec /usr/lib/agent-fleet/fleet-open project main {1})", source)
+        self.assertIn("enter:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})", source)
         self.assertNotIn("/usr/lib/agent-fleet/ui show", source)
         self.assertIn("load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)", source)
         self.assertIn('"--no-sort"', source)
@@ -1550,6 +1616,8 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("h:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header", source)
         self.assertIn("p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header", source)
         self.assertIn('"--footer-border=bottom"', source)
+        self.assertNotIn('"--preview=', source)
+        self.assertNotIn('"--preview-window=', source)
 
     def test_muster_projects_recursive_folds_and_python_independently(self):
         root = "codex-root@newton"
@@ -1809,7 +1877,7 @@ class IdentityTests(unittest.TestCase):
                         return_value=os.terminal_size((100, 24))):
             self.assertEqual(
                 footer(),
-                "Enter open  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
+                "Enter view  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
 
     def test_column_header_renders_the_exact_icon_bytes(self):
         from agent_fleet.render import column_header

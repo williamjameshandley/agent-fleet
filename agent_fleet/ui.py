@@ -85,9 +85,9 @@ def muster():
         "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,h,j,k,l,p)",
         "--bind=j:down,k:up",
         "--bind=load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)",
-        "--bind=enter:execute-silent(exec /usr/lib/agent-fleet/fleet-open main {1})",
-        "--bind=left-click:execute-silent(exec /usr/lib/agent-fleet/fleet-open main {1})",
-        "--bind=double-click:execute-silent(exec /usr/lib/agent-fleet/fleet-open main {1})",
+        "--bind=focus:execute-silent(exec /usr/lib/agent-fleet/fleet-open project main {1})",
+        "--bind=enter:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})",
+        "--bind=double-click:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})",
         "--bind=c:execute-silent(/usr/lib/agent-fleet/ui create-tab)",
         "--bind=r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})",
         "--bind=R:execute-silent(/usr/lib/agent-fleet/ui refresh {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
@@ -97,8 +97,6 @@ def muster():
         "--bind=p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history)",
-        "--preview=/usr/lib/agent-fleet/ui preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
-        "--preview-window=down,45%,nowrap,follow,border-none",
     ]
     os.execvp(command[0], command)
 
@@ -108,7 +106,7 @@ def header():
 
 
 def footer():
-    hints = ("Enter open  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
+    hints = ("Enter view  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)
