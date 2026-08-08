@@ -26,7 +26,8 @@ def host_command(host, *command, capture_output=False, stdout=None):
 def host_python(host, source, *arguments, capture_output=False, stdout=None):
     """Run one fixed Python operation across the SSH host boundary."""
     return host_command(
-        host, sys.executable, "-c", source, *arguments,
+        host, "/usr/bin/env", "-u", "LOOP_SOCKET", "-u", "LOOP_CAPABILITIES",
+        sys.executable, "-c", source, *arguments,
         capture_output=capture_output, stdout=stdout,
     )
 

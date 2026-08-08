@@ -676,7 +676,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(
             prompt.call_args_list[1],
             mock.call("agent", ("codex", "claude"), context=host))
-        self.assertIn("agent_fleet.alan import create", run.call_args.args[3])
+        self.assertIn("agent_fleet.alan import create", " ".join(run.call_args.args))
         self.assertEqual(run.call_args.args[-3:], ("codex", "analysis", "/work"))
         wait.assert_called_once_with(f"alan:codex-deadbeef@{host}")
         show.assert_called_once_with(f"alan:codex-deadbeef@{host}")
@@ -691,7 +691,7 @@ class IdentityTests(unittest.TestCase):
             key = actions.create(host, "codex", "analysis.", "/work")
         self.assertEqual(key, f"alan:codex-deadbeef@{host}")
         prompt.assert_not_called()
-        self.assertIn("agent_fleet.alan import create", run.call_args.args[3])
+        self.assertIn("agent_fleet.alan import create", " ".join(run.call_args.args))
         self.assertEqual(run.call_args.args[-3:], ("codex", "analysis", "/work"))
 
     def test_remote_command_is_batch_mode_and_leaves_failure_output_visible(self):
@@ -705,6 +705,14 @@ class IdentityTests(unittest.TestCase):
              "/usr/bin/python -c 'print(*__import__('\"'\"'sys'\"'\"').argv[1:])' "
              "'work tree;safe' '/work dir/$literal'"],
             text=True, check=True, capture_output=False, stdout=subprocess.PIPE)
+
+    def test_host_python_discards_actor_identity(self):
+        host = os.uname().nodename
+        with mock.patch("agent_fleet.actions.host_command") as run:
+            actions.host_python(host, "print('ok')")
+        self.assertEqual(run.call_args.args[:7], (
+            host, "/usr/bin/env", "-u", "LOOP_SOCKET", "-u",
+            "LOOP_CAPABILITIES", sys.executable))
 
     def test_next_waiting_module_uses_the_composable_action(self):
         source = (Path(__file__).parents[1] / "agent_fleet/next_waiting.py").read_text()
@@ -722,7 +730,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(
             prompt.call_args_list[1],
             mock.call("agent", ("codex", "claude"), context=host))
-        self.assertIn("agent_fleet.alan import create", run.call_args.args[3])
+        self.assertIn("agent_fleet.alan import create", " ".join(run.call_args.args))
         self.assertEqual(run.call_args.args[-3:], ("claude", "analysis", "/work"))
         wait.assert_called_once_with(f"alan:claude-deadbeef@{host}")
         show.assert_called_once_with(f"alan:claude-deadbeef@{host}")
@@ -805,7 +813,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.viewer.slots", return_value=[("main", session.ref.key)]), \
              mock.patch("agent_fleet.actions.viewer.request") as request:
             actions.archive(session.ref.key)
-        self.assertIn("agent_fleet.alan import retire", command.call_args.args[3])
+        self.assertIn("agent_fleet.alan import retire", " ".join(command.call_args.args))
         self.assertEqual(command.call_args.args[-1], actor)
         absent.assert_called_once_with(session.ref.key)
         request.assert_called_once_with("main", "")
@@ -821,7 +829,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.wait_for_absence"), \
              mock.patch("agent_fleet.actions.viewer.slots", return_value=[]):
             actions.archive(session.ref.key)
-        self.assertIn("agent_fleet.alan import retire", command.call_args.args[3])
+        self.assertIn("agent_fleet.alan import retire", " ".join(command.call_args.args))
         self.assertEqual(command.call_args.args[-1], f"claude-1@{host}")
 
     def test_archive_retires_bare_alan_language_actor_by_address(self):
@@ -835,7 +843,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.wait_for_absence"), \
              mock.patch("agent_fleet.actions.viewer.slots", return_value=[]):
             actions.archive(session.ref.key)
-        self.assertIn("agent_fleet.alan import retire", command.call_args.args[3])
+        self.assertIn("agent_fleet.alan import retire", " ".join(command.call_args.args))
         self.assertEqual(command.call_args.args[-1], f"llm-1@{host}")
 
     def test_archive_verifies_transcript_then_closes_exact_tmux_identity(self):
@@ -846,8 +854,9 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.wait_for_absence") as absent, \
              mock.patch("agent_fleet.actions.viewer.slots", return_value=[]):
             actions.archive(session.ref.key)
-        self.assertIn("transcripts import verify", command.call_args_list[0].args[3])
-        self.assertIn("tmux import mutate", command.call_args_list[0].args[3])
+        command_text = " ".join(command.call_args_list[0].args)
+        self.assertIn("transcripts import verify", command_text)
+        self.assertIn("tmux import mutate", command_text)
         absent.assert_called_once_with(session.ref.key)
 
     def test_tmux_archive_revalidates_full_source_before_kill(self):
@@ -898,7 +907,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.viewer.request") as request:
             actions.refresh(session.ref.key)
         self.assertIn("agent_fleet.presentation import refresh",
-                      command.call_args.args[3])
+                      " ".join(command.call_args.args))
         self.assertEqual(command.call_args.args[-1], f"codex-1@{host}")
         self.assertEqual(request.call_args_list, [
             mock.call("main", session.ref.key), mock.call("right", session.ref.key)])
@@ -919,7 +928,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
             actions.open_history(key)
-        self.assertIn("agent_fleet.alan import resume", command.call_args.args[3])
+        self.assertIn("agent_fleet.alan import resume", " ".join(command.call_args.args))
         self.assertEqual(command.call_args.args[-1], "codex-1@lovelace")
         wait.assert_called_once_with(key)
         show.assert_called_once_with(key)
@@ -933,7 +942,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.created_key", return_value="new-key"), \
              mock.patch("agent_fleet.actions.viewer.request"):
             actions.open_history(key)
-        self.assertIn("agent_fleet.transcripts import resume", command.call_args.args[3])
+        self.assertIn("agent_fleet.transcripts import resume", " ".join(command.call_args.args))
 
     def test_archive_failure_is_visible_in_muster(self):
         failure = subprocess.CalledProcessError(1, ["fleet"], stderr="retire refused")
