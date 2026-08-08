@@ -1073,7 +1073,8 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("change-prompt(Search: )", source)
         self.assertIn("c:execute-silent(/usr/lib/agent-fleet/ui create-tab)", source)
         self.assertIn("r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})", source)
-        self.assertIn("l:execute-silent(/usr/lib/agent-fleet/ui fold {1})+transform-header", source)
+        self.assertIn("l:execute-silent(/usr/lib/agent-fleet/ui fold open {1})+transform-header", source)
+        self.assertIn("h:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header", source)
         self.assertIn("p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header", source)
         self.assertIn('"--footer-border=bottom"', source)
 
@@ -1124,30 +1125,29 @@ class IdentityTests(unittest.TestCase):
             check=True,
         )
 
-    def test_fold_changes_only_the_selected_expandable_actor(self):
+    def test_fold_opens_and_closes_only_the_selected_expandable_actor(self):
         root = Session(
             SessionRef(ServerRef("lovelace", "", 0, 0, "alan"),
                        "codex-root@lovelace"),
             "root", 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting")
         projection = alan.Projected(root, 0, 2, False)
-        with mock.patch.object(ui, "ordered", return_value=([projection], {}, [])), \
-             mock.patch.object(ui, "expanded", return_value={"claude-other@lovelace"}), \
-             mock.patch.object(ui.subprocess, "run") as run:
-            ui.fold(root.ref.key)
-        run.assert_called_once_with([
-            "tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
-            f"claude-other@lovelace {root.ref.session_id}"], check=True)
-
-        with mock.patch.object(ui, "ordered", return_value=(
-                [replace(projection, expanded=True)], {}, [])), \
-             mock.patch.object(ui, "expanded",
-                               return_value={"claude-other@lovelace",
-                                             root.ref.session_id}), \
-             mock.patch.object(ui.subprocess, "run") as run:
-            ui.fold(root.ref.key)
-        run.assert_called_once_with([
-            "tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
-            "claude-other@lovelace"], check=True)
+        for action, actors, expected in (
+                ("open", {"claude-other@lovelace"},
+                 f"claude-other@lovelace {root.ref.session_id}"),
+                ("open", {"claude-other@lovelace", root.ref.session_id},
+                 f"claude-other@lovelace {root.ref.session_id}"),
+                ("close", {"claude-other@lovelace", root.ref.session_id},
+                 "claude-other@lovelace"),
+                ("close", {"claude-other@lovelace"},
+                 "claude-other@lovelace")):
+            with self.subTest(action=action, actors=actors), \
+                 mock.patch.object(ui, "ordered", return_value=([projection], {}, [])), \
+                 mock.patch.object(ui, "expanded", return_value=actors), \
+                 mock.patch.object(ui.subprocess, "run") as run:
+                ui.fold(action, root.ref.key)
+            run.assert_called_once_with([
+                "tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
+                expected], check=True)
 
     def test_fold_ignores_native_and_leaf_rows(self):
         native = self.session("lovelace")
@@ -1161,7 +1161,7 @@ class IdentityTests(unittest.TestCase):
                  mock.patch.object(ui, "ordered", return_value=([projection], {}, [])), \
                  mock.patch.object(ui, "expanded") as expanded, \
                  mock.patch.object(ui.subprocess, "run") as run:
-                ui.fold(projection.session.ref.key)
+                ui.fold("open", projection.session.ref.key)
             expanded.assert_not_called()
             run.assert_not_called()
 
@@ -1212,18 +1212,18 @@ class IdentityTests(unittest.TestCase):
 
                     with mock.patch.object(
                             ui, "ordered", side_effect=lambda: (projected(), {}, [])):
-                        ui.fold(f"alan:{root}")
+                        ui.fold("open", f"alan:{root}")
                         self.assertEqual(
                             [item.session.ref.session_id for item in projected()],
                             [root, child])
-                        ui.fold(f"alan:{child}")
+                        ui.fold("open", f"alan:{child}")
                         self.assertEqual(
                             [item.session.ref.session_id for item in projected()],
                             [root, child, grandchild])
-                        ui.fold(f"alan:{root}")
+                        ui.fold("close", f"alan:{root}")
                         self.assertEqual(
                             [item.session.ref.session_id for item in projected()], [root])
-                        ui.fold(f"alan:{root}")
+                        ui.fold("open", f"alan:{root}")
                         self.assertEqual(
                             [item.session.ref.session_id for item in projected()],
                             [root, child, grandchild])
@@ -1297,8 +1297,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_private_ui_dispatches_fold_and_rejects_language_toggle(self):
         with mock.patch.object(ui, "fold") as fold:
-            ui_process.main(["fold", "alan:claude-one@lovelace"])
-        fold.assert_called_once_with("alan:claude-one@lovelace")
+            ui_process.main(["fold", "open", "alan:claude-one@lovelace"])
+        fold.assert_called_once_with("open", "alan:claude-one@lovelace")
         with mock.patch.object(ui, "toggle") as toggle:
             ui_process.main(["toggle", "python"])
         toggle.assert_called_once_with("python")
@@ -1338,7 +1338,7 @@ class IdentityTests(unittest.TestCase):
                         return_value=os.terminal_size((100, 24))):
             self.assertEqual(
                 footer(),
-                "Enter open  c create  r rename  R refresh  x archive  l fold  p python")
+                "Enter open  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
 
     def test_column_header_renders_the_exact_icon_bytes(self):
         from agent_fleet.render import column_header

@@ -47,7 +47,7 @@ def expanded():
     return set(result.stdout.split())
 
 
-def fold(key):
+def fold(action, key):
     projected, _, _ = ordered()
     [projection] = [item for item in projected if item.session.ref.key == key]
     session = projection.session
@@ -55,7 +55,10 @@ def fold(key):
         return
     actors = expanded()
     actor = session.ref.session_id
-    actors.symmetric_difference_update({actor})
+    if action == "open":
+        actors.add(actor)
+    else:
+        actors.discard(actor)
     subprocess.run(
         ["tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
          " ".join(sorted(actors))],
@@ -78,8 +81,8 @@ def muster():
         f"--footer={footer()}",
         "--footer-border=bottom",
         "--bind=start:unbind(esc)",
-        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,j,k,l,p)+rebind(esc)",
-        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,j,k,l,p)",
+        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,h,j,k,l,p)+rebind(esc)",
+        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,h,j,k,l,p)",
         "--bind=j:down,k:up",
         "--bind=load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)",
         "--bind=enter:execute-silent(/usr/lib/agent-fleet/ui show --slot main {1})",
@@ -89,7 +92,8 @@ def muster():
         "--bind=r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})",
         "--bind=R:execute-silent(/usr/lib/agent-fleet/ui refresh {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=x:execute-silent(/usr/lib/agent-fleet/ui archive {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=l:execute-silent(/usr/lib/agent-fleet/ui fold {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
+        "--bind=l:execute-silent(/usr/lib/agent-fleet/ui fold open {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
+        "--bind=h:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:history)",
@@ -104,7 +108,7 @@ def header():
 
 
 def footer():
-    hints = ("Enter open  c create  r rename  R refresh  x archive  l fold  p python")
+    hints = ("Enter open  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)
