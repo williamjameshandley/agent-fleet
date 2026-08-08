@@ -1743,6 +1743,8 @@ class IdentityTests(unittest.TestCase):
                              [root, child])
             self.assertIn("reload-sync(/usr/bin/cat", action)
             self.assertTrue(action.startswith("transform-header(/usr/bin/cat"))
+            self.assertIn("+unbind(focus)+reload-sync", action)
+            self.assertTrue(action.endswith("+rebind(focus)"))
             self.assertEqual(action.count("/usr/bin/rm -f"), 2)
             fleet.mutate_view(
                 f"fold\tclose\t{key}\t{fleet.view_revision}\t100")
@@ -1771,6 +1773,7 @@ class IdentityTests(unittest.TestCase):
                 with mock.patch("agent_fleet.daemon.RUNTIME", runtime):
                     action = fleet.mutate_view(
                         f"fold\topen\talan:{root}\t{fleet.view_revision - 1}\t100")
+                    self.assertNotIn("unbind(focus)", action)
                     subprocess.run(
                         ["curl", "-fsS", "--unix-socket", str(socket_path),
                          "-XPOST", "-d", action, "http://localhost"],
