@@ -483,6 +483,8 @@ def serve(slot):
                     continue
                 with connection:
                     message = connection.makefile().readline().strip()
+                    if message == "SOURCE":
+                        connection.sendall((state.source + "\n").encode()); continue
                     if message == "STATUS":
                         error = state.check()
                         if error:
@@ -495,6 +497,10 @@ def serve(slot):
                     try:
                         if message == "CLEAR":
                             state.clear()
+                        elif message.startswith("CLEAR "):
+                            key = message.removeprefix("CLEAR ")
+                            if state.source == key:
+                                state.clear()
                         elif message.startswith("WORKSTATION "):
                             name = message.removeprefix("WORKSTATION ")
                             if not SLOT.fullmatch(name):

@@ -116,6 +116,8 @@ class Fleet:
         self._view_cache = None
         self.view_lock = asyncio.Lock()
         self.publication = 0
+        self.pending_archives = set()
+        self.background_tasks = set()
 
     async def collect(self, host):
         python = (sys.executable, "-c",
@@ -234,17 +236,21 @@ class Fleet:
             self.refresh_pending = False
             async with self.view_lock:
                 action, artifacts = self.publish_view(self.view_width)
-                process = await asyncio.create_subprocess_exec(
-                    "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-                    "-XPOST", "-d", action, "http://localhost",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL)
-                await process.wait()
-                if process.returncode:
-                    for artifact in artifacts:
-                        artifact.unlink(missing_ok=True)
+                await self.send_publication(path, action, artifacts)
         finally:
             self.refresh_pending = False
+
+    @staticmethod
+    async def send_publication(path, action, artifacts):
+        process = await asyncio.create_subprocess_exec(
+            "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
+            "-XPOST", "-d", action, "http://localhost",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL)
+        await process.wait()
+        if process.returncode:
+            for artifact in artifacts:
+                artifact.unlink(missing_ok=True)
 
     async def wait_for_muster_idle(self):
         while True:
@@ -380,10 +386,22 @@ class Fleet:
             writer.close()
 
     def projected(self):
-        return render.order(
+        ordered = render.order(
             [s for group in self.sessions.values() for s in group],
             sorted(self.unavailable), self.composed_graph(),
             expanded=self.expanded, show_python=self.show_python)
+        visible = []
+        hidden_depth = None
+        for item in ordered:
+            if hidden_depth is not None:
+                if item.depth > hidden_depth:
+                    continue
+                hidden_depth = None
+            if item.session.ref.key in self.pending_archives:
+                hidden_depth = item.depth
+            else:
+                visible.append(item)
+        return visible
 
     def first_waiting(self):
         projected = self.projected()
@@ -407,6 +425,9 @@ class Fleet:
     def publish_view(self, width, error=""):
         self.view_width = width
         _, rows, header = self.view(width)
+        if self.pending_archives:
+            count = len(self.pending_archives)
+            header = f"Archiving {count} session{'s' if count != 1 else ''}...\n{header}"
         if error:
             header = f"Action failed: {error}\n{header}"
         self.publication += 1
@@ -491,12 +512,62 @@ class Fleet:
             projected, _, _ = self.view(width)
             if not any(item.session.ref.key == key for item in projected):
                 raise LookupError(f"session is not in the displayed view: {key}")
+            if operation == "archive":
+                session, host, authority = self.archive_authority(key)
+                viewers = await self.viewers_showing(key)
+                self.pending_archives.add(key)
+                self.view_revision += 1
+                self._view_cache = None
+                self.action_error = ""
+                action, artifacts = self.publish_view(width)
+                task = asyncio.create_task(
+                    self.complete_archive(key, host, authority, viewers, artifacts))
+                self.background_tasks.add(task)
+                task.add_done_callback(self.background_task_done)
+                return action
             await self.action({"operation": operation, "source": key})
             self.action_error = ""
             return self.publish_view(width)[0]
         except (LookupError, OSError, RuntimeError, ValueError) as error:
             self.action_error = str(error)
             return self.publish_view(width, self.action_error)[0]
+
+    def background_task_done(self, task):
+        self.background_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    async def publish_current_view(self, error=""):
+        path = RUNTIME / "muster.sock"
+        if not path.exists():
+            return
+        action, artifacts = self.publish_view(self.view_width, error)
+        await self.send_publication(path, action, artifacts)
+
+    @staticmethod
+    async def wait_for_publication(artifacts):
+        while any(path.exists() for path in artifacts):
+            await asyncio.sleep(.001)
+
+    async def complete_archive(self, key, host, authority, viewers, artifacts):
+        error = ""
+        try:
+            await self.authority(host, authority)
+            await self.wait_for_absence(key)
+        except (LookupError, OSError, RuntimeError, ValueError) as caught:
+            error = str(caught)
+        else:
+            try:
+                await self.update_viewers(viewers, f"CLEAR {key}")
+            except (OSError, RuntimeError) as caught:
+                error = f"Archived, but viewer cleanup failed: {caught}"
+        await self.wait_for_publication(artifacts)
+        async with self.view_lock:
+            self.pending_archives.discard(key)
+            self.view_revision += 1
+            self._view_cache = None
+            self.action_error = error
+            await self.publish_current_view(error)
 
     async def register_muster(self, generation, width):
         socket_path, pid, started, session_id = generation
@@ -675,7 +746,7 @@ class Fleet:
         for path in sorted(RUNTIME.glob("viewer-*.sock")):
             try:
                 reader, writer = await asyncio.open_unix_connection(path)
-                writer.write(b"STATUS\n")
+                writer.write(b"SOURCE\n")
                 await writer.drain()
                 source = (await reader.readline()).decode().rstrip("\n")
                 writer.close()
@@ -706,6 +777,23 @@ class Fleet:
                 errors.append(f"{path.name}: {error}")
         if errors:
             raise RuntimeError("; ".join(errors))
+
+    def archive_authority(self, key):
+        session = self.source(key)
+        host = session.ref.server.host
+        self.available(host)
+        if session.ref.server.kind == "alan":
+            if session.agent not in {"llm", "claude", "codex"}:
+                raise ValueError("archive requires a language actor")
+            authority = {"operation": "archive-alan",
+                         "actor": session.ref.session_id}
+        else:
+            if session.agent not in {"claude", "codex"} or not session.transcript_id:
+                raise ValueError("archive requires a durable Claude or Codex identity")
+            authority = {"operation": "archive-tmux", "source": key,
+                         "agent": session.agent,
+                         "transcript": session.transcript_id}
+        return session, host, authority
 
     async def action(self, request):
         operation = request.get("operation")
@@ -794,20 +882,10 @@ class Fleet:
             self.source(key)
             await self.update_viewers(viewers, f"OPEN {key}")
             return value
-        if session.ref.server.kind == "alan":
-            if session.agent not in {"llm", "claude", "codex"}:
-                raise ValueError("archive requires a language actor")
-            authority = {"operation": "archive-alan",
-                         "actor": session.ref.session_id}
-        else:
-            if session.agent not in {"claude", "codex"} or not session.transcript_id:
-                raise ValueError("archive requires a durable Claude or Codex identity")
-            authority = {"operation": "archive-tmux", "source": key,
-                         "agent": session.agent,
-                         "transcript": session.transcript_id}
+        _, host, authority = self.archive_authority(key)
         await self.authority(host, authority)
         await self.wait_for_absence(key)
-        await self.update_viewers(viewers, "CLEAR")
+        await self.update_viewers(viewers, f"CLEAR {key}")
         return {}
 
     async def remote_json(self, host, *command):
@@ -925,11 +1003,16 @@ class Fleet:
         server = await asyncio.start_unix_server(self.reply, path)
         os.chmod(path, 0o600)
         await self.register_existing_muster()
-        async with server:
-            async with asyncio.TaskGroup() as group:
-                group.create_task(server.serve_forever())
-                for host in hosts():
-                    group.create_task(self.collect(host))
+        try:
+            async with server:
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(server.serve_forever())
+                    for host in hosts():
+                        group.create_task(self.collect(host))
+        finally:
+            for task in tuple(self.background_tasks):
+                task.cancel()
+            await asyncio.gather(*tuple(self.background_tasks), return_exceptions=True)
 
     async def preview(self, key, columns=0, lines=0):
         if not any(session.ref.key == key for group in self.sessions.values() for session in group):

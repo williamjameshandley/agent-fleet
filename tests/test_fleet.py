@@ -1841,20 +1841,19 @@ class IdentityTests(unittest.TestCase):
         fleet, root, _, _ = self.fold_fleet()
         key = f"alan:{root}"
 
-        async def archive(_):
-            fleet.sessions = {}
-            fleet.observed += 1
-            fleet.view_revision += 1
-            fleet._view_cache = None
-            return {}
-
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
-             mock.patch.object(fleet, "action", side_effect=archive) as action:
+             mock.patch.object(fleet, "archive_authority", return_value=(
+                 fleet.sessions["lovelace"][0], "lovelace", {"operation": "archive"})), \
+             mock.patch.object(fleet, "viewers_showing", return_value=[]), \
+             mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
             result = asyncio.run(fleet.mutate_action(
                 f"archive\t{key}\t{fleet.view_revision}\t100"))
-        action.assert_awaited_once_with({"operation": "archive", "source": key})
         self.assertIn("reload-sync(/usr/bin/cat", result)
+        self.assertEqual(fleet.projected(), [])
+        self.assertIn(key, fleet.pending_archives)
+        raw = encode(fleet.sessions["lovelace"], {}, graph=fleet._composed[1])
+        fleet.update_host("lovelace", raw)
         self.assertEqual(fleet.projected(), [])
 
     def test_archive_accepts_an_exact_current_source_across_an_unrelated_revision(self):
@@ -1866,11 +1865,10 @@ class IdentityTests(unittest.TestCase):
         fleet.update_host("lovelace", raw)
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
-             mock.patch.object(fleet, "action") as action:
+             mock.patch.object(fleet, "viewers_showing", return_value=[]), \
+             mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
             result = asyncio.run(fleet.mutate_action(
                 f"archive\talan:{root}\t{displayed}\t100"))
-        action.assert_awaited_once_with({"operation": "archive",
-                                        "source": f"alan:{root}"})
         self.assertIn("transform-header", result)
 
     def test_unregistered_muster_rejects_view_mutation(self):
@@ -2415,6 +2413,41 @@ class IdentityTests(unittest.TestCase):
                 subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
                                env=env, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)
+
+    def test_viewer_clear_exact_key_is_atomic_and_ignores_a_moved_viewer(self):
+        with tempfile.TemporaryDirectory() as runtime:
+            runtime = Path(runtime)
+            state = mock.Mock()
+            state.source = "source-new"
+            state.check.return_value = ""
+            with mock.patch.object(viewer, "RUNTIME", runtime), \
+                 mock.patch.object(viewer.os, "ttyname", return_value="/dev/pts/9"), \
+                 mock.patch.object(viewer, "Attachment", return_value=state), \
+                 mock.patch.object(viewer, "viewer_error"):
+                thread = threading.Thread(target=viewer.serve, args=("test",))
+                thread.start()
+                path = runtime / "viewer-test.sock"
+                for _ in range(100):
+                    if path.exists():
+                        break
+                    time.sleep(.01)
+                async def send(message):
+                    await Fleet.update_viewer(path, message)
+
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.connect(str(path))
+                    client.sendall(b"SOURCE\n")
+                    self.assertEqual(client.recv(64), b"source-new\n")
+                asyncio.run(send("CLEAR source-old"))
+                state.clear.assert_not_called()
+                asyncio.run(send("CLEAR source-new"))
+                state.clear.assert_called_once_with()
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.connect(str(path))
+                    client.sendall(b"SHUTDOWN\n")
+                    self.assertEqual(client.recv(16), b"OK\n")
+                thread.join(1)
+            self.assertFalse(thread.is_alive())
 
     def test_shutdown_acknowledges_only_after_cleanup_and_socket_removal(self):
         with tempfile.TemporaryDirectory() as runtime:
