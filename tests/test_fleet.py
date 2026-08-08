@@ -2003,7 +2003,15 @@ class IdentityTests(unittest.TestCase):
                         break
                     time.sleep(.01)
                 with socket.socket(socket.AF_UNIX) as client:
-                    client.connect(str(path)); client.sendall(b"SHUTDOWN\n")
+                    for _ in range(100):
+                        try:
+                            client.connect(str(path))
+                            break
+                        except ConnectionRefusedError:
+                            time.sleep(.01)
+                    else:
+                        self.fail("viewer socket did not accept connections")
+                    client.sendall(b"SHUTDOWN\n")
                     self.assertTrue(entered.wait(1))
                     client.settimeout(.05)
                     with self.assertRaises(TimeoutError):
@@ -2014,6 +2022,49 @@ class IdentityTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
             self.assertFalse(path.exists())
             state.shutdown.assert_called_once_with()
+
+    @unittest.skipUnless(os.uname().nodename.split(".", 1)[0] == "lovelace",
+                         "launcher ownership boundary is on lovelace")
+    def test_destroy_preserves_ui_session_when_controller_rejects_shutdown(self):
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory) / "runtime"
+            tmux_tmp = Path(directory) / "tmux"
+            socket_dir = runtime / "agent-fleet"
+            runtime.mkdir(); tmux_tmp.mkdir(); socket_dir.mkdir()
+            environment = {**os.environ, "XDG_RUNTIME_DIR": str(runtime),
+                           "TMUX_TMPDIR": str(tmux_tmp)}
+            subprocess.run(["tmux", "-L", "agent-fleet-ui", "new-session", "-d",
+                            "-s", "fleet@failure", "sleep 30"],
+                           check=True, env=environment)
+            path = socket_dir / "viewer-failure.sock"
+            ready = threading.Event()
+
+            def reject():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(path)); server.listen(); ready.set()
+                    connection, _ = server.accept()
+                    with connection:
+                        connection.makefile().readline()
+                        connection.sendall(b"ERROR marker cleanup failed\n")
+
+            thread = threading.Thread(target=reject); thread.start()
+            ready.wait(1)
+            try:
+                result = subprocess.run([root / "fleet-viewer", "--destroy", "failure"],
+                                        env=environment, text=True,
+                                        capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ERROR marker cleanup failed", result.stderr)
+                alive = subprocess.run(
+                    ["tmux", "-L", "agent-fleet-ui", "has-session",
+                     "-t", "fleet@failure"], env=environment)
+                self.assertEqual(alive.returncode, 0)
+            finally:
+                thread.join(1)
+                subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
+                               env=environment, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
 
     def test_quota_only_events_force_an_inventory_emit(self):
         source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()

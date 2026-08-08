@@ -14,7 +14,11 @@ if [ "${1:-}" = --destroy ]; then
     fi
     runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet
     if tmux has-session -t "fleet@$slot" 2>/dev/null; then
-        printf 'SHUTDOWN\n' | /usr/bin/nc -U "$runtime/viewer-$slot.sock" || exit
+        reply=$(printf 'SHUTDOWN\n' | /usr/bin/nc -U "$runtime/viewer-$slot.sock") || exit
+        if [ "$reply" != OK ]; then
+            printf '%s\n' "${reply:-viewer shutdown returned no response}" >&2
+            exit 1
+        fi
         tmux kill-session -t "fleet@$slot"
     fi
     exit
