@@ -728,13 +728,39 @@ class IdentityTests(unittest.TestCase):
         state.host = "old-host"
         state.child = mock.Mock(pid=81, poll=mock.Mock(return_value=None))
         with mock.patch.object(state, "start_remote", side_effect=RuntimeError("offline")), \
-             mock.patch.object(viewer, "stop_child") as stop, \
-             mock.patch.object(viewer.os, "killpg") as kill:
+             mock.patch.object(state, "suspend") as suspend, \
+             mock.patch.object(state, "resume") as resume:
             with self.assertRaisesRegex(RuntimeError, "offline"):
                 state.open("new-host:/tmp/tmux/default:12:10:$1")
-        stop.assert_called_once_with(state.child, signal.SIGSTOP)
-        kill.assert_called_once_with(81, signal.SIGCONT)
+        suspend.assert_called_once_with()
+        resume.assert_called_once_with()
         self.assertEqual((state.source, state.host), ("old-source", "old-host"))
+
+    def test_remote_client_suspend_and_resume_use_the_owning_tmux_server(self):
+        state = viewer.Attachment("main", "/dev/pts/9")
+        state.host = "newton"
+        state.remote_tty = "/dev/pts/8"
+        state.child = mock.Mock(pid=81)
+        pid = mock.Mock(stdout="123\n")
+        with mock.patch.object(state, "ssh", side_effect=[mock.Mock(), pid, mock.Mock()]) as ssh:
+            state.suspend()
+            state.resume()
+        self.assertIn("suspend-client", ssh.call_args_list[0].args[1])
+        self.assertIn("display-message", ssh.call_args_list[1].args[1])
+        self.assertIn("/usr/bin/kill -CONT 123", ssh.call_args_list[2].args[1])
+
+    def test_local_client_suspend_uses_tmux_protocol_and_resumes_process_group(self):
+        state = viewer.Attachment("main", "/dev/pts/9")
+        state.host = os.uname().nodename.split(".", 1)[0]
+        state.child = mock.Mock(pid=81)
+        with mock.patch.object(viewer.subprocess, "run") as run, \
+             mock.patch.object(viewer.os, "killpg") as kill:
+            state.suspend()
+            state.resume()
+        run.assert_called_once_with(
+            ["/usr/bin/tmux", "-N", "suspend-client", "-t", "/dev/pts/9"],
+            check=True)
+        kill.assert_called_once_with(81, signal.SIGCONT)
 
     def test_focus_failure_does_not_turn_a_completed_open_into_failure(self):
         state = mock.Mock()

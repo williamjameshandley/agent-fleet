@@ -355,6 +355,27 @@ class Attachment:
                            stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
 
+    def suspend(self):
+        local = os.uname().nodename.split(".", 1)[0]
+        if self.host == local:
+            subprocess.run(["/usr/bin/tmux", "-N", "suspend-client", "-t", self.tty],
+                           check=True)
+        else:
+            self.ssh(self.host, shlex.join(
+                ["/usr/bin/tmux", "-N", "suspend-client", "-t", self.remote_tty]))
+
+    def resume(self):
+        local = os.uname().nodename.split(".", 1)[0]
+        if self.host == local:
+            os.killpg(self.child.pid, signal.SIGCONT)
+        else:
+            result = self.ssh(
+                self.host,
+                shlex.join(["/usr/bin/tmux", "-N", "display-message", "-p",
+                            "-c", self.remote_tty, "#{client_pid}"]), capture=True)
+            self.ssh(self.host, shlex.join(["/usr/bin/kill", "-CONT",
+                                            str(int(result.stdout.strip()))]))
+
     def open(self, key, selected=None):
         started = time.monotonic()
         new_host = key_host(key) if key else ""
@@ -379,12 +400,12 @@ class Attachment:
         elif new_host == local:
             old = (self.child, self.host, self.remote_file)
             if self.child:
-                stop_child(self.child, signal.SIGSTOP)
+                self.suspend()
             try:
                 candidate = self.start_local(key)
             except Exception:
                 if old[0]:
-                    os.killpg(old[0].pid, signal.SIGCONT)
+                    self.resume()
                 raise
             self.close_pair(*old)
             self.child, self.master = candidate, None
@@ -392,12 +413,12 @@ class Attachment:
         else:
             old = (self.child, self.host, self.remote_file)
             if self.child:
-                stop_child(self.child, signal.SIGSTOP)
+                self.suspend()
             try:
                 candidate, master, remote_file = self.start_remote(new_host, key)
             except Exception:
                 if old[0]:
-                    os.killpg(old[0].pid, signal.SIGCONT)
+                    self.resume()
                 raise
             self.close_pair(*old)
             self.child, self.master = candidate, master
