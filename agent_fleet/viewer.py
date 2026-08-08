@@ -141,6 +141,7 @@ class Attachment:
                  "-t", f"fleet@{slot}"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True, bufsize=1)
             ui = ControlClient(self.ui_process, queue.Queue())
+            ui.command(["refresh-client", "-f", "no-output"])
         self.ui = ui
 
     def ssh(self, host, *arguments, capture=False, check=True):

@@ -816,6 +816,7 @@ class IdentityTests(unittest.TestCase):
                  "-t", "fleet@test"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True, env=environment)
             control = tmux.ControlClient(control_process, queue.Queue())
+            control.command(["refresh-client", "-f", "no-output"])
             state = viewer.Attachment("test", "/dev/pts/9", control)
             display = None
             try:
@@ -957,7 +958,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(len(ssh.call_args_list), 2)
 
     def test_non_hub_actor_lookup_reuses_one_forward_to_the_fleet_daemon(self):
-        state = viewer.Attachment("side", "/dev/pts/9")
+        state = viewer.Attachment("side", "/dev/pts/9", mock.Mock())
         client = mock.MagicMock()
         client.__enter__.return_value = client
         client.recv.side_effect = [b"projection", b"", b"projection", b""]
@@ -978,7 +979,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(client.connect.call_count, 2)
 
     def test_replaced_daemon_master_rebuilds_the_exact_forward(self):
-        state = viewer.Attachment("side", "/dev/pts/9")
+        state = viewer.Attachment("side", "/dev/pts/9", mock.Mock())
         state.daemon_socket = Path("/run/user/1000/agent-fleet/viewer-side-fleet.sock")
         state.daemon_master = (81, 9)
         client = mock.MagicMock()
@@ -999,14 +1000,14 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(state.daemon_master, (82, 10))
 
     def test_master_creation_requires_configured_persistent_multiplexing(self):
-        state = viewer.Attachment("side", "/dev/pts/9")
+        state = viewer.Attachment("side", "/dev/pts/9", mock.Mock())
         policy = mock.Mock(stdout="controlmaster no\ncontrolpath none\ncontrolpersist no\n")
         with mock.patch.object(viewer.subprocess, "run", return_value=policy):
             with self.assertRaisesRegex(RuntimeError, "ControlMaster"):
                 state.master_policy("newton")
 
     def test_daemon_forward_recovery_cancels_only_the_exact_slot_rule(self):
-        state = viewer.Attachment("left", "/dev/pts/9")
+        state = viewer.Attachment("left", "/dev/pts/9", mock.Mock())
         local, specification = state.daemon_forward()
         with mock.patch.object(viewer.subprocess, "run") as run, \
              mock.patch.object(Path, "unlink") as unlink:
@@ -1419,6 +1420,8 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("#{==:#{client_control_mode},0}", main)
         self.assertNotIn("attach-session -d", main)
         self.assertIn("--destroy", main)
+        self.assertIn('ui.command(["refresh-client", "-f", "no-output"])',
+                      (root / "agent_fleet/viewer.py").read_text())
         self.assertIn("set-option -t fleet@muster mouse off", muster)
         self.assertIn("/usr/bin/nc -U", main)
         self.assertIn("ConditionHost=lovelace", service)
@@ -1876,7 +1879,7 @@ class IdentityTests(unittest.TestCase):
         session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
                                      actor), "codex", 0, 0, 0, 1, "alan", "", "/work",
                           "codex")
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         failed = subprocess.CalledProcessError(1, ["tmux"])
         with mock.patch.object(state, "find", return_value=session), \
              mock.patch.object(viewer.subprocess, "run", side_effect=failed), \
@@ -1890,7 +1893,7 @@ class IdentityTests(unittest.TestCase):
         session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
                                      actor), "python", 0, 0, 0, 1, "alan", "", "/work",
                           "python")
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         missing = mock.Mock(stdout="\n")
         listed = mock.Mock(stdout="/tmp/tmux/default\t12\t10\t$1\n")
         with mock.patch.object(state, "find", return_value=session), \
@@ -1905,7 +1908,7 @@ class IdentityTests(unittest.TestCase):
         session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
                                      actor), "python", 0, 0, 0, 1, "alan", "", "/work",
                           "python")
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         listed = mock.Mock(stdout="/tmp/tmux/default\t12\t10\t$1\n")
         with mock.patch.object(state, "find", return_value=session), \
              mock.patch.object(viewer.presentation, "target") as target, \
@@ -1916,7 +1919,7 @@ class IdentityTests(unittest.TestCase):
     def test_remote_actor_resolution_survives_the_remote_shell(self):
         actor = "codex-1@newton"
         session = mock.Mock(agent="codex", state="waiting", cwd="/work")
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         listed = mock.Mock(
             stdout="/tmp/tmux-1000/default 2548 1784382062 \\$191\n")
         with mock.patch.object(state, "find", return_value=session), \
@@ -1956,6 +1959,8 @@ class IdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as runtime:
             env = {**os.environ, "XDG_RUNTIME_DIR": runtime,
                    "PYTHONPATH": str(root), "TMUX_TMPDIR": runtime}
+            subprocess.run(["tmux", "-L", "agent-fleet-ui", "new-session", "-d",
+                            "-s", "fleet@test", "sleep 30"], check=True, env=env)
             master, slave = pty.openpty()
             process = subprocess.Popen([sys.executable, "-c",
                                         "from agent_fleet.viewer import serve; serve('test')"],
@@ -1977,6 +1982,9 @@ class IdentityTests(unittest.TestCase):
                 process.terminate()
                 process.wait()
                 os.close(master)
+                subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
+                               env=env, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
 
     def test_shutdown_acknowledges_only_after_cleanup_and_socket_removal(self):
         with tempfile.TemporaryDirectory() as runtime:
