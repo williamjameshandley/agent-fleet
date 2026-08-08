@@ -41,7 +41,8 @@ def events(host):
                         text = capture(request["key"], request["columns"], request["lines"])
                         response = {"preview": request["preview"], "text": text}
                     elif "switch" in request:
-                        control = controls.queue[0]
+                        control = controls.get()
+                        controls.put(control)
                         target = (control.alan_target(request["actor"])
                                   if "actor" in request else tuple(request["target"]))
                         duration = control.switch(target, request["client"])
