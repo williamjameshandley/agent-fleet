@@ -323,7 +323,14 @@ class Fleet:
                 payload = f"Action failed: {self.action_error}\n{payload}"
         elif request == "cursor" or request.startswith("cursor "):
             active = request.removeprefix("cursor").strip()
-            payload = active or self.first_waiting()
+            projected = self.projected()
+            target = active or next(
+                (item.session.ref.key for item in projected
+                 if item.session.state == "waiting"), "")
+            position = next(
+                (index for index, item in enumerate(projected, 1)
+                 if item.session.ref.key == target), None)
+            payload = f"pos({position})" if position else ""
         elif request.startswith("muster-register\t"):
             try:
                 values = request.split("\t")
