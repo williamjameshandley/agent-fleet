@@ -7,13 +7,12 @@ import subprocess
 import syslog
 import time
 import queue
-from pathlib import Path
 from types import SimpleNamespace
 
 from .config import HUB, RUNTIME, ssh_environment
 from .daemon import request as daemon_request
 from .model import key_host
-from . import alan, presentation, workstation
+from . import alan, presentation, proc, workstation
 from .tmux import ControlClient, split_key
 
 
@@ -113,8 +112,7 @@ def show(key, slot=None):
 
 
 def process_identity(pid):
-    fields = (Path(f"/proc/{pid}/stat")).read_text().split()
-    return int(fields[21])
+    return proc.start_time(pid)
 
 
 def process_alive(identity):

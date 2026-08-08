@@ -63,11 +63,13 @@ def header_text(projected, usage, unavailable):
             f"{column_header(projected)}")
 
 
-def rows_text(projected, unavailable, width, now=None):
+def rows_text(projected, unavailable, width, now=None, revision=None):
     now = int(time.time()) if now is None else now
     lines = []
     for projection in projected:
         session = projection.session
+        if "\t" in session.ref.key or "\n" in session.ref.key:
+            raise ValueError("session key contains a row delimiter")
         timestamp = recency(session)
         age = max(0, now - timestamp)
         elapsed = ("?" if not timestamp else
@@ -93,5 +95,6 @@ def rows_text(projected, unavailable, width, now=None):
                    f"{agent_colour}{agent:1}{RESET}{emphasis} {elapsed:>4} "
                    f"{state_colour}{marker}{RESET}{emphasis} "
                    f"{fold:<4} {name:<20.20} {summary:<{room}.{room}}{RESET}")
-        lines.append(f"{session.ref.key}\t{visible}")
+        identity = session.ref.key if revision is None else f"{session.ref.key}\t{revision}"
+        lines.append(f"{identity}\t{visible}")
     return "\n".join(lines)

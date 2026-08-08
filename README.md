@@ -50,8 +50,9 @@ motion, sorting and preview never run SSH.
 The first open of a remote host in a viewer slot creates one long-lived
 interactive SSH attachment with `BatchMode=yes`. The slot retains that attachment
 in its dedicated `agent-fleet-ui` tmux session. Warm source and host changes use
-the existing daemon, host and UI control streams. Fzf invokes one finite local
-socket adapter for the selected canonical key; the switch creates no SSH
+the existing daemon, host and UI control streams. Fzf invokes finite POSIX-shell
+socket adapters for interactive operations; it does not start Python on cursor
+motion, fold changes, resizing or selection. A warm switch creates no SSH
 channel, PTY, tmux client, Python interpreter or presentation process.
 
 Tmux previews use `capture-pane -eN`, reconstruct the terminal grid with
@@ -66,6 +67,8 @@ host + tmux socket + server PID + server start time + $session_id
 
 Names, row positions and window indices are presentation. The daemon keeps its
 projection only in memory and exposes it through a mode-0600 runtime socket.
+Fold state belongs to the exact current Muster tmux server generation and is
+reset when that generation is replaced.
 Tmux topology remains entirely in tmux. Alan actor identity, lifecycle, active
 evaluation and native evidence come from Alan's operation graph. Fleet owns
 labels as small ordinary files and stores no graph, lifecycle or catalogue

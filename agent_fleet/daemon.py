@@ -20,7 +20,7 @@ from .protocol import decode_graph, decode_message, encode
 from .model import key_host
 from .tmux import capture, event_stream, split_key
 from .quota import read as quota_read
-from . import render
+from . import proc, render
 
 
 MARKER_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -96,6 +96,14 @@ class Fleet:
         self.next_cleanup = 0
         self.changed = asyncio.Condition()
         self.action_error = ""
+        self.muster_generation = None
+        self.expanded = set()
+        self.show_python = False
+        self.view_revision = 0
+        self.view_width = 100
+        self._view_cache = None
+        self.view_lock = asyncio.Lock()
+        self.publication = 0
 
     async def collect(self, host):
         python = (sys.executable, "-c",
@@ -127,6 +135,8 @@ class Fleet:
                     self.sessions[host] = sessions
                     self.observations[host] = raw
                     self.observed += 1
+                    self.view_revision += 1
+                    self._view_cache = None
                     async with self.changed:
                         self.changed.notify_all()
                     self.unavailable.discard(host)
@@ -141,7 +151,6 @@ class Fleet:
                 if not drain.done():
                     drain.cancel()
                 await self.host_disconnected(host)
-            self.unavailable.add(host)
             self.schedule_refresh()
             await asyncio.sleep(1)
 
@@ -173,7 +182,10 @@ class Fleet:
         self.processes.pop(host, None)
         self.sessions.pop(host, None)
         self.observations.pop(host, None)
+        self.unavailable.add(host)
         self.observed += 1
+        self.view_revision += 1
+        self._view_cache = None
         async with self.changed:
             self.changed.notify_all()
         for pending in (self.previews, self.switches, self.cleanups):
@@ -195,12 +207,17 @@ class Fleet:
                 return
             await self.wait_for_muster_idle()
             self.refresh_pending = False
-            process = await asyncio.create_subprocess_exec(
-                "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-                "-XPOST", "-d", "transform-header(sh -c '/usr/lib/agent-fleet/ui header')+reload-sync(/usr/lib/agent-fleet/ui items)",
-                "http://localhost",
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-            await process.wait()
+            async with self.view_lock:
+                action, artifacts = self.publish_view(self.view_width)
+                process = await asyncio.create_subprocess_exec(
+                    "curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
+                    "-XPOST", "-d", action, "http://localhost",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL)
+                await process.wait()
+                if process.returncode:
+                    for artifact in artifacts:
+                        artifact.unlink(missing_ok=True)
         finally:
             self.refresh_pending = False
 
@@ -271,18 +288,34 @@ class Fleet:
                 response = {"error": str(error)}
             payload = json.dumps(response, separators=(",", ":"))
         elif request.startswith("items "):
-            projected = await self.projected()
-            payload = render.rows_text(projected, sorted(self.unavailable),
-                                       int(request.removeprefix("items ")))
-        elif request == "header":
-            projected = await self.projected()
-            payload = render.header_text(projected, self.usage,
-                                         sorted(self.unavailable))
+            width = int(request.removeprefix("items "))
+            self.view_width = width
+            _, payload, _ = self.view(width)
+        elif request == "header" or request.startswith("header "):
+            width = (self.view_width if request == "header" else
+                     int(request.removeprefix("header ")))
+            self.view_width = width
+            _, _, payload = self.view(width)
             if self.action_error:
                 payload = f"Action failed: {self.action_error}\n{payload}"
         elif request == "cursor" or request.startswith("cursor "):
             active = request.removeprefix("cursor").strip()
-            payload = active or await self.first_waiting()
+            payload = active or self.first_waiting()
+        elif request.startswith("muster-register\t"):
+            try:
+                values = request.split("\t")
+                if len(values) != 6:
+                    raise ValueError("invalid Muster registration")
+                _, socket_path, pid, started, session_id, width = values
+                payload = await self.register_muster(
+                    (socket_path, int(pid), int(started), session_id), int(width))
+            except (OSError, RuntimeError, ValueError) as error:
+                payload = f"ERROR {error}"
+        elif request.startswith(("fold\t", "toggle\t", "resize\t")):
+            async with self.view_lock:
+                payload = self.mutate_view(request)
+        elif request.startswith("next-waiting\t"):
+            payload = self.next_waiting(request.removeprefix("next-waiting\t"))
         elif request.startswith("preview "):
             key, columns, lines = request.removeprefix("preview ").rsplit(" ", 2)
             payload = await self.preview(key, int(columns), int(lines))
@@ -310,28 +343,149 @@ class Fleet:
         finally:
             writer.close()
 
-    async def projected(self):
-        expanded, show_python = await asyncio.gather(
-            self.muster_option("@fleet_expanded"),
-            self.muster_option("@fleet_show_python"))
+    def projected(self):
         return render.order(
             [s for group in self.sessions.values() for s in group],
             sorted(self.unavailable), self.composed_graph(),
-            expanded=set(expanded.split()),
-            show_python=show_python.strip() == "1")
+            expanded=self.expanded, show_python=self.show_python)
 
-    async def first_waiting(self):
-        projected = await self.projected()
+    def first_waiting(self):
+        projected = self.projected()
         return next((item.session.ref.key for item in projected
                      if item.session.state == "waiting"), "")
 
-    @staticmethod
-    async def muster_option(name):
+    def view(self, width):
+        key = (self.view_revision, width)
+        if self._view_cache and self._view_cache[0] == key:
+            return self._view_cache[1]
+        projected = self.projected()
+        value = (
+            projected,
+            render.rows_text(projected, sorted(self.unavailable), width,
+                             revision=self.view_revision),
+            render.header_text(projected, self.usage, sorted(self.unavailable)),
+        )
+        self._view_cache = (key, value)
+        return value
+
+    def publish_view(self, width, error=""):
+        self.view_width = width
+        _, rows, header = self.view(width)
+        if error:
+            header = f"Action failed: {error}\n{header}"
+        self.publication += 1
+        stem = RUNTIME / f"muster-view-{self.view_revision}-{self.publication}"
+        rows_path = stem.with_suffix(".rows")
+        header_path = stem.with_suffix(".header")
+        rows_path.write_text(rows + ("\n" if rows else ""))
+        header_path.write_text(header + "\n")
+        rows_command = shlex.join(("/usr/bin/cat", str(rows_path)))
+        header_command = shlex.join(("/usr/bin/cat", str(header_path)))
+        rows_remove = shlex.join(("/usr/bin/rm", "-f", str(rows_path)))
+        header_remove = shlex.join(("/usr/bin/rm", "-f", str(header_path)))
+        action = (f"reload-sync({rows_command}; {rows_remove})"
+                  f"+transform-header({header_command}; {header_remove})")
+        return action, (rows_path, header_path)
+
+    def mutate_view(self, request):
+        values = request.split("\t")
+        try:
+            if self.muster_generation is None:
+                raise RuntimeError("Muster generation is not registered")
+            if values[0] == "fold" and len(values) == 5:
+                _, operation, key, expected, width = values
+                if operation not in {"open", "close"}:
+                    raise ValueError("invalid fold request")
+                width = int(width)
+                if width < 1:
+                    raise ValueError("invalid Muster width")
+                if int(expected) != self.view_revision:
+                    raise RuntimeError(
+                        f"Muster view changed: {expected} != {self.view_revision}")
+                projected, _, _ = self.view(int(width))
+                [item] = [item for item in projected if item.session.ref.key == key]
+                if item.session.ref.server.kind != "alan" or not item.child_count:
+                    raise ValueError("fold requires an Alan parent with children")
+                actor = item.session.ref.session_id
+                changed = (actor not in self.expanded if operation == "open" else
+                           actor in self.expanded)
+                if operation == "open":
+                    self.expanded.add(actor)
+                else:
+                    self.expanded.discard(actor)
+            elif values[:2] == ["toggle", "python"] and len(values) == 3:
+                width = int(values[2])
+                if width < 1:
+                    raise ValueError("invalid Muster width")
+                self.show_python = not self.show_python
+                changed = True
+            elif values[0] == "resize" and len(values) == 2:
+                width = int(values[1])
+                if width < 1:
+                    raise ValueError("invalid Muster width")
+                changed = width != self.view_width
+            else:
+                raise ValueError("invalid Muster view request")
+            if changed:
+                self.view_revision += 1
+                self._view_cache = None
+            self.action_error = ""
+            return self.publish_view(width)[0]
+        except (LookupError, RuntimeError, ValueError) as error:
+            self.action_error = str(error)
+            width = self.view_width
+            return self.publish_view(width, self.action_error)[0]
+
+    async def register_muster(self, generation, width):
+        socket_path, pid, started, session_id = generation
+        if not socket_path or not Path(socket_path).is_socket():
+            raise ValueError("invalid Muster tmux socket")
+        if proc.start_time(pid) != started or not re.fullmatch(r"\$[0-9]+", session_id):
+            raise ValueError("invalid Muster tmux generation")
         process = await asyncio.create_subprocess_exec(
-            "/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "=fleet@muster:", name,
+            "/usr/bin/tmux", "-N", "-S", socket_path, "display-message", "-p",
+            "-t", "=fleet@muster:", "#{pid}\t#{session_id}",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await process.communicate()
+        if process.returncode or stdout.decode().rstrip("\n") != f"{pid}\t{session_id}":
+            raise ValueError(stderr.decode().strip() or "Muster tmux identity changed")
+        if proc.start_time(pid) != started:
+            raise ValueError("Muster tmux generation changed")
+        async with self.view_lock:
+            if generation != self.muster_generation:
+                self.muster_generation = generation
+                self.expanded.clear()
+                self.show_python = False
+                self.action_error = ""
+                self.view_revision += 1
+                self._view_cache = None
+                for artifact in RUNTIME.glob("muster-view-*.*"):
+                    artifact.unlink(missing_ok=True)
+            self.view_width = width
+        return "OK"
+
+    async def register_existing_muster(self):
+        process = await asyncio.create_subprocess_exec(
+            "/usr/bin/tmux", "-N", "display-message", "-p",
+            "-t", "=fleet@muster:",
+            "#{socket_path}\t#{pid}\t#{session_id}",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         stdout, _ = await process.communicate()
-        return stdout.decode()
+        if process.returncode:
+            return
+        socket_path, pid, session_id = stdout.decode().rstrip("\n").split("\t")
+        await self.register_muster(
+            (socket_path, int(pid), proc.start_time(int(pid)), session_id),
+            self.view_width)
+
+    def next_waiting(self, active):
+        waiting = [item.session for item in self.projected()
+                   if item.session.state == "waiting"]
+        if not waiting:
+            return ""
+        current = next((i for i, session in enumerate(waiting)
+                        if session.ref.key == active), -1)
+        return waiting[(current + 1) % len(waiting)].ref.key
 
     def composed_graph(self):
         generation, composed = self._composed
@@ -672,6 +826,7 @@ class Fleet:
         path.unlink(missing_ok=True)
         server = await asyncio.start_unix_server(self.reply, path)
         os.chmod(path, 0o600)
+        await self.register_existing_muster()
         async with server:
             async with asyncio.TaskGroup() as group:
                 group.create_task(server.serve_forever())

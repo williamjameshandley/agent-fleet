@@ -24,11 +24,7 @@ def main(argv=None):
         item.set_defaults(function=function)
         return item
 
-    item = command("toggle", lambda args: ui.toggle(args.kind))
-    item.add_argument("kind", choices=("python",))
-    item = command("fold", lambda args: ui.fold(args.action, args.key))
-    item.add_argument("action", choices=("open", "close"))
-    item.add_argument("key")
+    command("register", lambda _: ui.register())
     command("muster", lambda _: ui.muster())
     command("history-ui", lambda _: ui.history())
     command("search-history", lambda _: actions.search_history_prompt())
