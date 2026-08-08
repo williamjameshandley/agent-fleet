@@ -191,9 +191,9 @@ def test_authority_uses_the_resident_host_channel_without_a_subprocess():
 
 
 def test_archive_clears_and_refresh_reopens_every_shown_viewer():
-    async def exercise(operation, message):
+    async def exercise(operation):
         fleet = Fleet()
-        item = session()
+        item = session(kind="tmux" if operation == "archive" else "alan")
         fleet.sessions = {"lovelace": [item]}
         fleet.unavailable.clear()
         paths = [Path("/run/viewer-main.sock"), Path("/run/viewer-right.sock")]
@@ -204,10 +204,12 @@ def test_archive_clears_and_refresh_reopens_every_shown_viewer():
              mock.patch.object(fleet, "update_viewers") as update:
             await fleet.action({"operation": operation, "source": item.ref.key})
         showing.assert_awaited_once_with(item.ref.key)
+        message = (f"CLEAR {item.ref.key}" if operation == "archive" else
+                   f"OPEN {item.ref.key}")
         update.assert_awaited_once_with(paths, message)
 
-    asyncio.run(exercise("archive", "CLEAR"))
-    asyncio.run(exercise("refresh", "OPEN alan:codex-1@lovelace"))
+    asyncio.run(exercise("archive"))
+    asyncio.run(exercise("refresh"))
 
 
 def test_viewer_updates_attempt_every_recorded_slot_before_reporting_failure():
@@ -221,6 +223,72 @@ def test_viewer_updates_attempt_every_recorded_slot_before_reporting_failure():
         assert update.await_args_list == [mock.call(paths[0], "CLEAR"),
                                           mock.call(paths[1], "CLEAR")]
 
+    asyncio.run(exercise())
+
+
+def test_optimistic_archive_commits_absence_despite_viewer_cleanup_failure(
+        tmp_path, monkeypatch):
+    async def exercise():
+        fleet = Fleet()
+        item = session(kind="tmux")
+        fleet.sessions = {"lovelace": [item]}
+        fleet.unavailable.clear()
+        fleet.muster_generation = ("registered",)
+        paths = [Path("/run/viewer-left.sock"), Path("/run/viewer-right.sock")]
+
+        async def absent(_key):
+            fleet.sessions = {}
+
+        with mock.patch.object(fleet, "viewers_showing", return_value=paths), \
+             mock.patch.object(fleet, "authority", return_value={}), \
+             mock.patch.object(fleet, "wait_for_absence", side_effect=absent), \
+             mock.patch.object(fleet, "update_viewers",
+                               side_effect=RuntimeError("viewer-left.sock: gone")) as update, \
+             mock.patch.object(fleet, "publish_current_view") as publish:
+            result = await fleet.mutate_action(
+                f"archive\t{item.ref.key}\t0\t100")
+            assert item.ref.key in fleet.pending_archives
+            assert "Archiving" in next(tmp_path.glob("*.header")).read_text()
+            await asyncio.sleep(0)
+            publish.assert_not_awaited()
+            for artifact in tmp_path.glob("muster-view-*.*"):
+                artifact.unlink()
+            await asyncio.gather(*fleet.background_tasks)
+
+        assert "reload-sync" in result
+        assert item.ref.key not in fleet.pending_archives
+        assert fleet.projected() == []
+        update.assert_awaited_once_with(paths, f"CLEAR {item.ref.key}")
+        publish.assert_awaited_once()
+        assert "viewer cleanup failed" in publish.await_args.args[0]
+
+    monkeypatch.setattr(daemon, "RUNTIME", tmp_path)
+    asyncio.run(exercise())
+
+
+def test_optimistic_archive_failure_restores_row_and_never_clears_viewers(
+        tmp_path, monkeypatch):
+    async def exercise():
+        fleet = Fleet()
+        item = session(kind="tmux")
+        fleet.sessions = {"lovelace": [item]}
+        fleet.unavailable.clear()
+        fleet.muster_generation = ("registered",)
+        with mock.patch.object(fleet, "viewers_showing", return_value=[]), \
+             mock.patch.object(fleet, "authority", side_effect=RuntimeError("refused")), \
+             mock.patch.object(fleet, "update_viewers") as update, \
+             mock.patch.object(fleet, "publish_current_view") as publish:
+            await fleet.mutate_action(f"archive\t{item.ref.key}\t0\t100")
+            await asyncio.sleep(0)
+            publish.assert_not_awaited()
+            for artifact in tmp_path.glob("muster-view-*.*"):
+                artifact.unlink()
+            await asyncio.gather(*fleet.background_tasks)
+        assert [value.session.ref.key for value in fleet.projected()] == [item.ref.key]
+        update.assert_not_awaited()
+        publish.assert_awaited_once_with("refused")
+
+    monkeypatch.setattr(daemon, "RUNTIME", tmp_path)
     asyncio.run(exercise())
 
 
