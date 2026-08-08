@@ -83,8 +83,6 @@ Semantic operations compose directly from Python:
 from agent_fleet.actions import archive, create, refresh, rename
 from agent_fleet.daemon import snapshot
 from agent_fleet.protocol import decode_message
-from agent_fleet.reboot import restore as restore_reboot
-from agent_fleet.reboot import snapshot as snapshot_reboot
 from agent_fleet.viewer import show
 
 sessions, usage, unavailable = decode_message(snapshot())
@@ -93,14 +91,12 @@ rename(key, new_name)
 show(key, slot="main")
 refresh(key)
 archive(key)
-snapshot_reboot()
-restore_reboot()
 ```
 
-The reboot bridge writes a disposable snapshot file before a planned reboot
-and replays it afterwards. It is not live topology authority—tmux remains the
-source of truth. Fleet accepts only its finite create, rename, archive, restore
-and refresh operations; it publishes no general command surface.
+Fleet accepts only its finite create, rename, archive, restore and refresh
+operations; it publishes no general command surface. Recoverable provider
+history is read directly from native transcripts and exact retained Alan actor
+identity; ordinary tmux state has no inferred reconstruction path.
 
 Host aliases come from `~/.config/agent-fleet/hosts`. Routing and credentials
 belong to OpenSSH configuration. Machine labels are single-cell (`N L B T Œ`),
