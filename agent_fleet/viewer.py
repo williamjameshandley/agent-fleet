@@ -445,6 +445,11 @@ def focus_projected(state, slot, key):
     focus(slot, state.workstation)
 
 
+def project(state, key, selected=None):
+    if state.source != key:
+        state.open(key, selected)
+
+
 def activate(state, slot, key, selected=None):
     state.open(key, selected)
     try:
@@ -507,7 +512,7 @@ def serve(slot):
                             values = message.removeprefix("PROJECT ").split(" ", 1)
                             key = values[0]
                             selected = values[1] if len(values) == 2 else ""
-                            state.open(key, float(selected) if selected else None)
+                            project(state, key, float(selected) if selected else None)
                         elif message.startswith("OPEN "):
                             values = message.removeprefix("OPEN ").split(" ", 1)
                             key = values[0]

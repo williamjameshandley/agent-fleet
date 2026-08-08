@@ -402,7 +402,7 @@ class Fleet:
         self._view_cache = (key, value)
         return value
 
-    def publish_view(self, width, error="", preserve_focus=False):
+    def publish_view(self, width, error=""):
         self.view_width = width
         _, rows, header = self.view(width)
         if error:
@@ -417,15 +417,12 @@ class Fleet:
         header_command = shlex.join(("/usr/bin/cat", str(header_path)))
         rows_remove = shlex.join(("/usr/bin/rm", "-f", str(rows_path)))
         header_remove = shlex.join(("/usr/bin/rm", "-f", str(header_path)))
-        focus = "+unbind(focus)" if preserve_focus else ""
-        rebind = "+rebind(focus)" if preserve_focus else ""
-        action = (f"transform-header({header_command}; {header_remove}){focus}"
-                  f"+reload-sync({rows_command}; {rows_remove}){rebind}")
+        action = (f"transform-header({header_command}; {header_remove})"
+                  f"+reload-sync({rows_command}; {rows_remove})")
         return action, (rows_path, header_path)
 
     def mutate_view(self, request):
         values = request.split("\t")
-        preserve_focus = False
         try:
             if self.muster_generation is None:
                 raise RuntimeError("Muster generation is not registered")
@@ -447,7 +444,6 @@ class Fleet:
                 if item.session.ref.server.kind != "alan" or not item.child_count:
                     raise ValueError("fold requires an Alan parent with children")
                 actor = item.session.ref.session_id
-                preserve_focus = True
                 changed = (actor not in self.expanded if operation == "open" else
                            actor in self.expanded)
                 if operation == "open":
@@ -471,12 +467,11 @@ class Fleet:
                 self.view_revision += 1
                 self._view_cache = None
             self.action_error = ""
-            return self.publish_view(width, preserve_focus=preserve_focus)[0]
+            return self.publish_view(width)[0]
         except (LookupError, RuntimeError, ValueError) as error:
             self.action_error = str(error)
             width = self.view_width
-            return self.publish_view(
-                width, self.action_error, preserve_focus=preserve_focus)[0]
+            return self.publish_view(width, self.action_error)[0]
 
     async def mutate_action(self, request):
         values = request.split("\t")
