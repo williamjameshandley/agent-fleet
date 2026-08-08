@@ -16,7 +16,7 @@ import networkx as nx
 
 from .config import HUB, RUNTIME, hosts, ssh_environment
 from .alan import address_identity
-from .protocol import decode_graph, decode_message, encode
+from .protocol import decode_message, decode_observation, encode
 from .model import key_host
 from .tmux import capture, event_stream, split_key
 from .quota import read as quota_read
@@ -92,6 +92,7 @@ class Fleet:
     def __init__(self):
         self.sessions = {}
         self.observations = {}
+        self.graphs = {}
         self.observed = 0
         self._composed = (None, nx.MultiDiGraph())
         self.usage = {}
@@ -140,10 +141,12 @@ class Fleet:
             try:
                 assert process.stdout
                 async for raw in process.stdout:
-                    message = json.loads(raw)
-                    if self.host_reply(message):
+                    if raw.startswith(b'{"version":'):
+                        self.update_host(host, raw)
+                    elif self.host_reply(json.loads(raw)):
                         continue
-                    self.update_host(host, raw)
+                    else:
+                        raise ValueError("invalid host response")
                     async with self.changed:
                         self.changed.notify_all()
                     self.schedule_refresh()
@@ -159,9 +162,10 @@ class Fleet:
             await asyncio.sleep(1)
 
     def update_host(self, host, raw):
-        sessions, usage, _ = decode_message(raw)
+        sessions, usage, _, graph = decode_observation(raw)
         self.sessions[host] = sessions
         self.observations[host] = raw
+        self.graphs[host] = graph
         self.unavailable.discard(host)
         if host == hosts()[0] and usage:
             self.usage = usage
@@ -204,6 +208,7 @@ class Fleet:
         self.processes.pop(host, None)
         self.sessions.pop(host, None)
         self.observations.pop(host, None)
+        self.graphs.pop(host, None)
         self.unavailable.add(host)
         self.observed += 1
         self.view_revision += 1
@@ -550,8 +555,7 @@ class Fleet:
     def composed_graph(self):
         generation, composed = self._composed
         if generation != self.observed:
-            graphs = [graph for graph in
-                      (decode_graph(raw) for raw in self.observations.values())
+            graphs = [graph for graph in self.graphs.values()
                       if graph is not None]
             composed = nx.compose_all(graphs) if graphs else nx.MultiDiGraph()
             composed.graph["actors"] = [
@@ -821,8 +825,8 @@ class Fleet:
         return json.loads(stdout)
 
     async def history_observation(self, host):
-        raw = self.observations.get(host)
-        actors = [] if raw is None or decode_graph(raw) is None else await self.remote_json(
+        graph = self.graphs.get(host)
+        actors = [] if graph is None else await self.remote_json(
                 host, sys.executable, "-c",
                 "import json; from agent_fleet.alan import actors; print(json.dumps(actors()))",
             )

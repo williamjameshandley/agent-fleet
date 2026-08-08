@@ -22,7 +22,7 @@ import loop
 import networkx as nx
 
 from agent_fleet.model import ServerRef, Session, SessionRef
-from agent_fleet.protocol import decode, decode_graph, encode
+from agent_fleet.protocol import decode, decode_graph, decode_observation, encode
 from agent_fleet.render import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.tmux import split_key
 from agent_fleet import actions, authority, proc
@@ -251,8 +251,7 @@ class IdentityTests(unittest.TestCase):
         )
 
         fleet = Fleet()
-        fleet.observations = {"newton": encode([], {}, [], newton),
-                              "lovelace": encode([], {}, [], lovelace)}
+        fleet.graphs = {"newton": newton, "lovelace": lovelace}
         fleet.observed = 1
         composed = fleet.composed_graph()
 
@@ -275,15 +274,27 @@ class IdentityTests(unittest.TestCase):
             composed,
         )
 
+    def test_host_observation_decodes_sessions_and_graph_from_one_json_parse(self):
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = []
+        raw = encode([self.session("lovelace")], {}, [], graph)
+        with mock.patch("agent_fleet.protocol.json.loads",
+                        wraps=json.loads) as loads:
+            sessions, usage, unavailable, decoded = decode_observation(raw)
+        loads.assert_called_once_with(raw)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual((usage, unavailable), ({}, []))
+        self.assertEqual(decoded.graph["actors"], [])
+
     def test_composed_graph_recomposes_only_per_observation_generation(self):
         graph = nx.MultiDiGraph()
         graph.graph["actors"] = [{"addr": "a@h", "kind": "codex"}]
         fleet = Fleet()
-        fleet.observations = {"lovelace": encode([], {}, [], graph)}
+        fleet.graphs = {"lovelace": graph}
         fleet.observed = 1
         first = fleet.composed_graph()
         self.assertIs(fleet.composed_graph(), first)
-        fleet.observations["lovelace"] = encode([], {}, [], graph)
+        fleet.graphs["lovelace"] = graph
         self.assertIs(fleet.composed_graph(), first)
         fleet.observed = 2
         self.assertIsNot(fleet.composed_graph(), first)

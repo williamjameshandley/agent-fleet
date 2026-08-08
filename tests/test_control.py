@@ -334,6 +334,7 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet = Fleet(); session = self.session()
             fleet.sessions = {"fixture": [session]}
             fleet.observations = {"fixture": b"observation"}
+            fleet.graphs = {"fixture": mock.Mock()}
             loop = asyncio.get_running_loop()
             preview = loop.create_future(); switch = loop.create_future()
             cleanup = loop.create_future()
@@ -343,6 +344,7 @@ class DaemonBoundaryTests(unittest.TestCase):
             await fleet.host_disconnected("fixture")
             self.assertNotIn("fixture", fleet.sessions)
             self.assertNotIn("fixture", fleet.observations)
+            self.assertNotIn("fixture", fleet.graphs)
             self.assertFalse(fleet.previews); self.assertFalse(fleet.switches)
             self.assertFalse(fleet.cleanups)
             for future in (preview, switch, cleanup):
