@@ -10,13 +10,13 @@ if [ "$slot" = main ]; then
         tmux kill-session -t fleet@main
     fi
     if ! tmux has-session -t fleet@main 2>/dev/null; then
-        tmux new-session -d -s fleet@main "exec python -c 'from agent_fleet.viewer import serve; serve(\"main\")'"
+        tmux new-session -d -s fleet@main "exec env -u TMUX -u TMUX_PANE python -c 'from agent_fleet.viewer import serve; serve(\"main\")'"
         tmux set-option -t fleet@main prefix None
         tmux set-option -t fleet@main prefix2 None
         tmux set-option -t fleet@main window-size latest
     fi
     tmux set-option -t fleet@main status off
     tmux set-option -t fleet@main mouse on
-    exec /usr/bin/tmux -N -u attach-session -t fleet@main
+    exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session -t fleet@main
 fi
 exec python -c 'import sys; from agent_fleet.viewer import serve; serve(sys.argv[1])' "$slot"

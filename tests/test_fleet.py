@@ -56,6 +56,10 @@ class IdentityTests(unittest.TestCase):
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
 
+    def test_tmux_wrapper_forces_utf8_for_remote_clients(self):
+        wrapper = (Path(__file__).parents[1] / "fleet-tmux").read_text()
+        self.assertIn('exec /usr/bin/tmux -N -u "$@"', wrapper)
+
     def test_event_collector_cannot_create_tmux_server(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1289,7 +1293,11 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
                       muster)
         self.assertIn("new-session -d -s fleet@main", main)
+        self.assertIn("exec env -u TMUX -u TMUX_PANE python", main)
         self.assertIn("/usr/bin/tmux -L agent-fleet-ui", main)
+        self.assertIn(
+            "exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session "
+            "-t fleet@main", main)
         self.assertIn("set-option -t fleet@main prefix None", main)
         self.assertIn("set-option -t fleet@main status off", main)
         self.assertIn("set-option -t fleet@main mouse on", main)
@@ -1784,6 +1792,18 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(viewer.subprocess, "run", return_value=listed):
             state.resolve(f"alan:{actor}")
         target.assert_not_called()
+
+    def test_remote_actor_resolution_survives_the_remote_shell(self):
+        actor = "codex-1@newton"
+        session = mock.Mock(agent="codex", state="waiting", cwd="/work")
+        state = viewer.Attachment("main", "/dev/pts/9")
+        listed = mock.Mock(
+            stdout="/tmp/tmux-1000/default 2548 1784382062 \\$191\n")
+        with mock.patch.object(state, "find", return_value=session), \
+                mock.patch.object(state, "ssh", return_value=listed) as ssh:
+            self.assertEqual(state.resolve(f"alan:{actor}", remote=True),
+                             ("/tmp/tmux-1000/default", 2548, 1784382062, "$191"))
+        self.assertIn("#{q:socket_path}", ssh.call_args.args[1])
 
     def test_alan_preview_captures_the_actor_owned_terminal(self):
         for kind in ("claude", "codex"):

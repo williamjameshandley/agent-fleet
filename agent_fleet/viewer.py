@@ -254,7 +254,7 @@ class Attachment:
         if session.state in {"retired", "unavailable"}:
             raise RuntimeError(f"Alan actor is {session.state}: {actor}")
         name = "fleet@alan-" + alan.runtime_name(actor)
-        fmt = "#{socket_path}\t#{pid}\t#{start_time}\t#{session_id}"
+        fmt = "#{q:socket_path} #{pid} #{start_time} #{q:session_id}"
         command = ["/usr/bin/tmux", "-N", "list-sessions", "-f",
                    f"#{{==:#{{session_name}},{name}}}", "-F", fmt]
         def locate():
@@ -262,14 +262,14 @@ class Attachment:
                 return self.ssh(key_host(key), shlex.join(command), capture=True)
             return subprocess.run(command, text=True, capture_output=True, check=True)
         result = locate()
-        values = result.stdout.strip().split("\t")
+        values = shlex.split(result.stdout.strip())
         if len(values) != 4 and session.agent not in {"claude", "codex"}:
             if remote:
                 self.ssh(key_host(key), shlex.join([
                     "/usr/lib/agent-fleet/fleet-present", actor, session.agent, session.cwd]))
             else:
                 presentation.target(actor, {"kind": session.agent, "cwd": session.cwd})
-            values = locate().stdout.strip().split("\t")
+            values = shlex.split(locate().stdout.strip())
         if len(values) != 4:
             raise RuntimeError(f"{session.agent.capitalize()} evaluator terminal is unavailable: {actor}")
         return values[0], int(values[1]), int(values[2]), values[3]
