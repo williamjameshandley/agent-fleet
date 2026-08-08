@@ -1702,8 +1702,18 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
                          [root])
         fleet.show_python = True
-        with self.assertRaises(ValueError):
-            fleet.projected()
+        self.assertNotIn(python, [item.session.ref.session_id
+                                  for item in fleet.projected()])
+
+    def test_actor_without_current_principal_ancestry_stays_folded(self):
+        fleet, root, child, _ = self.fold_fleet()
+        graph = fleet._composed[1]
+        for source, target, relation in list(graph.edges(keys=True)):
+            if relation == "spawn" and graph.nodes[target]["stream"] == child:
+                graph.remove_edge(source, target, relation)
+        fleet.expanded.add(root)
+        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+                         [root])
 
     def test_muster_socket_refuses_a_second_live_listener(self):
         with tempfile.TemporaryDirectory() as directory:

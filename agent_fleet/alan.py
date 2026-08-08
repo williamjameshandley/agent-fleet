@@ -183,6 +183,8 @@ def project(sessions, graph, expanded=(), show_python=False):
     roots = {}
     for actor in session_order:
         candidates = nx.ancestors(ancestry, actor) & principals
+        if not candidates:
+            continue
         [principal] = candidates
         first = nx.shortest_path(ancestry, principal, actor)[1]
         if descriptors[first].get("preset") == "commander" or (
