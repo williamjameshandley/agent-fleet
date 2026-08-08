@@ -49,7 +49,7 @@ def request(slot, key):
 
 def focus_main():
     result = subprocess.run(
-        ["tmux", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
+        ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "fleet@muster", "@fleet_workstation"],
         text=True, capture_output=True, check=True)
     name = result.stdout.strip()
     if not name:
@@ -97,7 +97,7 @@ def show(key, slot=None):
         if not source:
             request(name, key)
             return
-    subprocess.run(["tmux", "display-message", "-t", "fleet@muster",
+    subprocess.run(["/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
                     "All viewer slots are occupied; choose a slot explicitly"])
 
 
@@ -191,9 +191,10 @@ def attach(key):
     current = [s for s in inventory(host) if s.ref.key == key]
     if len(current) != 1:
         raise RuntimeError(f"session identity changed: {key}")
-    subprocess.run(["tmux", "set-option", "-t", current[0].ref.session_id,
+    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", current[0].ref.session_id,
                     "status", "on"], check=True)
     if current[0].agent == "codex":
-        subprocess.run(["tmux", "set-option", "-t", current[0].ref.session_id,
+        subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", current[0].ref.session_id,
                         "mouse", "on"], check=True)
-    os.execvp("tmux", ["tmux", "attach-session", "-t", current[0].ref.session_id])
+    os.execvp("/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t",
+                                current[0].ref.session_id])

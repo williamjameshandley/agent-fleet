@@ -1,4 +1,5 @@
 #!/bin/sh
+tmux() { /usr/bin/tmux -N "$@"; }
 export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"
 hub=lovelace
 local_host=$(hostname -s)
@@ -63,6 +64,6 @@ tmux list-windows -t fleet@muster -F '#{window_name}' | grep -qx history ||
     tmux new-window -d -t fleet@muster -n history 'exec /usr/lib/agent-fleet/ui history-rows | exec /usr/lib/agent-fleet/ui history-ui'
 [ -z "$workstation" ] || tmux set-option -t fleet@muster @fleet_workstation "$workstation"
 if [ -z "$helper" ]; then
-    exec tmux -u attach-session -t fleet@muster
+    exec /usr/bin/tmux -N -u attach-session -t fleet@muster
 fi
 tmux -u attach-session -t fleet@muster

@@ -51,7 +51,7 @@ def snapshot(path=DEFAULT):
           "#{pane_pid}"
     panes = []
     warnings = []
-    for line in sh("tmux", "list-panes", "-a", "-F", fmt).splitlines():
+    for line in sh("/usr/bin/tmux", "-N", "list-panes", "-a", "-F", fmt).splitlines():
         sess, widx, wname, pidx, cwd, cmd, pid = line.split("\t")
         entry = {"session": sess, "window": int(widx), "window_name": wname,
                  "pane": int(pidx), "cwd": cwd, "command": cmd}
@@ -87,32 +87,32 @@ def snapshot(path=DEFAULT):
 def restore(path=DEFAULT):
     panes = json.loads(path.read_text())
     panes.sort(key=lambda p: (p["session"], p["window"], p["pane"]))
-    existing = set(sh("tmux", "list-sessions", "-F",
+    existing = set(sh("/usr/bin/tmux", "-N", "list-sessions", "-F",
                       "#{session_name}").splitlines())
     seen_windows = set()
     for p in panes:
         target = f"{p['session']}:{p['window']}"
         if p["session"] not in existing:
-            subprocess.run(["tmux", "new-session", "-d", "-s", p["session"],
+            subprocess.run(["/usr/bin/tmux", "-N", "new-session", "-d", "-s", p["session"],
                             "-c", p["cwd"], "-x", "220", "-y", "50"],
                            check=True, env=TMUX_ENV)
-            subprocess.run(["tmux", "move-window", "-s",
+            subprocess.run(["/usr/bin/tmux", "-N", "move-window", "-s",
                             f"{p['session']}:0" if p["window"] != 0 else target,
                             "-t", target], check=False, env=TMUX_ENV)
             existing.add(p["session"])
             seen_windows.add(target)
         elif target not in seen_windows:
-            subprocess.run(["tmux", "new-window", "-d", "-t", target,
+            subprocess.run(["/usr/bin/tmux", "-N", "new-window", "-d", "-t", target,
                             "-c", p["cwd"]], check=False, env=TMUX_ENV)
             seen_windows.add(target)
         else:
-            subprocess.run(["tmux", "split-window", "-d", "-t", target,
+            subprocess.run(["/usr/bin/tmux", "-N", "split-window", "-d", "-t", target,
                             "-c", p["cwd"]], check=True, env=TMUX_ENV)
-        subprocess.run(["tmux", "rename-window", "-t", target,
+        subprocess.run(["/usr/bin/tmux", "-N", "rename-window", "-t", target,
                         p["window_name"]], check=False, env=TMUX_ENV)
         if p.get("claude_session"):
             pane = f"{target}.{p['pane']}"
-            subprocess.run(["tmux", "send-keys", "-t", pane,
+            subprocess.run(["/usr/bin/tmux", "-N", "send-keys", "-t", pane,
                             f"claude --resume {p['claude_session']}",
                             "Enter"], check=True, env=TMUX_ENV)
     return {"panes": panes, "restored": len(panes)}

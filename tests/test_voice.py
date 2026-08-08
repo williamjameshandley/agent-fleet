@@ -1,5 +1,6 @@
 import json
 import socket
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +10,8 @@ from alan_composer.archive import Archive
 from alan_composer import destination
 from alan_composer.events import EventServer
 from alan_composer import i3
-from alan_composer.model import Composition, Mode
+from alan_composer.model import Composition, Destination, Mode
+from alan_composer import delivery
 
 
 class VoiceModelTests(unittest.TestCase):
@@ -80,8 +82,57 @@ class VoiceModelTests(unittest.TestCase):
 
         command = run.call_args_list[1].args[0]
         self.assertEqual(command[:5], ["ssh", "-T", "-o", "BatchMode=yes", "lovelace"])
-        self.assertIn("agent_fleet.viewer import exchange", command[7])
+        self.assertIn("agent_fleet.viewer import exchange", command[5])
         self.assertEqual(selected.key, "source-key")
+
+    @patch("alan_composer.destination.subprocess.run")
+    def test_native_actor_resolves_its_presenter_session(self, run):
+        session = type("Session", (), {
+            "ref": type("Ref", (), {
+                "server": type("Server", (), {"host": "newton", "kind": "alan"})(),
+                "session_id": "codex-example@newton",
+            })(),
+            "agent": "codex",
+        })()
+        run.return_value.stdout = "%9\n"
+        with patch("alan_composer.destination.alan.runtime_name", return_value="abc123"):
+            self.assertEqual(destination._active_pane(session), "%9")
+        self.assertEqual(run.call_args.args[0][5], (
+            "/bin/sh -c "
+            "'/usr/bin/tmux -N display-message -p -t =fleet@alan-abc123: "
+            "'\"'\"'#{pane_id}'\"'\"''"))
+
+    def test_remote_python_source_survives_a_real_shell(self):
+        source = "import sys; print('slot=' + sys.argv[1])"
+        shell_command = destination._remote(
+            "example", ["python", "-c", source, "main"])[-1]
+        result = subprocess.run(
+            ["/bin/sh", "-c", shell_command], check=True,
+            capture_output=True, text=True)
+        self.assertEqual(result.stdout, "slot=main\n")
+
+    @patch("alan_composer.delivery.subprocess.run")
+    @patch("alan_composer.delivery.revalidate")
+    def test_send_revalidates_before_typing(self, revalidate, run):
+        target = Destination("key", "newton", "$1", "%7", "target", 42)
+        delivery.send(target, "exact text")
+        revalidate.assert_called_once_with(target)
+        self.assertEqual(run.call_args_list[0].kwargs["input"], "exact text")
+
+    @patch("alan_composer.delivery.subprocess.run")
+    @patch("alan_composer.destination._active_pane", return_value="%8")
+    @patch("alan_composer.destination.find")
+    def test_send_refuses_replaced_pane(self, find, _pane, run):
+        target = Destination("key", "newton", "$1", "%7", "target", 42)
+        find.return_value = type("Session", (), {
+            "ref": type("Ref", (), {
+                "server": type("Server", (), {"host": "newton"})(),
+                "session_id": "$1",
+            })(),
+        })()
+        with self.assertRaisesRegex(RuntimeError, "pane changed"):
+            delivery.send(target, "must not type")
+        run.assert_not_called()
 
     @patch("alan_composer.i3.subprocess.run")
     @patch("alan_composer.i3.subprocess.check_output")

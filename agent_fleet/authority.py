@@ -1,0 +1,69 @@
+"""Finite source-authority mutations for the Fleet action boundary."""
+
+import json
+import sys
+
+from . import alan, presentation, tmux, transcripts
+
+
+FIELDS = {
+    "create": {"operation", "agent", "name", "cwd"},
+    "rename-alan": {"operation", "actor", "name"},
+    "rename-tmux": {"operation", "source", "name"},
+    "archive-alan": {"operation", "actor"},
+    "archive-tmux": {"operation", "source", "agent", "transcript"},
+    "refresh": {"operation", "actor"},
+    "restore-alan": {"operation", "actor"},
+    "restore-transcript": {"operation", "agent", "transcript", "name"},
+}
+
+
+def execute(request):
+    operation = request.get("operation")
+    if operation not in FIELDS or set(request) != FIELDS[operation]:
+        raise ValueError("invalid authority action")
+    if any(not isinstance(value, str) or not value
+           for name, value in request.items() if name != "operation"):
+        raise ValueError("invalid authority action")
+    if operation == "create":
+        if request["agent"] not in {"claude", "codex"}:
+            raise ValueError("create requires Claude or Codex")
+        addr = alan.create(request["agent"], request["name"], request["cwd"])
+        return {"source": f"alan:{addr}"}
+    if operation == "rename-alan":
+        alan.rename(request["actor"], request["name"])
+        return {"name": request["name"]}
+    if operation == "rename-tmux":
+        tmux.mutate(request["source"], "rename", [request["name"]])
+        return {"name": request["name"]}
+    if operation == "archive-alan":
+        alan.retire(request["actor"])
+        return {}
+    if operation == "archive-tmux":
+        transcripts.verify(request["agent"], request["transcript"])
+        tmux.mutate(request["source"], "archive", [])
+        return {}
+    if operation == "refresh":
+        presentation.refresh(request["actor"])
+        return {"source": f"alan:{request['actor']}"}
+    if operation == "restore-alan":
+        return {"source": f"alan:{alan.resume(request['actor'])}"}
+    transcripts.resume(
+        request["agent"], request["transcript"], request["name"]
+    )
+    return {"agent": request["agent"], "transcript": request["transcript"]}
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 1:
+        raise SystemExit(2)
+    try:
+        response = {"ok": True, "value": execute(json.loads(argv[0]))}
+    except Exception as error:
+        response = {"ok": False, "error": str(error)}
+    print(json.dumps(response, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()

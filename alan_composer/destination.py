@@ -5,6 +5,7 @@ import subprocess
 
 from agent_fleet.config import HUB
 from agent_fleet.remote import find
+from agent_fleet import alan
 
 from .model import Destination
 
@@ -32,13 +33,13 @@ def capture():
                "import sys; from agent_fleet.viewer import exchange; print(exchange(sys.argv[1], 'STATUS'))",
                slot]
     if slot == "main" and os.uname().nodename.split(".", 1)[0] != HUB:
-        command = ["ssh", "-T", "-o", "BatchMode=yes", HUB, *command]
+        command = _remote(HUB, command)
     status = subprocess.run(command, capture_output=True, text=True)
     key = status.stdout.strip() if status.returncode == 0 else ""
     if not key:
         return None
     session = find(key)
-    pane = _active_pane(session.ref.server.host, session.ref.session_id)
+    pane = _active_pane(session)
     return Destination(
         key=key,
         host=session.ref.server.host,
@@ -49,8 +50,29 @@ def capture():
     )
 
 
-def _active_pane(host, session_id):
-    command = ["tmux", "display-message", "-p", "-t", session_id, "#{pane_id}"]
+def revalidate(destination):
+    session = find(destination.key)
+    if (session.ref.server.host, session.ref.session_id) != (
+            destination.host, destination.session_id):
+        raise RuntimeError(f"stale destination identity: {destination.key}")
+    pane = _active_pane(session)
+    if pane != destination.pane_id:
+        raise RuntimeError(f"destination pane changed: {destination.pane_id} -> {pane}")
+
+
+def _active_pane(session):
+    host = session.ref.server.host
+    session_id = session.ref.session_id
+    if (getattr(session.ref.server, "kind", "tmux") == "alan"
+            and session.agent in {"claude", "codex"}):
+        session_id = "=fleet@alan-" + alan.runtime_name(session_id) + ":"
+    command = ["/usr/bin/tmux", "-N", "display-message", "-p", "-t", session_id,
+               "#{pane_id}"]
     if host != os.uname().nodename:
-        command = ["ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(command)]
+        command = _remote(host, command)
     return subprocess.run(command, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _remote(host, command):
+    return ["ssh", "-T", "-o", "BatchMode=yes", host,
+            shlex.join(["/bin/sh", "-c", shlex.join(command)])]

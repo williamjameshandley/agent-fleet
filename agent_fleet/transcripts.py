@@ -104,9 +104,9 @@ def resume(agent, session_id, name):
     item = verify(agent, session_id)
     command = (["claude", "--resume", item.session_id] if agent == "claude"
                else ["codex", "resume", item.session_id])
-    subprocess.run(["tmux", "new-session", "-d", "-s", name, "-c",
+    subprocess.run(["/usr/bin/tmux", "-N", "new-session", "-d", "-s", name, "-c",
                     item.cwd() or str(Path.home()), *command], check=True)
-    subprocess.run(["tmux", "set-option", "-t", name, "status", "on"],
+    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "status", "on"],
                    check=True)
 
 
@@ -299,7 +299,7 @@ def observe(sessions):
         check=True).stdout)
     children = process_tree()
     rows = []
-    panes = subprocess.run(["tmux", "list-panes", "-a", "-F", PANE_FORMAT],
+    panes = subprocess.run(["/usr/bin/tmux", "-N", "list-panes", "-a", "-F", PANE_FORMAT],
                            text=True, capture_output=True, check=True).stdout
     for line in panes.splitlines():
         name, session_id, pid, command, title = (

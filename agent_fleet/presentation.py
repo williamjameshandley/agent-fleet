@@ -29,7 +29,7 @@ def attach(actor, descriptor):
     name = "fleet@alan-" + alan.runtime_name(actor)
     target = "=" + name
     exists = subprocess.run(
-        ["tmux", "has-session", "-t", target],
+        ["/usr/bin/tmux", "-N", "has-session", "-t", target],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -39,7 +39,7 @@ def attach(actor, descriptor):
                 f"{descriptor['kind'].capitalize()} evaluator terminal is unavailable: {actor}"
             )
         subprocess.run(
-            ["tmux", "new-session", "-d", "-s", name, "-c", descriptor["cwd"],
+            ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", name, "-c", descriptor["cwd"],
              shlex.join([
                  "/usr/bin/python", "-c",
                  "import sys; from agent_fleet.presentation import run; run(sys.argv[1])",
@@ -47,11 +47,11 @@ def attach(actor, descriptor):
              ])],
             check=True,
         )
-        subprocess.run(["tmux", "set-option", "-t", name, "mouse", "on"],
+        subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "mouse", "on"],
                        check=True)
-    subprocess.run(["tmux", "set-option", "-t", name, "status", "on"],
+    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "status", "on"],
                    check=True)
-    os.execvp("tmux", ["tmux", "attach-session", "-t", target])
+    os.execvp("/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", target])
 
 
 def close(actor):
@@ -60,7 +60,7 @@ def close(actor):
     name = "fleet@alan-" + alan.runtime_name(actor)
     target = "=" + name
     result = subprocess.run(
-        ["tmux", "kill-session", "-t", target], text=True,
+        ["/usr/bin/tmux", "-N", "kill-session", "-t", target], text=True,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
     if result.returncode and result.stderr.strip() != f"can't find session: {name}":

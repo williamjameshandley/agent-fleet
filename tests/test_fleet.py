@@ -24,8 +24,7 @@ from agent_fleet.model import ServerRef, Session, SessionRef
 from agent_fleet.protocol import decode, decode_graph, encode
 from agent_fleet.render import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.tmux import split_key
-from agent_fleet.actions import session_name
-from agent_fleet import actions
+from agent_fleet import actions, authority
 from agent_fleet import alan
 from agent_fleet.config import machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
@@ -42,8 +41,10 @@ from agent_fleet.daemon import Fleet
 
 def without_tmux_client():
     """$TMUX overrides TMUX_TMPDIR, so a fixture server needs it removed."""
-    return {name: value for name, value in os.environ.items()
-            if name not in {"TMUX", "TMUX_PANE"}}
+    environment = {name: value for name, value in os.environ.items()
+                   if name not in {"TMUX", "TMUX_PANE"}}
+    environment["FLEET_TMUX"] = str(Path(__file__).parents[1] / "fleet-tmux")
+    return environment
 
 
 class IdentityTests(unittest.TestCase):
@@ -635,13 +636,13 @@ class IdentityTests(unittest.TestCase):
              mock.patch("os.execvp") as execute:
             viewer.attach(session.ref.key)
         self.assertEqual(run.call_args_list, [
-            mock.call(["tmux", "set-option", "-t", "$1", "status", "on"],
+            mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "$1", "status", "on"],
                       check=True),
-            mock.call(["tmux", "set-option", "-t", "$1", "mouse", "on"],
+            mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "$1", "mouse", "on"],
                       check=True),
         ])
         execute.assert_called_once_with(
-            "tmux", ["tmux", "attach-session", "-t", "$1"])
+            "/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", "$1"])
 
     def test_main_viewer_focus_uses_workstation_reverse_socket(self):
         session = self.session(os.uname().nodename)
@@ -668,51 +669,47 @@ class IdentityTests(unittest.TestCase):
         host = os.uname().nodename
         with mock.patch("agent_fleet.actions.muster_input",
                         side_effect=[host, "codex", "analysis.", "/work"]) as prompt, \
-             mock.patch("agent_fleet.actions.host_command") as run, \
-            mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
+             mock.patch("agent_fleet.actions.fleet_action",
+                        return_value={"source": f"alan:codex-deadbeef@{host}"}) as action, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
-            run.return_value.stdout = f"codex-deadbeef@{host}\n"
             actions.create_prompt()
         self.assertEqual(
             prompt.call_args_list[1],
             mock.call("agent", ("codex", "claude"), context=host))
-        self.assertIn("agent_fleet.alan import create", " ".join(run.call_args.args))
-        self.assertEqual(run.call_args.args[-3:], ("codex", "analysis", "/work"))
-        wait.assert_called_once_with(f"alan:codex-deadbeef@{host}")
+        action.assert_called_once_with({"operation": "create", "host": host,
+                                       "agent": "codex", "name": "analysis.",
+                                       "cwd": "/work"})
         show.assert_called_once_with(f"alan:codex-deadbeef@{host}")
 
     def test_create_composes_from_explicit_python_values(self):
         host = os.uname().nodename
-        with mock.patch("agent_fleet.actions.host_command") as run, \
-             mock.patch("agent_fleet.actions.wait_for_projection"), \
+        with mock.patch("agent_fleet.actions.fleet_action",
+                        return_value={"source": f"alan:codex-deadbeef@{host}"}) as action, \
              mock.patch("agent_fleet.actions.viewer.open_main"), \
              mock.patch("agent_fleet.actions.muster_input") as prompt:
-            run.return_value.stdout = f"codex-deadbeef@{host}\n"
             key = actions.create(host, "codex", "analysis.", "/work")
         self.assertEqual(key, f"alan:codex-deadbeef@{host}")
         prompt.assert_not_called()
-        self.assertIn("agent_fleet.alan import create", " ".join(run.call_args.args))
-        self.assertEqual(run.call_args.args[-3:], ("codex", "analysis", "/work"))
+        action.assert_called_once_with({"operation": "create", "host": host,
+                                       "agent": "codex", "name": "analysis.",
+                                       "cwd": "/work"})
 
-    def test_remote_command_is_batch_mode_and_leaves_failure_output_visible(self):
+    def test_daemon_remote_authority_uses_one_fixed_batch_mode_entrypoint(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
-        with mock.patch("agent_fleet.actions.subprocess.run") as run:
-            actions.host_command(host, "/usr/bin/python", "-c", "print(*__import__('sys').argv[1:])",
-                                 "work tree;safe", "/work dir/$literal",
-                                 stdout=subprocess.PIPE)
-        run.assert_called_once_with(
-            ["ssh", "-T", "-o", "BatchMode=yes", host,
-             "/usr/bin/python -c 'print(*__import__('\"'\"'sys'\"'\"').argv[1:])' "
-             "'work tree;safe' '/work dir/$literal'"],
-            text=True, check=True, capture_output=False, stdout=subprocess.PIPE)
-
-    def test_host_python_discards_actor_identity(self):
-        host = os.uname().nodename
-        with mock.patch("agent_fleet.actions.host_command") as run:
-            actions.host_python(host, "print('ok')")
-        self.assertEqual(run.call_args.args[:7], (
-            host, "/usr/bin/env", "-u", "LOOP_SOCKET", "-u",
-            "LOOP_CAPABILITIES", sys.executable))
+        process = mock.Mock(returncode=0)
+        process.communicate = mock.AsyncMock(
+            return_value=(b'{"ok":true,"value":{"name":"safe"}}\n', b''))
+        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
+                        return_value=process) as execute:
+            value = asyncio.run(Fleet().authority(
+                host, {"operation": "rename-alan", "actor": "codex-1@newton",
+                       "name": "work tree;safe"}))
+        self.assertEqual(value, {"name": "safe"})
+        command = execute.call_args.args
+        self.assertEqual(command[:5],
+                         ("ssh", "-T", "-o", "BatchMode=yes", host))
+        self.assertIn("/usr/lib/agent-fleet/action", command[5])
+        self.assertNotIn("python -c", command[5])
 
     def test_next_waiting_module_uses_the_composable_action(self):
         source = (Path(__file__).parents[1] / "agent_fleet/next_waiting.py").read_text()
@@ -722,17 +719,16 @@ class IdentityTests(unittest.TestCase):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
         with mock.patch("agent_fleet.actions.muster_input",
                         side_effect=[host, "claude", "analysis", "/work"]) as prompt, \
-             mock.patch("agent_fleet.actions.host_command") as run, \
-             mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
+             mock.patch("agent_fleet.actions.fleet_action",
+                        return_value={"source": f"alan:claude-deadbeef@{host}"}) as action, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
-            run.return_value.stdout = f"claude-deadbeef@{host}\n"
             actions.create_prompt()
         self.assertEqual(
             prompt.call_args_list[1],
             mock.call("agent", ("codex", "claude"), context=host))
-        self.assertIn("agent_fleet.alan import create", " ".join(run.call_args.args))
-        self.assertEqual(run.call_args.args[-3:], ("claude", "analysis", "/work"))
-        wait.assert_called_once_with(f"alan:claude-deadbeef@{host}")
+        action.assert_called_once_with({"operation": "create", "host": host,
+                                       "agent": "claude", "name": "analysis",
+                                       "cwd": "/work"})
         show.assert_called_once_with(f"alan:claude-deadbeef@{host}")
         self.assertNotIn('"tmux", "new-session"',
                          (Path(__file__).parents[1] / "agent_fleet/actions.py").read_text())
@@ -752,10 +748,15 @@ class IdentityTests(unittest.TestCase):
             ui_process.main(["unknown"])
 
     def test_create_rejects_unknown_agent_before_process_creation(self):
-        with mock.patch("agent_fleet.actions.host_command") as command:
-            with self.assertRaisesRegex(ValueError, "unsupported agent"):
-                actions.create("lovelace", "python", "work", "/work")
-        command.assert_not_called()
+        fleet = Fleet()
+        fleet.unavailable.clear()
+        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]), \
+             mock.patch.object(fleet, "authority") as execute:
+            with self.assertRaisesRegex(ValueError, "Claude or Codex"):
+                asyncio.run(fleet.action({"operation": "create", "host": "lovelace",
+                                          "agent": "python", "name": "work",
+                                          "cwd": "/work"}))
+        execute.assert_not_awaited()
 
     def test_reboot_snapshot_returns_report_without_printing(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -777,45 +778,53 @@ class IdentityTests(unittest.TestCase):
                  mock.patch("builtins.print") as output:
                 report = reboot.restore(path)
         self.assertEqual(report, {"panes": [pane], "restored": 1})
-        self.assertEqual(run.call_args_list[0].args[0][:4],
-                         ["tmux", "new-session", "-d", "-s"])
-        self.assertTrue(any(call.args[0][1] == "rename-window" for call in run.call_args_list))
+        self.assertEqual(run.call_args_list[0].args[0][:5],
+                         ["/usr/bin/tmux", "-N", "new-session", "-d", "-s"])
+        self.assertTrue(any(call.args[0][2] == "rename-window" for call in run.call_args_list))
         output.assert_not_called()
 
-    def test_projection_readiness_waits_for_the_actor(self):
-        actor = alan_inventory("lovelace", [{
-            "addr": "codex-1@lovelace", "kind": "codex", "state": "waiting",
+    def test_daemon_create_waits_on_its_own_observed_generation(self):
+        host = "lovelace"
+        fleet = Fleet()
+        fleet.unavailable.clear()
+        actor = alan_inventory(host, [{
+            "addr": f"codex-1@{host}", "kind": "codex", "state": "waiting",
             "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
-            "native": {"path": "/native/rollout-1.jsonl"},
         }])[0]
-        with mock.patch("agent_fleet.actions.find",
-                        side_effect=[LookupError(), actor]), \
-             mock.patch("agent_fleet.actions.time.sleep") as sleep:
-            actions.wait_for_projection(actor.ref.key)
-        sleep.assert_called_once_with(.1)
+
+        async def exercise():
+            with mock.patch("agent_fleet.daemon.hosts", return_value=[host]), \
+                 mock.patch.object(fleet, "authority", return_value={
+                     "source": actor.ref.key}) as execute:
+                pending = asyncio.create_task(fleet.action({
+                    "operation": "create", "host": host, "agent": "codex",
+                    "name": "work", "cwd": "/work"}))
+                await asyncio.sleep(0)
+                self.assertFalse(pending.done())
+                fleet.sessions[host] = [actor]
+                fleet.observed += 1
+                async with fleet.changed:
+                    fleet.changed.notify_all()
+                self.assertEqual(await pending, {"source": actor.ref.key})
+            execute.assert_awaited_once()
+
+        asyncio.run(exercise())
 
     def test_tmux_name_normalization_preserves_spaces(self):
-        self.assertEqual(session_name(" Test session. "), "Test session")
-        self.assertEqual(session_name("docs:v2.1"), "docs-v2-1")
+        self.assertEqual(Fleet.action_name(" Test session. "), "Test session")
+        self.assertEqual(Fleet.action_name("docs:v2.1"), "docs-v2-1")
 
     def test_archive_retires_exact_alan_actor_by_address(self):
         host = os.uname().nodename
         identity = "00000000-0000-4000-8000-000000000001"
         actor = f"codex-{identity}@{host}"
-        session = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"), actor),
-            "work", 1, 0, 0, 1, "tmux", "", "/work",
-            "codex", "waiting", "", 0, "", 1)
-        with mock.patch("agent_fleet.actions.find", return_value=session), \
-             mock.patch("agent_fleet.actions.host_command") as command, \
-             mock.patch("agent_fleet.actions.wait_for_absence") as absent, \
-             mock.patch("agent_fleet.actions.viewer.slots", return_value=[("main", session.ref.key)]), \
+        key = f"alan:{actor}"
+        with mock.patch("agent_fleet.actions.fleet_action") as action, \
+             mock.patch("agent_fleet.actions.viewer.slots", return_value=[("main", key)]), \
              mock.patch("agent_fleet.actions.viewer.request") as request:
-            actions.archive(session.ref.key)
-        self.assertIn("agent_fleet.alan import retire", " ".join(command.call_args.args))
-        self.assertEqual(command.call_args.args[-1], actor)
-        absent.assert_called_once_with(session.ref.key)
+            actions.archive(key)
+        action.assert_called_once_with({"operation": "archive", "source": key})
         request.assert_called_once_with("main", "")
 
     def test_archive_retires_alan_claude_without_projected_native_identity(self):
@@ -824,13 +833,16 @@ class IdentityTests(unittest.TestCase):
             SessionRef(ServerRef(host, "", 0, 0, "alan"), f"claude-1@{host}"),
             "work", 1, 0, 0, 1, "alan", "", "/work",
             "claude", "waiting", "", 0, "", 1)
-        with mock.patch("agent_fleet.actions.find", return_value=session), \
-             mock.patch("agent_fleet.actions.host_command") as command, \
-             mock.patch("agent_fleet.actions.wait_for_absence"), \
-             mock.patch("agent_fleet.actions.viewer.slots", return_value=[]):
-            actions.archive(session.ref.key)
-        self.assertIn("agent_fleet.alan import retire", " ".join(command.call_args.args))
-        self.assertEqual(command.call_args.args[-1], f"claude-1@{host}")
+        fleet = Fleet()
+        fleet.sessions[host] = [session]
+        fleet.unavailable.clear()
+        with mock.patch.object(fleet, "authority", return_value={}) as execute, \
+             mock.patch.object(fleet, "wait_for_absence") as absent:
+            self.assertEqual(asyncio.run(fleet.action(
+                {"operation": "archive", "source": session.ref.key})), {})
+        execute.assert_awaited_once_with(
+            host, {"operation": "archive-alan", "actor": f"claude-1@{host}"})
+        absent.assert_awaited_once_with(session.ref.key)
 
     def test_archive_retires_bare_alan_language_actor_by_address(self):
         host = os.uname().nodename
@@ -838,26 +850,30 @@ class IdentityTests(unittest.TestCase):
             SessionRef(ServerRef(host, "", 0, 0, "alan"), f"llm-1@{host}"),
             "review", 1, 0, 0, 1, "alan", "", "/work",
             "llm", "waiting")
-        with mock.patch("agent_fleet.actions.find", return_value=session), \
-             mock.patch("agent_fleet.actions.host_command") as command, \
-             mock.patch("agent_fleet.actions.wait_for_absence"), \
-             mock.patch("agent_fleet.actions.viewer.slots", return_value=[]):
-            actions.archive(session.ref.key)
-        self.assertIn("agent_fleet.alan import retire", " ".join(command.call_args.args))
-        self.assertEqual(command.call_args.args[-1], f"llm-1@{host}")
+        fleet = Fleet()
+        fleet.sessions[host] = [session]
+        fleet.unavailable.clear()
+        with mock.patch.object(fleet, "authority", return_value={}) as execute, \
+             mock.patch.object(fleet, "wait_for_absence"):
+            asyncio.run(fleet.action(
+                {"operation": "archive", "source": session.ref.key}))
+        execute.assert_awaited_once_with(
+            host, {"operation": "archive-alan", "actor": f"llm-1@{host}"})
 
     def test_archive_verifies_transcript_then_closes_exact_tmux_identity(self):
         session = self.session("lovelace")
         session = Session(**{**session.__dict__, "transcript_id": "thread-1"})
-        with mock.patch("agent_fleet.actions.find", return_value=session), \
-             mock.patch("agent_fleet.actions.host_command") as command, \
-             mock.patch("agent_fleet.actions.wait_for_absence") as absent, \
-             mock.patch("agent_fleet.actions.viewer.slots", return_value=[]):
-            actions.archive(session.ref.key)
-        command_text = " ".join(command.call_args_list[0].args)
-        self.assertIn("transcripts import verify", command_text)
-        self.assertIn("tmux import mutate", command_text)
-        absent.assert_called_once_with(session.ref.key)
+        fleet = Fleet()
+        fleet.sessions["lovelace"] = [session]
+        fleet.unavailable.clear()
+        with mock.patch.object(fleet, "authority", return_value={}) as execute, \
+             mock.patch.object(fleet, "wait_for_absence") as absent:
+            asyncio.run(fleet.action(
+                {"operation": "archive", "source": session.ref.key}))
+        execute.assert_awaited_once_with("lovelace", {
+            "operation": "archive-tmux", "source": session.ref.key,
+            "agent": "codex", "transcript": "thread-1"})
+        absent.assert_awaited_once_with(session.ref.key)
 
     def test_tmux_archive_revalidates_full_source_before_kill(self):
         key = "lovelace:/tmp/tmux:12:10:$1"
@@ -899,16 +915,14 @@ class IdentityTests(unittest.TestCase):
             SessionRef(ServerRef(host, "", 0, 0, "alan"), f"codex-1@{host}"),
             "work", 1, 0, 0, 1, "alan", "", "/work",
             "codex", "waiting", "", 0, "thread-1", 1)
-        with mock.patch("agent_fleet.actions.find", return_value=session), \
-             mock.patch("agent_fleet.actions.host_command") as command, \
+        with mock.patch("agent_fleet.actions.fleet_action") as action, \
              mock.patch("agent_fleet.actions.viewer.slots",
                         return_value=[("main", session.ref.key),
                                       ("right", session.ref.key)]), \
              mock.patch("agent_fleet.actions.viewer.request") as request:
             actions.refresh(session.ref.key)
-        self.assertIn("agent_fleet.presentation import refresh",
-                      " ".join(command.call_args.args))
-        self.assertEqual(command.call_args.args[-1], f"codex-1@{host}")
+        action.assert_called_once_with(
+            {"operation": "refresh", "source": session.ref.key})
         self.assertEqual(request.call_args_list, [
             mock.call("main", session.ref.key), mock.call("right", session.ref.key)])
 
@@ -924,55 +938,74 @@ class IdentityTests(unittest.TestCase):
 
     def test_history_open_retries_the_same_alan_address(self):
         key = "alan:codex-1@lovelace"
-        with mock.patch("agent_fleet.actions.host_command") as command, \
-             mock.patch("agent_fleet.actions.wait_for_projection") as wait, \
+        with mock.patch("agent_fleet.actions.fleet_action",
+                        return_value={"source": key}) as action, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
             actions.open_history(key)
-        self.assertIn("agent_fleet.alan import resume", " ".join(command.call_args.args))
-        self.assertEqual(command.call_args.args[-1], "codex-1@lovelace")
-        wait.assert_called_once_with(key)
+        action.assert_called_once_with(
+            {"operation": "restore", "history": key, "name": ""})
         show.assert_called_once_with(key)
 
     def test_transcript_history_open_captures_remote_resume_failure(self):
         key = "lovelace:codex:full-thread-id"
-        with mock.patch("agent_fleet.actions.snapshot",
-                        return_value='{"version":1,"sessions":[],"usage":{},"unavailable":[]}'), \
-             mock.patch("agent_fleet.actions.desktop_input", return_value="work"), \
-             mock.patch("agent_fleet.actions.host_command") as command, \
-             mock.patch("agent_fleet.actions.created_key", return_value="new-key"), \
-             mock.patch("agent_fleet.actions.viewer.request"):
+        with mock.patch("agent_fleet.actions.desktop_input", return_value="work"), \
+             mock.patch("agent_fleet.actions.fleet_action",
+                        side_effect=RuntimeError("resume refused")) as action:
+            with self.assertRaisesRegex(RuntimeError, "resume refused"):
+                actions.open_history(key)
+        action.assert_called_once_with(
+            {"operation": "restore", "history": key, "name": "work"})
+
+    def test_transcript_history_open_places_the_reconciled_source(self):
+        key = "lovelace:codex:full-thread-id"
+        with mock.patch("agent_fleet.actions.desktop_input", return_value="work"), \
+             mock.patch("agent_fleet.actions.fleet_action",
+                        return_value={"source": "lovelace:/tmp/tmux:1:2:$3"}), \
+             mock.patch("agent_fleet.actions.viewer.open_main") as show:
             actions.open_history(key)
-        self.assertIn("agent_fleet.transcripts import resume", " ".join(command.call_args.args))
+        show.assert_called_once_with("lovelace:/tmp/tmux:1:2:$3")
 
     def test_archive_failure_is_visible_in_muster(self):
-        failure = subprocess.CalledProcessError(1, ["fleet"], stderr="retire refused")
-        with mock.patch("agent_fleet.actions.archive", side_effect=failure), \
-             mock.patch("agent_fleet.actions.subprocess.run") as run:
-            with self.assertRaisesRegex(SystemExit, "retire refused"):
-                actions.archive_report("alan:codex-1@lovelace")
-        run.assert_called_once_with([
-            "tmux", "display-message", "-t", "fleet@muster",
-            "Archive failed: retire refused"])
+        fleet = Fleet()
+        writer = mock.Mock()
+        writer.drain = mock.AsyncMock()
+
+        async def exercise():
+            reader = asyncio.StreamReader()
+            reader.feed_data(b'{"operation":"archive","source":"gone"}\n')
+            reader.feed_eof()
+            await fleet.reply(reader, writer)
+
+        asyncio.run(exercise())
+        response = json.loads(writer.write.call_args.args[0])
+        self.assertEqual(response, {"ok": False,
+                                    "error": "session disappeared: gone"})
+        self.assertEqual(fleet.action_error, "session disappeared: gone")
 
     def test_stale_archive_row_is_visible_in_muster(self):
-        with mock.patch("agent_fleet.actions.archive",
-                        side_effect=LookupError("session disappeared")), \
-             mock.patch("agent_fleet.actions.subprocess.run") as run:
-            with self.assertRaisesRegex(SystemExit, "session disappeared"):
-                actions.archive_report("gone")
-        run.assert_called_once_with([
-            "tmux", "display-message", "-t", "fleet@muster",
-            "Archive failed: session disappeared"])
+        fleet = Fleet()
+        fleet.action_error = "session disappeared: gone"
+        with mock.patch.object(fleet, "projected", return_value=[]), \
+             mock.patch("agent_fleet.daemon.render.header_text",
+                        return_value="columns"):
+            writer = mock.Mock()
+            writer.drain = mock.AsyncMock()
+
+            async def exercise():
+                reader = asyncio.StreamReader()
+                reader.feed_data(b"header\n")
+                reader.feed_eof()
+                await fleet.reply(reader, writer)
+
+            asyncio.run(exercise())
+        self.assertEqual(writer.write.call_args.args[0],
+                         b"Action failed: session disappeared: gone\ncolumns\n")
 
     def test_history_open_failure_is_visible_in_muster(self):
-        with mock.patch("agent_fleet.actions.open_history",
-                        side_effect=RuntimeError("native identity changed")), \
-             mock.patch("agent_fleet.actions.subprocess.run") as run:
-            with self.assertRaisesRegex(SystemExit, "native identity changed"):
-                actions.open_history_report("alan:codex-1@lovelace")
-        run.assert_called_once_with([
-            "tmux", "display-message", "-t", "fleet@muster",
-            "Open failed: native identity changed"])
+        with mock.patch("agent_fleet.actions.fleet_action",
+                        side_effect=RuntimeError("native identity changed")):
+            with self.assertRaisesRegex(RuntimeError, "native identity changed"):
+                actions.open_history("alan:codex-1@lovelace")
 
     def test_working_recency_is_human_activity(self):
         working = Session(**{**self.session("newton").__dict__,
@@ -1130,7 +1163,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(ui.subprocess, "run") as run:
             ui.toggle("python")
         run.assert_called_once_with(
-            ["tmux", "set-option", "-t", "=fleet@muster:", "@fleet_show_python", "1"],
+            ["/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", "@fleet_show_python", "1"],
             check=True,
         )
 
@@ -1155,7 +1188,7 @@ class IdentityTests(unittest.TestCase):
                  mock.patch.object(ui.subprocess, "run") as run:
                 ui.fold(action, root.ref.key)
             run.assert_called_once_with([
-                "tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
+                "/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
                 expected], check=True)
 
     def test_fold_ignores_native_and_leaf_rows(self):
@@ -1406,7 +1439,7 @@ class IdentityTests(unittest.TestCase):
         with mock.patch("subprocess.run") as run:
             actions.create_tab()
         run.assert_called_once_with(
-            ["tmux", "new-window", "-t", "fleet@muster", "-n", "create",
+            ["/usr/bin/tmux", "-N", "new-window", "-t", "fleet@muster", "-n", "create",
              "exec /usr/lib/agent-fleet/ui create"], check=True)
 
     def test_rename_opens_inside_the_muster(self):
@@ -1414,7 +1447,7 @@ class IdentityTests(unittest.TestCase):
         with mock.patch("subprocess.run") as run:
             actions.rename_tab(key)
         run.assert_called_once_with(
-            ["tmux", "new-window", "-t", "fleet@muster", "-n", "rename",
+            ["/usr/bin/tmux", "-N", "new-window", "-t", "fleet@muster", "-n", "rename",
              "exec /usr/lib/agent-fleet/ui rename-prompt 'lovelace:/tmp/tmux:1:2:$3'"], check=True)
 
     def test_named_viewers_remain_local(self):

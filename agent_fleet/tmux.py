@@ -21,7 +21,8 @@ PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
 
 
 def server():
-    return Server()
+    return Server(tmux_bin=os.environ.get(
+        "FLEET_TMUX", "/usr/lib/agent-fleet/fleet-tmux"))
 
 
 def split_key(key):
@@ -126,18 +127,18 @@ def event_stream(host, consumer=None):
                 changed.put("quota" if any(Path(path) == quota_path for _, path in changes)
                             else "transcript")
         threading.Thread(target=transcripts, daemon=True).start()
-    probe = subprocess.run(["tmux", "-N", "list-sessions"],
+    probe = subprocess.run(["/usr/bin/tmux", "-N", "list-sessions"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if probe.returncode:
         raise RuntimeError("tmux server is not running")
     tmux = server()
     if not tmux.has_session("fleet@events"):
         created = subprocess.run(
-            ["tmux", "-N", "new-session", "-d", "-s", "fleet@events", "sleep infinity"],
+            ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "fleet@events", "sleep infinity"],
             text=True, capture_output=True)
         if created.returncode:
             raise RuntimeError(created.stderr.strip())
-    process = subprocess.Popen(["tmux", "-N", "-C", "attach-session",
+    process = subprocess.Popen(["/usr/bin/tmux", "-N", "-C", "attach-session",
                                 "-f", "ignore-size", "-t", "fleet@events"],
                                stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,

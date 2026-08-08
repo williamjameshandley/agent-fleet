@@ -23,7 +23,7 @@ def ordered():
 
 def option(name):
     result = subprocess.run(
-        ["tmux", "show-options", "-qv", "-t", "=fleet@muster:", name],
+        ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "=fleet@muster:", name],
         capture_output=True,
         text=True,
     )
@@ -33,14 +33,14 @@ def option(name):
 def toggle(kind):
     name = {"python": "@fleet_show_python"}[kind]
     subprocess.run(
-        ["tmux", "set-option", "-t", "=fleet@muster:", name, "0" if option(name) else "1"],
+        ["/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", name, "0" if option(name) else "1"],
         check=True,
     )
 
 
 def expanded():
     result = subprocess.run(
-        ["tmux", "show-options", "-qv", "-t", "=fleet@muster:", "@fleet_expanded"],
+        ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "=fleet@muster:", "@fleet_expanded"],
         capture_output=True,
         text=True,
     )
@@ -60,7 +60,7 @@ def fold(action, key):
     else:
         actors.discard(actor)
     subprocess.run(
-        ["tmux", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
+        ["/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
          " ".join(sorted(actors))],
         check=True,
     )
@@ -95,8 +95,8 @@ def muster():
         "--bind=l:execute-silent(/usr/lib/agent-fleet/ui fold open {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=h:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
         "--bind=p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=tab:execute-silent(tmux select-window -t fleet@muster:history)",
-        "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:history)",
+        "--bind=tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history)",
+        "--bind=shift-tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history)",
         "--preview=/usr/lib/agent-fleet/ui preview {1} $FZF_PREVIEW_COLUMNS $FZF_PREVIEW_LINES",
         "--preview-window=down,45%,nowrap,follow,border-none",
     ]
@@ -137,7 +137,7 @@ def history():
         "--id-nth=1", "--layout=reverse", "--no-sort", "--no-multi",
         "--header=History  Enter open  Tab live",
         "--bind=enter:execute-silent(/usr/lib/agent-fleet/ui open-history {1})+reload-sync(/usr/lib/agent-fleet/ui history-rows)",
-        "--bind=tab:execute-silent(tmux select-window -t fleet@muster:live)",
-        "--bind=shift-tab:execute-silent(tmux select-window -t fleet@muster:live)",
+        "--bind=tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:live)",
+        "--bind=shift-tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:live)",
     ]
     os.execvp(command[0], command)

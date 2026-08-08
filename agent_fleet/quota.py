@@ -8,11 +8,11 @@ from .usage import read as usage
 
 
 def tmux(*args):
-    return subprocess.run(["tmux", *args], text=True, capture_output=True)
+    return subprocess.run(["/usr/bin/tmux", "-N", *args], text=True, capture_output=True)
 
 
 def tmux_check(*args):
-    return subprocess.run(["tmux", *args], text=True, capture_output=True, check=True)
+    return subprocess.run(["/usr/bin/tmux", "-N", *args], text=True, capture_output=True, check=True)
 
 
 def read():
