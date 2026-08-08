@@ -30,7 +30,8 @@ a row drops into the real session for keyboard, mouse or voice input.
 ## Interaction
 
 - Laptop: the global Lovelace Muster and privileged Main are attached in a
-  50:50 i3 layout. Selecting another row replaces Main's direct attachment.
+  50:50 i3 layout. Selecting another row switches Main's retained presentation
+  client to that exact source.
 - Multi-screen: focus an already visible source, otherwise use a free fixed
   slot. At full capacity, refuse implicit replacement and ask for a destination.
 - A station may remain visibly blank until the user asks Commander to populate
@@ -122,9 +123,16 @@ a row drops into the real session for keyboard, mouse or voice input.
   reconnect, not on cursor movement.
 - Lovelace keeps one persistent event/control process per source host and owns
   the sole derived fleet projection. Workstations attach the global Muster and
-  privileged Main; their additional named viewers remain local. Navigation and
-  preview never launch SSH. A newly opened remote viewer uses one long-lived
-  interactive BatchMode attachment.
+  resident viewer slots on Lovelace. Each slot retains one presentation window
+  and tmux client per opened source host; remote hosts additionally retain one
+  interactive BatchMode SSH channel. Warm navigation uses only the existing
+  Fleet socket, host control stream and UI tmux control connection. Stock fzf
+  invokes only the finite local selection adapter; the switch creates no SSH
+  channel, PTY, tmux client, Python interpreter or presentation process.
+- Disconnecting, sleeping or moving a workstation between networks detaches
+  only its display client. Viewer slots and their host presentations remain on
+  Lovelace until explicit owner-side destruction. A later workstation attach
+  evicts only an older display client and reuses the same resident state.
 - SSH routes, ProxyJump/fallback and credentials belong to OpenSSH config.
 - Control observers never link source windows and attach with `ignore-size`.
   Viewers use normal client geometry, which must be tested at every profile.

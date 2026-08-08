@@ -11,8 +11,9 @@ The accepted design is a thin Python/fzf/tmux application, not a full TUI.
   source host and a protected Unix query socket.
 - Stable fzf Muster: `--track` and `--id-nth` use canonical source identity;
   ordering never renumbers tmux objects.
-- Persistent viewer wrappers: exact direct attachment, generation revalidation,
-  BatchMode SSH and fixed slot registration.
+- Resident viewer slots: one dedicated UI tmux session per slot, one retained
+  presentation client per opened host, exact generation revalidation through
+  the existing host control stream, and fixed slot registration.
 - Laptop and home launchers, global Lovelace Muster and Main, and persistent
   Commander.
 - Create, rename, open and recoverable archive actions. Fleet has no purge.
@@ -23,7 +24,8 @@ The accepted design is a thin Python/fzf/tmux application, not a full TUI.
 1. Package and install Fleet on Lovelace, Newton, Turing, Boltzmann and Noether.
 2. Verify event-to-Muster updates, stable cursor selection and disconnect state
    under real SSH failures.
-3. Verify laptop 50:50 i3 launch, direct local/remote attachment and focus.
+3. Verify laptop 50:50 i3 launch, warm local/remote navigation, focus and
+   workstation disconnect/reconnect continuity.
 4. Verify multi-screen free-slot/full-slot behavior and tmux geometry with
    simultaneous differently sized clients.
 5. Add the History/open tab and central cached usage header without

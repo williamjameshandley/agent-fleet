@@ -8,6 +8,8 @@ import subprocess
 import hashlib
 import time
 import threading
+import queue
+import re
 from pathlib import Path
 
 import networkx as nx
@@ -16,15 +18,26 @@ from .config import HUB, RUNTIME, hosts, ssh_environment
 from .alan import address_identity
 from .protocol import decode_graph, decode_message, encode
 from .model import key_host
-from .tmux import capture, event_stream
+from .tmux import capture, event_stream, split_key
 from .quota import read as quota_read
 from . import render
+
+
+MARKER_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def remove_viewer_marker(host, owner, slot):
+    if not MARKER_COMPONENT.fullmatch(owner) or not MARKER_COMPONENT.fullmatch(slot):
+        raise ValueError("invalid viewer marker identity")
+    path = RUNTIME / f"viewer-{owner}-{slot}-{host}.tty"
+    path.unlink(missing_ok=True)
 
 
 def events(host):
     """Stream one host's session events and answer preview requests."""
     lock = threading.Lock()
     consumer = threading.Event()
+    controls = queue.Queue(maxsize=1)
 
     def emit(message):
         with lock:
@@ -35,16 +48,32 @@ def events(host):
             for line in sys.stdin:
                 request = json.loads(line)
                 try:
-                    text = capture(request["key"], request["columns"], request["lines"])
-                    response = {"preview": request["preview"], "text": text}
-                except RuntimeError as error:
-                    response = {"preview": request["preview"], "error": str(error)}
+                    if "preview" in request:
+                        text = capture(request["key"], request["columns"], request["lines"])
+                        response = {"preview": request["preview"], "text": text}
+                    elif "switch" in request:
+                        control = controls.get()
+                        controls.put(control)
+                        target = (control.alan_target(request["actor"])
+                                  if "actor" in request else tuple(request["target"]))
+                        duration = control.switch(target, request["client"])
+                        response = {"switch": request["switch"], "duration": duration,
+                                    "target": target}
+                    elif "cleanup" in request:
+                        remove_viewer_marker(host, request["owner"], request["slot"])
+                        response = {"cleanup": request["cleanup"]}
+                    else:
+                        raise RuntimeError("unknown host request")
+                except (KeyError, OSError, RuntimeError, ValueError) as error:
+                    tag = next(name for name in ("preview", "switch", "cleanup")
+                               if name in request)
+                    response = {tag: request[tag], "error": str(error)}
                 emit(json.dumps(response, separators=(",", ":")))
         finally:
             consumer.set()
 
     threading.Thread(target=requests, daemon=True).start()
-    for sessions, graph in event_stream(host, consumer):
+    for sessions, graph in event_stream(host, consumer, controls):
         usage = quota_read() if host == hosts()[0] else {}
         emit(encode(sessions, usage, graph=graph))
 
@@ -61,6 +90,10 @@ class Fleet:
         self.processes = {}
         self.previews = {}
         self.next_preview = 0
+        self.switches = {}
+        self.next_switch = 0
+        self.cleanups = {}
+        self.next_cleanup = 0
         self.changed = asyncio.Condition()
         self.action_error = ""
 
@@ -88,12 +121,7 @@ class Fleet:
                 assert process.stdout
                 async for raw in process.stdout:
                     message = json.loads(raw)
-                    if "preview" in message:
-                        _, future = self.previews.pop(message["preview"])
-                        if "error" in message:
-                            future.set_exception(RuntimeError(message["error"]))
-                        else:
-                            future.set_result(message["text"])
+                    if self.host_reply(message):
                         continue
                     sessions, usage, _ = decode_message(raw)
                     self.sessions[host] = sessions
@@ -112,18 +140,47 @@ class Fleet:
                     await process.wait()
                 if not drain.done():
                     drain.cancel()
-                self.processes.pop(host, None)
-                self.observations.pop(host, None)
-                self.observed += 1
-                async with self.changed:
-                    self.changed.notify_all()
-                for number, (owner, future) in list(self.previews.items()):
-                    if owner == host:
-                        future.set_exception(RuntimeError(f"{host} disconnected"))
-                        del self.previews[number]
+                await self.host_disconnected(host)
             self.unavailable.add(host)
             self.schedule_refresh()
             await asyncio.sleep(1)
+
+    def host_reply(self, message):
+        if "preview" in message:
+            _, future = self.previews.pop(message["preview"])
+            if "error" in message:
+                future.set_exception(RuntimeError(message["error"]))
+            else:
+                future.set_result(message["text"])
+            return True
+        if "switch" in message:
+            _, future = self.switches.pop(message["switch"])
+            if "error" in message:
+                future.set_exception(RuntimeError(message["error"]))
+            else:
+                future.set_result((tuple(message["target"]), message["duration"]))
+            return True
+        if "cleanup" in message:
+            _, future = self.cleanups.pop(message["cleanup"])
+            if "error" in message:
+                future.set_exception(RuntimeError(message["error"]))
+            else:
+                future.set_result(None)
+            return True
+        return False
+
+    async def host_disconnected(self, host):
+        self.processes.pop(host, None)
+        self.sessions.pop(host, None)
+        self.observations.pop(host, None)
+        self.observed += 1
+        async with self.changed:
+            self.changed.notify_all()
+        for pending in (self.previews, self.switches, self.cleanups):
+            for number, (owner, future) in list(pending.items()):
+                if owner == host:
+                    future.set_exception(RuntimeError(f"{host} disconnected"))
+                    del pending[number]
 
     def schedule_refresh(self):
         if not self.refresh_pending:
@@ -195,6 +252,24 @@ class Fleet:
                     value = {"agent": session.agent, "state": session.state,
                              "cwd": session.cwd}
             payload = json.dumps(value, separators=(",", ":"))
+        elif request.startswith("switch "):
+            try:
+                value = json.loads(request.removeprefix("switch "))
+                target, duration = await self.switch(value["key"], value["client"])
+                response = {"target": target, "duration": duration}
+            except (KeyError, LookupError, OSError, RuntimeError, ValueError,
+                    json.JSONDecodeError) as error:
+                response = {"error": str(error)}
+            payload = json.dumps(response, separators=(",", ":"))
+        elif request.startswith("cleanup "):
+            try:
+                value = json.loads(request.removeprefix("cleanup "))
+                await self.cleanup(value["host"], value["owner"], value["slot"])
+                response = {"ok": True}
+            except (KeyError, LookupError, OSError, RuntimeError, ValueError,
+                    json.JSONDecodeError) as error:
+                response = {"error": str(error)}
+            payload = json.dumps(response, separators=(",", ":"))
         elif request.startswith("items "):
             projected = await self.projected()
             payload = render.rows_text(projected, sorted(self.unavailable),
@@ -619,6 +694,43 @@ class Fleet:
                                          "columns": columns, "lines": lines}) + "\n").encode())
         await process.stdin.drain()
         return await future
+
+    async def switch(self, key, client):
+        matches = [session for group in self.sessions.values() for session in group
+                   if session.ref.key == key]
+        if len(matches) != 1:
+            raise RuntimeError(f"session disappeared: {key}")
+        host = key_host(key)
+        if host in self.unavailable:
+            raise RuntimeError(f"{host} is disconnected; refusing action")
+        self.next_switch += 1
+        number = self.next_switch
+        future = asyncio.get_running_loop().create_future()
+        self.switches[number] = (host, future)
+        payload = {"switch": number, "client": client}
+        if key.startswith("alan:"):
+            payload["actor"] = key.removeprefix("alan:")
+        else:
+            payload["target"] = split_key(key)[1:]
+        process = self.processes[host]
+        assert process.stdin
+        process.stdin.write((json.dumps(payload) + "\n").encode())
+        await process.stdin.drain()
+        return await future
+
+    async def cleanup(self, host, owner, slot):
+        if host in self.unavailable:
+            raise RuntimeError(f"{host} is disconnected; refusing cleanup")
+        self.next_cleanup += 1
+        number = self.next_cleanup
+        future = asyncio.get_running_loop().create_future()
+        self.cleanups[number] = (host, future)
+        process = self.processes[host]
+        assert process.stdin
+        process.stdin.write((json.dumps({"cleanup": number, "owner": owner,
+                                         "slot": slot}) + "\n").encode())
+        await process.stdin.drain()
+        await future
 
 
 def request(message):

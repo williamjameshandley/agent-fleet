@@ -133,17 +133,6 @@ class IdentityTests(unittest.TestCase):
                           ("newton", "lovelace", "boltzmann", "turing", "noether")],
                          ["N", "L", "B", "T", "Œ"])
 
-    def test_viewer_force_reaps_a_signal_ignoring_process_group(self):
-        child = subprocess.Popen(
-            [sys.executable, "-c",
-             "import signal,time; signal.signal(signal.SIGHUP, signal.SIG_IGN); time.sleep(30)"],
-            start_new_session=True)
-        time.sleep(.05)
-        started = time.monotonic()
-        viewer.stop_child(child)
-        self.assertLess(time.monotonic() - started, .5)
-        self.assertIsNotNone(child.returncode)
-
     def test_protocol_round_trip_preserves_canonical_identity(self):
         sessions = [self.session("newton"), self.session("lovelace")]
         encoded = json.loads(encode(sessions))
@@ -292,6 +281,24 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(json.loads(writer.write.call_args.args[0]),
                          {"agent": session.agent, "state": session.state,
                           "cwd": session.cwd})
+
+    def test_daemon_switch_reply_preserves_the_host_control_error(self):
+        fleet = Fleet()
+        writer = mock.Mock()
+        writer.drain = mock.AsyncMock()
+
+        async def exercise():
+            reader = asyncio.StreamReader()
+            reader.feed_data(b'switch {"key":"source","client":"/dev/pts/8"}\n')
+            reader.feed_eof()
+            with mock.patch.object(
+                    fleet, "switch", mock.AsyncMock(
+                        side_effect=RuntimeError("identity changed"))):
+                await fleet.reply(reader, writer)
+
+        asyncio.run(exercise())
+        self.assertEqual(json.loads(writer.write.call_args.args[0]),
+                         {"error": "identity changed"})
 
     def test_alan_key_uses_its_host_bound_actor_identity_once(self):
         ref = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
@@ -635,6 +642,91 @@ class IdentityTests(unittest.TestCase):
         request.assert_called_once_with("main", session.ref.key)
         select.assert_called_once_with()
 
+    def test_fzf_open_adapter_sends_one_exact_timed_socket_request(self):
+        root = Path(__file__).parents[1]
+        key = "newton:/tmp/tmux-1000/default:12:10:$1"
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            socket_dir = runtime / "agent-fleet"
+            socket_dir.mkdir()
+            path = socket_dir / "viewer-main.sock"
+            received = []
+            ready = threading.Event()
+
+            def answer():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(path)); server.listen(); ready.set()
+                    connection, _ = server.accept()
+                    with connection:
+                        received.append(connection.makefile().readline().strip())
+                        connection.sendall(b"OK\n")
+
+            thread = threading.Thread(target=answer); thread.start(); ready.wait(1)
+            result = subprocess.run([root / "fleet-open", "main", key],
+                                    env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
+                                    text=True, capture_output=True)
+            thread.join(1)
+        self.assertEqual(result.returncode, 0)
+        operation, actual, selected = received[0].split(" ")
+        self.assertEqual((operation, actual), ("OPEN", key))
+        self.assertGreater(float(selected), 0)
+
+    def test_fzf_project_adapter_sends_one_exact_timed_socket_request(self):
+        root = Path(__file__).parents[1]
+        key = "newton:/tmp/tmux-1000/default:12:10:$1"
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            socket_dir = runtime / "agent-fleet"
+            socket_dir.mkdir()
+            path = socket_dir / "viewer-main.sock"
+            received = []
+            ready = threading.Event()
+
+            def answer():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(path)); server.listen(); ready.set()
+                    connection, _ = server.accept()
+                    with connection:
+                        received.append(connection.makefile().readline().strip())
+                        connection.sendall(b"OK\n")
+
+            thread = threading.Thread(target=answer); thread.start(); ready.wait(1)
+            result = subprocess.run([root / "fleet-open", "project", "main", key],
+                                    env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
+                                    text=True, capture_output=True)
+            thread.join(1)
+        self.assertEqual(result.returncode, 0)
+        operation, actual, selected = received[0].split(" ")
+        self.assertEqual((operation, actual), ("PROJECT", key))
+        self.assertGreater(float(selected), 0)
+
+    def test_fzf_focus_adapter_focuses_without_a_source(self):
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            socket_dir = runtime / "agent-fleet"
+            socket_dir.mkdir()
+            path = socket_dir / "viewer-main.sock"
+            received = []
+            ready = threading.Event()
+
+            def answer():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(path)); server.listen(); ready.set()
+                    connection, _ = server.accept()
+                    with connection:
+                        received.append(connection.makefile().readline().strip())
+                        connection.sendall(b"OK\n")
+
+            thread = threading.Thread(target=answer); thread.start(); ready.wait(1)
+            key = "newton:/tmp/tmux-1000/default:12:10:$1"
+            result = subprocess.run([root / "fleet-open", "focus", "main", key],
+                                    env={**os.environ, "XDG_RUNTIME_DIR": str(runtime)},
+                                    text=True, capture_output=True)
+            thread.join(1)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(received, [f"FOCUS {key}"])
+
     def test_public_show_api_places_an_explicit_named_slot(self):
         with mock.patch.object(viewer, "slots", return_value=[("main", "old")]), \
              mock.patch.object(viewer, "request") as request:
@@ -643,27 +735,48 @@ class IdentityTests(unittest.TestCase):
 
     def test_repeated_local_open_uses_only_atomic_switch(self):
         session = self.session(os.uname().nodename)
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         state.source = "old"
         state.host = os.uname().nodename.split(".", 1)[0]
-        state.child = mock.Mock(poll=mock.Mock(return_value=None))
-        with mock.patch.object(state, "switch_local") as switch, \
-             mock.patch.object(viewer.subprocess, "Popen") as popen:
+        entry = mock.Mock(client="/dev/pts/8", source="old")
+        state.attachments[state.host] = entry
+        with mock.patch.object(state, "resident_switch") as switch, \
+             mock.patch.object(state, "select_host") as select, \
+             mock.patch.object(state, "create_host") as create:
             state.open(session.ref.key)
-        switch.assert_called_once_with(session.ref.key)
-        popen.assert_not_called()
+        switch.assert_called_once_with(session.ref.key, "/dev/pts/8")
+        select.assert_not_called(); create.assert_not_called()
+        self.assertEqual(entry.source, session.ref.key)
 
     def test_initial_local_attachment_does_not_request_nested_tmux(self):
-        state = viewer.Attachment("main", "/dev/pts/9")
-        child = mock.Mock()
+        ui = mock.Mock()
+        ui.command.side_effect = [["@2"], ["/dev/pts/8"]]
+        state = viewer.Attachment("main", "/dev/pts/9", ui)
         with mock.patch.object(state, "resolve", return_value=("/tmp/tmux", 12, 10, "$1")), \
-             mock.patch.object(state, "wait_local"), \
-             mock.patch.object(viewer.subprocess, "Popen", return_value=child) as popen, \
-             mock.patch.object(viewer, "ssh_environment",
-                               return_value={"TMUX": "nested", "TMUX_PANE": "%1",
-                                             "PATH": "/usr/bin"}):
-            state.start_local("source")
-        self.assertEqual(popen.call_args.kwargs["env"], {"PATH": "/usr/bin"})
+             mock.patch.object(state, "prove_switch"):
+            entry = state.create_host(os.uname().nodename.split(".", 1)[0], "source")
+        command = ui.command.call_args_list[0].args[0][-1]
+        self.assertIn("env -u TMUX -u TMUX_PANE", command)
+        self.assertEqual((entry.window, entry.client), ("@2", "/dev/pts/8"))
+
+    def test_cold_attachment_retries_only_until_tmux_registers_its_client(self):
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        with mock.patch.object(
+                state, "resident_switch",
+                side_effect=[RuntimeError("can't find client: /dev/pts/8"), ("target",)]) as switch, \
+             mock.patch.object(viewer.time, "sleep"):
+            self.assertEqual(state.prove_switch("source", "/dev/pts/8"), ("target",))
+        self.assertEqual(switch.call_count, 2)
+        with mock.patch.object(state, "resident_switch",
+                               side_effect=RuntimeError("stale source identity")):
+            with self.assertRaisesRegex(RuntimeError, "stale"):
+                state.prove_switch("source", "/dev/pts/8")
+
+    def test_switch_protocol_preserves_the_daemon_error(self):
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        with mock.patch.object(state, "daemon", return_value='{"error":"identity changed"}'):
+            with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                state.resident_switch("source", "/dev/pts/8")
 
     def test_atomic_switch_revalidates_server_generation_session_and_client(self):
         command = mock.Mock(stdout=[])
@@ -726,45 +839,130 @@ class IdentityTests(unittest.TestCase):
                 client.wait()
                 subprocess.run(["tmux", "kill-server"], env=environment)
 
-    def test_failed_host_replacement_resumes_unchanged_old_attachment(self):
-        state = viewer.Attachment("main", "/dev/pts/9")
+    def test_failed_cross_host_commit_rolls_back_inactive_attachment(self):
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         state.source = "old-source"
         state.host = "old-host"
-        state.child = mock.Mock(pid=81, poll=mock.Mock(return_value=None))
-        with mock.patch.object(state, "start_remote", side_effect=RuntimeError("offline")), \
-             mock.patch.object(state, "suspend") as suspend, \
-             mock.patch.object(state, "resume") as resume:
-            with self.assertRaisesRegex(RuntimeError, "offline"):
+        state.attachments = {
+            "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
+            "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
+        with mock.patch.object(state, "resident_switch") as switch, \
+             mock.patch.object(state, "select_host", side_effect=RuntimeError("UI failed")):
+            with self.assertRaisesRegex(RuntimeError, "UI failed"):
                 state.open("new-host:/tmp/tmux/default:12:10:$1")
-        suspend.assert_called_once_with()
-        resume.assert_called_once_with()
+        self.assertEqual(switch.call_args_list, [
+            mock.call("new-host:/tmp/tmux/default:12:10:$1", "/dev/pts/2"),
+            mock.call("prior-new", "/dev/pts/2")])
         self.assertEqual((state.source, state.host), ("old-source", "old-host"))
 
-    def test_remote_client_suspend_and_resume_use_the_owning_tmux_server(self):
-        state = viewer.Attachment("main", "/dev/pts/9")
-        state.host = "newton"
-        state.remote_tty = "/dev/pts/8"
-        state.child = mock.Mock(pid=81)
-        pid = mock.Mock(stdout="123\n")
-        with mock.patch.object(state, "ssh", side_effect=[mock.Mock(), pid, mock.Mock()]) as ssh:
-            state.suspend()
-            state.resume()
-        self.assertIn("suspend-client", ssh.call_args_list[0].args[1])
-        self.assertIn("display-message", ssh.call_args_list[1].args[1])
-        self.assertIn("/usr/bin/kill -CONT 123", ssh.call_args_list[2].args[1])
+    def test_failed_rollback_removes_only_the_inactive_attachment(self):
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        state.source = "old-source"
+        state.host = "old-host"
+        state.attachments = {
+            "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
+            "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
+        with mock.patch.object(
+                state, "resident_switch",
+                side_effect=[None, RuntimeError("rollback failed")]), \
+             mock.patch.object(state, "select_host", side_effect=RuntimeError("UI failed")), \
+             mock.patch.object(state, "remove_host") as remove:
+            with self.assertRaisesRegex(RuntimeError, "UI failed"):
+                state.open("new-host:/tmp/tmux/default:12:10:$1")
+        remove.assert_called_once_with("new-host")
+        self.assertEqual((state.source, state.host), ("old-source", "old-host"))
 
-    def test_local_client_suspend_uses_tmux_protocol_and_resumes_process_group(self):
-        state = viewer.Attachment("main", "/dev/pts/9")
-        state.host = os.uname().nodename.split(".", 1)[0]
-        state.child = mock.Mock(pid=81)
-        with mock.patch.object(viewer.subprocess, "run") as run, \
-             mock.patch.object(viewer.os, "killpg") as kill:
-            state.suspend()
-            state.resume()
-        run.assert_called_once_with(
-            ["/usr/bin/tmux", "-N", "suspend-client", "-t", "/dev/pts/9"],
-            check=True)
-        kill.assert_called_once_with(81, signal.SIGCONT)
+    def test_cross_host_open_retains_both_host_windows(self):
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        old = mock.Mock(source="old-source", client="/dev/pts/1", window="@1")
+        new = mock.Mock(source="prior-new", client="/dev/pts/2", window="@2")
+        state.attachments = {"old-host": old, "new-host": new}
+        state.source = "old-source"; state.host = "old-host"
+        with mock.patch.object(state, "resident_switch"), \
+             mock.patch.object(state, "select_host"):
+            state.open("new-host:/tmp/tmux/default:12:10:$1")
+        self.assertEqual(set(state.attachments), {"old-host", "new-host"})
+        self.assertEqual((state.host, state.source),
+                         ("new-host", "new-host:/tmp/tmux/default:12:10:$1"))
+
+    def test_real_ui_windows_survive_display_detach_and_cross_host_selection(self):
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {**os.environ, "TMUX_TMPDIR": directory,
+                           "TERM": "xterm-256color"}
+            environment.pop("TMUX", None); environment.pop("TMUX_PANE", None)
+            for source in ("lovelace-source", "newton-source"):
+                subprocess.run(["tmux", "new-session", "-d", "-s", source,
+                                "sleep 30"], check=True, env=environment)
+            subprocess.run(["tmux", "-L", "agent-fleet-ui", "new-session", "-d",
+                            "-s", "fleet@test", "sleep 30"], check=True, env=environment)
+            control_process = subprocess.Popen(
+                ["tmux", "-L", "agent-fleet-ui", "-C", "attach-session",
+                 "-t", "fleet@test"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, env=environment)
+            control = tmux.ControlClient(control_process, queue.Queue())
+            control.command(["refresh-client", "-f", "no-output"])
+            state = viewer.Attachment("test", "/dev/pts/9", control)
+            display = None
+            try:
+                entries = {}
+                for host, source in (("lovelace", "lovelace-source"),
+                                     ("newton", "newton-source")):
+                    command = shlex.join(
+                        ["env", "-u", "TMUX", "-u", "TMUX_PANE", "tmux", "-N",
+                         "attach-session", "-t", source])
+                    window = control.command(
+                        ["new-window", "-d", "-P", "-F", "#{window_id}",
+                         "-t", "fleet@test", "-n", host, command])[0]
+                    entries[host] = mock.Mock(
+                        window=window,
+                        client=state.ui_value(window, "#{pane_tty}"),
+                        source=f"{host}:/tmp/tmux/default:1:1:$1",
+                        remote_file=None, master=None)
+                state.attachments = entries
+                state.host = "lovelace"; state.source = entries["lovelace"].source
+                identities = {
+                    host: (entry.window,
+                           state.ui_value(entry.window, "#{pane_pid}"), entry.client)
+                    for host, entry in entries.items()}
+                with mock.patch.object(state, "resident_switch"):
+                    state.open(entries["newton"].source)
+                    state.open(entries["lovelace"].source)
+                self.assertEqual(
+                    {host: (entry.window,
+                            state.ui_value(entry.window, "#{pane_pid}"), entry.client)
+                     for host, entry in entries.items()}, identities)
+
+                master, slave = pty.openpty()
+                display = subprocess.Popen(
+                    ["tmux", "-L", "agent-fleet-ui", "attach-session",
+                     "-t", "fleet@test"], stdin=slave, stdout=slave, stderr=slave,
+                    env=environment, start_new_session=True)
+                os.close(slave)
+                for _ in range(100):
+                    clients = control.command(
+                        ["list-clients", "-t", "fleet@test", "-F",
+                         "#{client_name} #{client_control_mode}"])
+                    if any(line.endswith(" 0") for line in clients):
+                        break
+                    time.sleep(.01)
+                display_clients = [line.rsplit(" ", 1)[0] for line in clients
+                                   if line.endswith(" 0")]
+                self.assertEqual(len(display_clients), 1)
+                control.command(["detach-client", "-t", display_clients[0]])
+                display.wait(timeout=2); os.close(master); display = None
+                self.assertIsNone(control_process.poll())
+                self.assertEqual(set(state.attachments), {"lovelace", "newton"})
+                self.assertEqual(state.source, entries["lovelace"].source)
+            finally:
+                if display and display.poll() is None:
+                    display.terminate(); display.wait()
+                control_process.terminate(); control_process.wait()
+                subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
+                               env=environment, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def test_focus_failure_does_not_turn_a_completed_open_into_failure(self):
         state = mock.Mock()
@@ -775,76 +973,86 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(error, "Focus failed: no display")
         report.assert_not_called()
 
-    def test_dead_attachment_clears_the_advertised_source_without_an_open(self):
-        state = viewer.Attachment("main", "/dev/pts/9")
-        state.source = "source"
-        state.host = os.uname().nodename.split(".", 1)[0]
-        state.child = mock.Mock(poll=mock.Mock(return_value=1))
-        with mock.patch.object(state, "close") as close:
-            error = state.check()
-        close.assert_called_once_with()
-        self.assertEqual(state.source, "")
-        self.assertEqual(error, "Viewer attachment exited unexpectedly")
+    def test_focus_requires_the_selected_source_to_be_projected(self):
+        state = mock.Mock(source="source-a", workstation="boltzmann")
+        with mock.patch.object(viewer, "focus") as focus:
+            with self.assertRaisesRegex(RuntimeError, "source-a, not source-b"):
+                viewer.focus_projected(state, "main", "source-b")
+            focus.assert_not_called()
+            viewer.focus_projected(state, "main", "source-a")
+        focus.assert_called_once_with("main", "boltzmann")
 
-    def test_dead_master_cleanup_never_starts_ssh(self):
-        state = viewer.Attachment("main", "/dev/pts/9")
+    def test_dead_attachment_clears_the_advertised_source_without_an_open(self):
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         state.source = "source"
         state.host = "newton"
-        state.master = (82, 10)
-        state.remote_file = "/run/user/1000/agent-fleet/viewer-lovelace-main.tty"
-        state.child = mock.Mock(poll=mock.Mock(return_value=1))
-        child = state.child
-        with mock.patch.object(viewer, "process_alive", return_value=False), \
-             mock.patch.object(viewer, "stop_child") as stop, \
-             mock.patch.object(viewer.subprocess, "run") as run:
+        state.attachments["newton"] = mock.Mock(
+            window="@2", remote_file="/run/user/1000/agent-fleet/viewer.tty",
+            owner="lovelace", master=None)
+        with mock.patch.object(state, "ui_value", return_value="1"), \
+             mock.patch.object(state, "reclaim_marker") as reclaim, \
+             mock.patch.object(state, "ssh") as ssh:
             error = state.check()
-        stop.assert_called_once_with(child)
-        run.assert_not_called()
-        self.assertEqual(error, "Viewer SSH master exited unexpectedly")
-        self.assertEqual((state.source, state.remote_file), ("", None))
+        self.assertEqual(state.source, "")
+        self.assertEqual(error, "Viewer attachment exited unexpectedly")
+        self.assertNotIn("newton", state.attachments)
+        reclaim.assert_called_once_with("newton", "lovelace")
+        ssh.assert_not_called()
+
+    def test_dead_remote_master_removes_only_that_host_without_starting_ssh(self):
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        state.host = "lovelace"
+        state.source = "local-source"
+        state.attachments = {
+            "lovelace": mock.Mock(window="@1", remote_file=None, master=None),
+            "newton": mock.Mock(window="@2", remote_file="marker",
+                                 owner="lovelace", master=(82, 10))}
+        with mock.patch.object(viewer, "process_alive", return_value=False), \
+             mock.patch.object(state, "ui_value", return_value="0"), \
+             mock.patch.object(state, "reclaim_marker",
+                               side_effect=RuntimeError(
+                                   "newton is disconnected; refusing cleanup")), \
+             mock.patch.object(state, "ssh") as ssh:
+            self.assertEqual(state.check(), "")
+        self.assertEqual(set(state.attachments), {"lovelace"})
+        self.assertEqual((state.host, state.source), ("lovelace", "local-source"))
+        ssh.assert_not_called()
 
     def test_repeated_remote_open_retains_master_and_interactive_client(self):
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         state.source = "remote:/tmp/tmux/default:12:10:$1"
         state.host = "remote"
-        state.master = (82, 10)
-        state.remote_tty = "/dev/pts/8"
-        state.child = mock.Mock(poll=mock.Mock(return_value=None))
-        checked = mock.Mock(returncode=0)
-        switched = mock.Mock(stdout="0.001000\n")
-        with mock.patch.object(viewer.subprocess, "run", return_value=checked), \
-             mock.patch.object(viewer, "process_alive", return_value=True), \
-             mock.patch.object(state, "resolve", return_value=("/tmp/tmux/default", 12, 10, "$2")), \
-             mock.patch.object(state, "ssh", return_value=switched) as ssh, \
-             mock.patch.object(viewer.subprocess, "Popen") as popen:
+        entry = mock.Mock(source=state.source, client="/dev/pts/8", window="@2")
+        state.attachments["remote"] = entry
+        with mock.patch.object(state, "resident_switch") as switch, \
+             mock.patch.object(state, "create_host") as create, \
+             mock.patch.object(state, "select_host") as select:
             state.open("remote:/tmp/tmux/default:12:10:$2")
-        popen.assert_not_called()
-        ssh.assert_called_once()
-        self.assertEqual(state.master, (82, 10))
-        self.assertEqual(state.child.poll(), None)
+        switch.assert_called_once_with("remote:/tmp/tmux/default:12:10:$2", "/dev/pts/8")
+        create.assert_not_called(); select.assert_not_called()
+        self.assertIs(state.attachments["remote"], entry)
 
     def test_remote_start_retries_until_the_allocated_client_is_registered(self):
-        state = viewer.Attachment("main", "/dev/pts/9")
-        child = mock.Mock(poll=mock.Mock(return_value=None))
+        ui = mock.Mock()
+        ui.command.side_effect = [["@2"]]
+        state = viewer.Attachment("main", "/dev/pts/9", ui)
         empty = mock.Mock(stdout="", returncode=0)
         tty = mock.Mock(stdout="/dev/pts/8\n", returncode=0)
-        not_ready = mock.Mock(stdout="", stderr="can't find client: /dev/pts/8\n",
-                              returncode=1)
-        ready = mock.Mock(stdout="0.001000\n", stderr="", returncode=0)
-        with mock.patch.object(viewer.subprocess, "Popen", return_value=child), \
-             mock.patch.object(state, "ensure_master", return_value=(82, 10)), \
+        with mock.patch.object(state, "ensure_master", return_value=(82, 10)), \
              mock.patch.object(state, "resolve",
                                return_value=("/tmp/tmux", 12, 10, "$1")), \
              mock.patch.object(state, "ssh",
-                               side_effect=[empty, tty, not_ready, tty, ready]) as ssh:
-            result = state.start_remote("newton", "source")
-        self.assertEqual(result[0:2], (child, (82, 10)))
-        self.assertEqual(state.switch_duration, .001)
-        self.assertEqual(sum(call.kwargs.get("check") is False
-                             for call in ssh.call_args_list), 2)
+                               side_effect=[empty, tty]) as ssh, \
+             mock.patch.object(state, "reclaim_marker") as reclaim, \
+             mock.patch.object(state, "prove_switch") as switch:
+            result = state.create_host("newton", "newton:/tmp/tmux:12:10:$1")
+        self.assertEqual((result.window, result.client), ("@2", "/dev/pts/8"))
+        switch.assert_called_once_with("newton:/tmp/tmux:12:10:$1", "/dev/pts/8")
+        reclaim.assert_called_once_with("newton", os.uname().nodename.split(".", 1)[0])
+        self.assertEqual(len(ssh.call_args_list), 2)
 
     def test_non_hub_actor_lookup_reuses_one_forward_to_the_fleet_daemon(self):
-        state = viewer.Attachment("side", "/dev/pts/9")
+        state = viewer.Attachment("side", "/dev/pts/9", mock.Mock())
         client = mock.MagicMock()
         client.__enter__.return_value = client
         client.recv.side_effect = [b"projection", b"", b"projection", b""]
@@ -865,7 +1073,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(client.connect.call_count, 2)
 
     def test_replaced_daemon_master_rebuilds_the_exact_forward(self):
-        state = viewer.Attachment("side", "/dev/pts/9")
+        state = viewer.Attachment("side", "/dev/pts/9", mock.Mock())
         state.daemon_socket = Path("/run/user/1000/agent-fleet/viewer-side-fleet.sock")
         state.daemon_master = (81, 9)
         client = mock.MagicMock()
@@ -886,14 +1094,14 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(state.daemon_master, (82, 10))
 
     def test_master_creation_requires_configured_persistent_multiplexing(self):
-        state = viewer.Attachment("side", "/dev/pts/9")
+        state = viewer.Attachment("side", "/dev/pts/9", mock.Mock())
         policy = mock.Mock(stdout="controlmaster no\ncontrolpath none\ncontrolpersist no\n")
         with mock.patch.object(viewer.subprocess, "run", return_value=policy):
             with self.assertRaisesRegex(RuntimeError, "ControlMaster"):
                 state.master_policy("newton")
 
     def test_daemon_forward_recovery_cancels_only_the_exact_slot_rule(self):
-        state = viewer.Attachment("left", "/dev/pts/9")
+        state = viewer.Attachment("left", "/dev/pts/9", mock.Mock())
         local, specification = state.daemon_forward()
         with mock.patch.object(viewer.subprocess, "run") as run, \
              mock.patch.object(Path, "unlink") as unlink:
@@ -906,10 +1114,8 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(local.name, "viewer-left-fleet.sock")
 
     def test_main_viewer_focus_uses_workstation_reverse_socket(self):
-        with mock.patch("agent_fleet.viewer.subprocess.run") as run, \
-             mock.patch("agent_fleet.viewer.workstation.request") as request:
-            run.return_value.stdout = "boltzmann\n"
-            viewer.focus("main")
+        with mock.patch("agent_fleet.viewer.workstation.request") as request:
+            viewer.focus("main", "boltzmann")
         request.assert_called_once_with(
             "boltzmann", {"operation": "focus", "slot": "main"})
 
@@ -1271,8 +1477,10 @@ class IdentityTests(unittest.TestCase):
         paths = list((root / "agent_fleet").glob("*.py"))
         source = "\n".join(path.read_text() for path in paths)
         self.assertEqual(source.count('"kill-session"'), 2)
-        for command in ("kill-window", "unlink-window"):
-            self.assertNotIn(command, source)
+        self.assertNotIn("unlink-window", source)
+        self.assertEqual(source.count('"kill-window"'), 2)
+        self.assertIn('self.ui.command(["kill-window"',
+                      (root / "agent_fleet/viewer.py").read_text())
 
     def test_commander_routes_to_the_lovelace_alan_client(self):
         launcher = (Path(__file__).parents[1] / "fleet-commander").read_text()
@@ -1301,6 +1509,11 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("set-option -t fleet@main prefix None", main)
         self.assertIn("set-option -t fleet@main status off", main)
         self.assertIn("set-option -t fleet@main mouse on", main)
+        self.assertIn("#{==:#{client_control_mode},0}", main)
+        self.assertNotIn("attach-session -d", main)
+        self.assertIn("--destroy", main)
+        self.assertIn('ui.command(["refresh-client", "-f", "no-output"])',
+                      (root / "agent_fleet/viewer.py").read_text())
         self.assertIn("set-option -t fleet@muster mouse off", muster)
         self.assertIn("/usr/bin/nc -U", main)
         self.assertIn("ConditionHost=lovelace", service)
@@ -1389,7 +1602,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_muster_always_opens_the_global_main_viewer(self):
         source = (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text()
-        self.assertIn("/usr/lib/agent-fleet/fleet-open main {1}", source)
+        self.assertIn("focus:execute-silent(exec /usr/lib/agent-fleet/fleet-open project main {1})", source)
+        self.assertIn("enter:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})", source)
         self.assertNotIn("/usr/lib/agent-fleet/ui show", source)
         self.assertIn("load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)", source)
         self.assertIn('"--no-sort"', source)
@@ -1402,6 +1616,8 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("h:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header", source)
         self.assertIn("p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header", source)
         self.assertIn('"--footer-border=bottom"', source)
+        self.assertNotIn('"--preview=', source)
+        self.assertNotIn('"--preview-window=', source)
 
     def test_muster_projects_recursive_folds_and_python_independently(self):
         root = "codex-root@newton"
@@ -1661,7 +1877,7 @@ class IdentityTests(unittest.TestCase):
                         return_value=os.terminal_size((100, 24))):
             self.assertEqual(
                 footer(),
-                "Enter open  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
+                "Enter view  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
 
     def test_column_header_renders_the_exact_icon_bytes(self):
         from agent_fleet.render import column_header
@@ -1731,9 +1947,11 @@ class IdentityTests(unittest.TestCase):
             ["/usr/bin/tmux", "-N", "new-window", "-t", "fleet@muster", "-n", "rename",
              "exec /usr/lib/agent-fleet/ui rename-prompt 'lovelace:/tmp/tmux:1:2:$3'"], check=True)
 
-    def test_named_viewers_remain_local(self):
+    def test_named_viewers_route_to_the_resident_lovelace_compositor(self):
         launcher = (Path(__file__).parents[1] / "fleet-viewer").read_text()
-        self.assertIn("from agent_fleet.viewer import serve", launcher)
+        self.assertIn('exec ssh -tt -o BatchMode=yes lovelace fleet-viewer "$slot"',
+                      launcher)
+        self.assertIn('new-session -d -s "fleet@$slot"', launcher)
 
     def test_ssh_environment_uses_stable_agent_socket(self):
         environment = ssh_environment()
@@ -1756,7 +1974,7 @@ class IdentityTests(unittest.TestCase):
         session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
                                      actor), "codex", 0, 0, 0, 1, "alan", "", "/work",
                           "codex")
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         failed = subprocess.CalledProcessError(1, ["tmux"])
         with mock.patch.object(state, "find", return_value=session), \
              mock.patch.object(viewer.subprocess, "run", side_effect=failed), \
@@ -1770,7 +1988,7 @@ class IdentityTests(unittest.TestCase):
         session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
                                      actor), "python", 0, 0, 0, 1, "alan", "", "/work",
                           "python")
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         missing = mock.Mock(stdout="\n")
         listed = mock.Mock(stdout="/tmp/tmux/default\t12\t10\t$1\n")
         with mock.patch.object(state, "find", return_value=session), \
@@ -1785,7 +2003,7 @@ class IdentityTests(unittest.TestCase):
         session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
                                      actor), "python", 0, 0, 0, 1, "alan", "", "/work",
                           "python")
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         listed = mock.Mock(stdout="/tmp/tmux/default\t12\t10\t$1\n")
         with mock.patch.object(state, "find", return_value=session), \
              mock.patch.object(viewer.presentation, "target") as target, \
@@ -1796,7 +2014,7 @@ class IdentityTests(unittest.TestCase):
     def test_remote_actor_resolution_survives_the_remote_shell(self):
         actor = "codex-1@newton"
         session = mock.Mock(agent="codex", state="waiting", cwd="/work")
-        state = viewer.Attachment("main", "/dev/pts/9")
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         listed = mock.Mock(
             stdout="/tmp/tmux-1000/default 2548 1784382062 \\$191\n")
         with mock.patch.object(state, "find", return_value=session), \
@@ -1836,6 +2054,8 @@ class IdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as runtime:
             env = {**os.environ, "XDG_RUNTIME_DIR": runtime,
                    "PYTHONPATH": str(root), "TMUX_TMPDIR": runtime}
+            subprocess.run(["tmux", "-L", "agent-fleet-ui", "new-session", "-d",
+                            "-s", "fleet@test", "sleep 30"], check=True, env=env)
             master, slave = pty.openpty()
             process = subprocess.Popen([sys.executable, "-c",
                                         "from agent_fleet.viewer import serve; serve('test')"],
@@ -1857,6 +2077,97 @@ class IdentityTests(unittest.TestCase):
                 process.terminate()
                 process.wait()
                 os.close(master)
+                subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
+                               env=env, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+
+    def test_shutdown_acknowledges_only_after_cleanup_and_socket_removal(self):
+        with tempfile.TemporaryDirectory() as runtime:
+            runtime = Path(runtime)
+            entered = threading.Event()
+            release = threading.Event()
+            state = mock.Mock()
+
+            def shutdown():
+                entered.set()
+                release.wait(2)
+
+            state.shutdown.side_effect = shutdown
+            state.check.return_value = ""
+            with mock.patch.object(viewer, "RUNTIME", runtime), \
+                 mock.patch.object(viewer.os, "ttyname", return_value="/dev/pts/9"), \
+                 mock.patch.object(viewer, "Attachment", return_value=state), \
+                 mock.patch.object(viewer, "viewer_error"):
+                thread = threading.Thread(target=viewer.serve, args=("test",))
+                thread.start()
+                path = runtime / "viewer-test.sock"
+                for _ in range(100):
+                    if path.exists():
+                        break
+                    time.sleep(.01)
+                with socket.socket(socket.AF_UNIX) as client:
+                    for _ in range(100):
+                        try:
+                            client.connect(str(path))
+                            break
+                        except ConnectionRefusedError:
+                            time.sleep(.01)
+                    else:
+                        self.fail("viewer socket did not accept connections")
+                    client.sendall(b"SHUTDOWN\n")
+                    self.assertTrue(entered.wait(1))
+                    client.settimeout(.05)
+                    with self.assertRaises(TimeoutError):
+                        client.recv(16)
+                    release.set()
+                    self.assertEqual(client.recv(16), b"OK\n")
+                thread.join(1)
+            self.assertFalse(thread.is_alive())
+            self.assertFalse(path.exists())
+            state.shutdown.assert_called_once_with()
+
+    @unittest.skipUnless(os.uname().nodename.split(".", 1)[0] == "lovelace",
+                         "launcher ownership boundary is on lovelace")
+    def test_destroy_preserves_ui_session_when_controller_rejects_shutdown(self):
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory) / "runtime"
+            tmux_tmp = Path(directory) / "tmux"
+            socket_dir = runtime / "agent-fleet"
+            runtime.mkdir(); tmux_tmp.mkdir(); socket_dir.mkdir()
+            environment = {**os.environ, "XDG_RUNTIME_DIR": str(runtime),
+                           "TMUX_TMPDIR": str(tmux_tmp)}
+            subprocess.run(["tmux", "-L", "agent-fleet-ui", "new-session", "-d",
+                            "-s", "fleet@failure", "sleep 30"],
+                           check=True, env=environment)
+            path = socket_dir / "viewer-failure.sock"
+            ready = threading.Event()
+
+            def reject():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(path)); server.listen(); ready.set()
+                    connection, _ = server.accept()
+                    with connection:
+                        connection.makefile().readline()
+                        connection.sendall(b"ERROR marker cleanup failed\n")
+
+            thread = threading.Thread(target=reject); thread.start()
+            ready.wait(1)
+            try:
+                result = subprocess.run([root / "fleet-viewer", "--destroy", "failure"],
+                                        env=environment, text=True,
+                                        capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ERROR marker cleanup failed", result.stderr)
+                alive = subprocess.run(
+                    ["tmux", "-L", "agent-fleet-ui", "has-session",
+                     "-t", "fleet@failure"], env=environment)
+                self.assertEqual(alive.returncode, 0)
+            finally:
+                thread.join(1)
+                subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
+                               env=environment, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
 
     def test_quota_only_events_force_an_inventory_emit(self):
         source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()

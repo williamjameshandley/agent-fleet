@@ -1,8 +1,19 @@
 #!/bin/sh
 set -eu
-[ "$#" -eq 2 ] || exit 2
-slot=$1 key=$2
+case "$#:$1" in
+    3:focus) operation=FOCUS; slot=$2; key=$3;;
+    3:project) operation=PROJECT; slot=$2; key=$3;;
+    2:*) operation=OPEN; slot=$1; key=$2;;
+    *) exit 2;;
+esac
 case "$slot" in *[!A-Za-z0-9_-]*|'') exit 2;; esac
-runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet
-read -r selected _ < /proc/uptime
-printf 'OPEN %s %s\n' "$key" "$selected" | /usr/bin/nc -U "$runtime/viewer-$slot.sock"
+runtime=${XDG_RUNTIME_DIR:?}/agent-fleet
+if [ "$operation" != FOCUS ]; then
+    read -r selected _ < /proc/uptime
+    message="$operation $key $selected"
+else
+    message="$operation $key"
+fi
+exec /usr/bin/nc -U "$runtime/viewer-$slot.sock" <<EOF
+$message
+EOF
