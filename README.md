@@ -20,7 +20,11 @@ bare model uses Fleet's minimal line presenter, each derived from its actor
 address. Provider-native transcripts remain evidence and supply History, not a
 second live presentation.
 Muster and Main are attachable from every workstation and therefore
-retain one shared selection while the user moves. A multi-screen deck
+retain one shared selection while the user moves. Each viewer slot keeps one
+presentation client per host it has opened, so returning to a warm host switches
+the existing tmux client and UI window without rebuilding SSH or terminal state.
+Closing or moving a workstation detaches only its display; the Lovelace-resident
+viewer state remains. A multi-screen deck
 focuses an already open source or uses a free slot; a full deck never evicts
 anything implicitly. `mod+v` returns to the always-visible Muster through i3.
 
@@ -43,8 +47,11 @@ non-interactive SSH event stream per configured host. The host helper combines
 tmux control-mode lifecycle notifications, polling of Alan's observation graph and
 transcript filesystem events, then publishes disposable snapshots. Navigation,
 sorting and preview never run SSH.
-Opening a remote source in Main or a named workstation viewer creates the one
-unavoidable long-lived interactive SSH attachment with `BatchMode=yes`.
+The first open of a remote host in a viewer slot creates one long-lived
+interactive SSH attachment with `BatchMode=yes`. The slot retains that attachment
+in its dedicated `agent-fleet-ui` tmux session. Warm source and host changes use
+the existing daemon, host and UI control streams and create no process, SSH
+channel, PTY or tmux client.
 
 Tmux previews use `capture-pane -eN`, reconstruct the terminal grid with
 libvterm, and apply tmux's `screen_write_preview` cursor-centred crop. Live Alan
@@ -71,7 +78,8 @@ The host adapter combines tmux process discovery with the composable
 ```
 fleet-muster                    attach the global Lovelace Muster
 fleet-viewer main               attach the global Lovelace Main
-fleet-viewer SLOT               run a workstation-local named slot
+fleet-viewer SLOT               attach a named Lovelace-resident viewer slot
+fleet-viewer --destroy SLOT     explicitly destroy one derived viewer slot
 fleet-view                      laptop 50:50 launcher
 fleet-deck                      home multi-screen launcher
 fleet-commander                 persistent Claude Commander session
