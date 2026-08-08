@@ -502,7 +502,7 @@ class Fleet:
     async def search_history(self, query):
         if not isinstance(query, str) or not query:
             raise ValueError("history search query is required")
-        source_hosts = sorted(hosts())
+        source_hosts = sorted(set(hosts()) - self.unavailable)
         observations = await asyncio.gather(
             *(self.search_observation(host, query) for host in source_hosts))
         rows = []
