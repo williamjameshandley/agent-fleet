@@ -5,6 +5,7 @@ After=network-online.target
 
 [Service]
 Type=simple
+UnsetEnvironment=LOOP_SOCKET LOOP_CAPABILITIES
 ExecStart=/usr/bin/python -c 'import asyncio; from agent_fleet.daemon import Fleet; asyncio.run(Fleet().serve())'
 Restart=on-failure
 RestartSec=2

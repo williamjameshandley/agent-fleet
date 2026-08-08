@@ -60,6 +60,8 @@ class Fleet:
         self.processes = {}
         self.previews = {}
         self.next_preview = 0
+        self.changed = asyncio.Condition()
+        self.action_error = ""
 
     async def collect(self, host):
         python = (sys.executable, "-c",
@@ -96,6 +98,8 @@ class Fleet:
                     self.sessions[host] = sessions
                     self.observations[host] = raw
                     self.observed += 1
+                    async with self.changed:
+                        self.changed.notify_all()
                     self.unavailable.discard(host)
                     if host == hosts()[0] and usage:
                         self.usage = usage
@@ -110,6 +114,8 @@ class Fleet:
                 self.processes.pop(host, None)
                 self.observations.pop(host, None)
                 self.observed += 1
+                async with self.changed:
+                    self.changed.notify_all()
                 for number, (owner, future) in list(self.previews.items()):
                     if owner == host:
                         future.set_exception(RuntimeError(f"{host} disconnected"))
@@ -157,7 +163,20 @@ class Fleet:
 
     async def reply(self, reader, writer):
         request = (await reader.readline()).decode().rstrip()
-        if request == "snapshot":
+        if request.startswith("{"):
+            self.action_error = ""
+            self.schedule_refresh()
+            try:
+                value = await self.action(json.loads(request))
+                payload = json.dumps({"ok": True, "value": value},
+                                     separators=(",", ":"))
+            except (KeyError, LookupError, OSError, RuntimeError, ValueError,
+                    json.JSONDecodeError) as error:
+                self.action_error = str(error)
+                payload = json.dumps({"ok": False, "error": self.action_error},
+                                     separators=(",", ":"))
+            self.schedule_refresh()
+        elif request == "snapshot":
             payload = encode([s for group in self.sessions.values() for s in group], self.usage,
                              sorted(self.unavailable), self.composed_graph())
         elif request.startswith("items "):
@@ -168,6 +187,8 @@ class Fleet:
             projected = await self.projected()
             payload = render.header_text(projected, self.usage,
                                          sorted(self.unavailable))
+            if self.action_error:
+                payload = f"Action failed: {self.action_error}\n{payload}"
         elif request == "cursor" or request.startswith("cursor "):
             active = request.removeprefix("cursor").strip()
             payload = active or await self.first_waiting()
@@ -253,6 +274,173 @@ class Fleet:
         canonical = json.dumps(body, sort_keys=True, separators=(",", ":"),
                                ensure_ascii=False).encode()
         return {**body, "revision": hashlib.sha256(canonical).hexdigest()}
+
+    def source(self, key):
+        matches = [session for group in self.sessions.values()
+                   for session in group if session.ref.key == key]
+        if len(matches) != 1:
+            raise LookupError(f"session disappeared: {key}")
+        session = matches[0]
+        if session.ref.server.host in self.unavailable:
+            raise RuntimeError(
+                f"{session.ref.server.host} is disconnected; refusing action"
+            )
+        return session
+
+    def available(self, host):
+        if host not in hosts() or host in self.unavailable:
+            raise RuntimeError(f"{host} is disconnected; refusing action")
+
+    async def wait_for_source(self, predicate, description):
+        try:
+            async with asyncio.timeout(30):
+                while True:
+                    async with self.changed:
+                        if source := next((session for group in self.sessions.values()
+                                           for session in group if predicate(session)), None):
+                            return source.ref.key
+                        generation = self.observed
+                        await self.changed.wait_for(lambda: self.observed != generation)
+        except TimeoutError:
+            raise RuntimeError(f"Fleet projection did not {description}") from None
+
+    async def wait_for_absence(self, key):
+        try:
+            async with asyncio.timeout(30):
+                while True:
+                    async with self.changed:
+                        if not any(session.ref.key == key for group in self.sessions.values()
+                                   for session in group):
+                            return
+                        generation = self.observed
+                        await self.changed.wait_for(lambda: self.observed != generation)
+        except TimeoutError:
+            raise RuntimeError(f"Fleet projection did not archive {key}") from None
+
+    @staticmethod
+    def action_name(value):
+        if not isinstance(value, str):
+            raise ValueError("session name is required")
+        value = value.strip().strip(".:").replace(".", "-").replace(":", "-")
+        if not value:
+            raise ValueError("session name is required")
+        return value
+
+    async def authority(self, host, request):
+        encoded = json.dumps(request, separators=(",", ":"))
+        command = ["/usr/lib/agent-fleet/action", encoded]
+        if host != os.uname().nodename.split(".", 1)[0]:
+            command = ["ssh", "-T", "-o", "BatchMode=yes", host,
+                       shlex.join(command)]
+        process = await asyncio.create_subprocess_exec(
+            *command, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE, env=ssh_environment())
+        stdout, stderr = await process.communicate()
+        if process.returncode:
+            raise RuntimeError(stderr.decode().strip() or f"{host}: action failed")
+        response = json.loads(stdout)
+        if set(response) == {"ok", "error"} and response["ok"] is False:
+            raise RuntimeError(response["error"])
+        if set(response) != {"ok", "value"} or response["ok"] is not True:
+            raise RuntimeError(f"{host}: invalid action response")
+        return response["value"]
+
+    async def action(self, request):
+        operation = request.get("operation")
+        fields = {
+            "create": {"operation", "host", "agent", "name", "cwd"},
+            "rename": {"operation", "source", "name"},
+            "archive": {"operation", "source"},
+            "refresh": {"operation", "source"},
+            "restore": {"operation", "history", "name"},
+        }
+        if operation not in fields or set(request) != fields[operation]:
+            raise ValueError("invalid Fleet action")
+        if any(not isinstance(value, str) for value in request.values()):
+            raise ValueError("invalid Fleet action")
+        if operation == "create":
+            host = request["host"]
+            self.available(host)
+            if request["agent"] not in {"claude", "codex"}:
+                raise ValueError("create requires Claude or Codex")
+            if not isinstance(request["cwd"], str) or not request["cwd"]:
+                raise ValueError("create requires a directory")
+            name = self.action_name(request["name"])
+            value = await self.authority(host, {
+                "operation": "create", "agent": request["agent"],
+                "name": name, "cwd": request["cwd"],
+            })
+            key = value["source"]
+            await self.wait_for_source(lambda session: session.ref.key == key,
+                                       f"create {key}")
+            return {"source": key}
+
+        if operation == "restore":
+            key = request["history"]
+            if key.startswith("alan:"):
+                actor = key.removeprefix("alan:")
+                if actor.count("@") != 1 or not all(actor.split("@", 1)):
+                    raise ValueError("invalid Alan history identity")
+                host = actor.rsplit("@", 1)[1]
+                self.available(host)
+                await self.authority(host, {"operation": "restore-alan",
+                                            "actor": actor})
+                await self.wait_for_source(lambda session: session.ref.key == key,
+                                           f"restore {key}")
+                return {"source": key}
+            try:
+                host, agent, transcript = key.split(":", 2)
+            except ValueError:
+                raise ValueError("invalid transcript history identity") from None
+            self.available(host)
+            if agent not in {"claude", "codex"} or not transcript:
+                raise ValueError("invalid transcript history identity")
+            if any(session.ref.server.host == host and session.agent == agent
+                   and session.transcript_id == transcript
+                   for group in self.sessions.values() for session in group):
+                raise ValueError("that transcript already has a live session")
+            name = self.action_name(request["name"])
+            await self.authority(host, {
+                "operation": "restore-transcript", "agent": agent,
+                "transcript": transcript, "name": name,
+            })
+            source = await self.wait_for_source(
+                lambda session: session.ref.server.host == host
+                and session.agent == agent and session.transcript_id == transcript,
+                f"restore {key}")
+            return {"source": source}
+
+        key = request["source"]
+        session = self.source(key)
+        host = session.ref.server.host
+        if operation == "rename":
+            name = self.action_name(request["name"])
+            authority = ({"operation": "rename-alan",
+                          "actor": session.ref.session_id, "name": name}
+                         if session.ref.server.kind == "alan" else
+                         {"operation": "rename-tmux", "source": key,
+                          "name": name})
+            return await self.authority(host, authority)
+        if operation == "refresh":
+            if session.ref.server.kind != "alan":
+                raise ValueError("refresh requires an Alan actor")
+            return await self.authority(host, {
+                "operation": "refresh", "actor": session.ref.session_id,
+            })
+        if session.ref.server.kind == "alan":
+            if session.agent not in {"llm", "claude", "codex"}:
+                raise ValueError("archive requires a language actor")
+            authority = {"operation": "archive-alan",
+                         "actor": session.ref.session_id}
+        else:
+            if session.agent not in {"claude", "codex"} or not session.transcript_id:
+                raise ValueError("archive requires a durable Claude or Codex identity")
+            authority = {"operation": "archive-tmux", "source": key,
+                         "agent": session.agent,
+                         "transcript": session.transcript_id}
+        await self.authority(host, authority)
+        await self.wait_for_absence(key)
+        return {}
 
     async def remote_json(self, host, *command):
         argv = list(command) if host == os.uname().nodename.split(".", 1)[0] else [
@@ -370,3 +558,12 @@ def preview(key, columns=0, lines=0):
 
 def commander_context():
     return request("commander-context")
+
+
+def action(envelope):
+    response = json.loads(request(json.dumps(envelope, separators=(",", ":"))))
+    if set(response) == {"ok", "error"} and response["ok"] is False:
+        raise RuntimeError(response["error"])
+    if set(response) != {"ok", "value"} or response["ok"] is not True:
+        raise RuntimeError("invalid Fleet action response")
+    return response["value"]

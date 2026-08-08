@@ -1,6 +1,6 @@
 # Maintainer: Will Handley <wh260@cam.ac.uk>
 pkgname=agent-fleet
-pkgver=0.3.0.r1784748237.g01936d4
+pkgver=0.3.0.r1786185191.g21f0301
 pkgrel=1
 pkgdesc='Awareness and one-keypress switching for a fleet of terminal AI-agent sessions in tmux'
 arch=('x86_64')
@@ -33,6 +33,9 @@ package() {
   printf '#!/usr/bin/python\nfrom agent_fleet.ui_process import main\nmain()\n' \
     > "$pkgdir/usr/lib/agent-fleet/ui"
   chmod 755 "$pkgdir/usr/lib/agent-fleet/ui"
+  printf '#!/usr/bin/python\nfrom agent_fleet.authority import main\nmain()\n' \
+    > "$pkgdir/usr/lib/agent-fleet/action"
+  chmod 755 "$pkgdir/usr/lib/agent-fleet/action"
   install -Dm755 "$startdir/fleet-tmux" "$pkgdir/usr/lib/agent-fleet/fleet-tmux"
   cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
     "$startdir/fleet-preview.c" -o "$pkgdir/usr/lib/agent-fleet/fleet-preview" -lvterm

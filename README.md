@@ -99,7 +99,8 @@ restore_reboot()
 
 The reboot bridge writes a disposable snapshot file before a planned reboot
 and replays it afterwards. It is not live topology authority—tmux remains the
-source of truth. Fleet publishes no general semantic command.
+source of truth. Fleet accepts only its finite create, rename, archive, restore
+and refresh operations; it publishes no general command surface.
 
 Host aliases come from `~/.config/agent-fleet/hosts`. Routing and credentials
 belong to OpenSSH configuration. Machine labels are single-cell (`N L B T Œ`),
