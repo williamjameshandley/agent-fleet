@@ -172,6 +172,8 @@ def inventory(host, actor_descriptors):
 def projection_graph(graph):
     projected = nx.MultiDiGraph()
     projected.graph["actors"] = graph.graph.get("actors", [])
+    principals = {actor["addr"] for actor in projected.graph["actors"]
+                  if actor["kind"] == "principal"}
 
     def add_reference(reference):
         stream = graph.nodes[reference].get("stream")
@@ -186,7 +188,8 @@ def projection_graph(graph):
         projected.add_edge(source, target, key=relation)
     fields = {"op", "to", "reply", "stream", "time", "payload"}
     for reference, operation in graph.nodes(data=True):
-        if operation.get("op") == "send":
+        if (operation.get("op") == "send"
+                and operation.get("to") in principals):
             projected.add_node(reference, **{
                 key: operation[key] for key in fields if key in operation})
     return projected
