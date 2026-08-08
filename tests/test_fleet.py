@@ -172,12 +172,14 @@ class IdentityTests(unittest.TestCase):
             reader.feed_eof()
             writer = mock.Mock()
             writer.drain = mock.AsyncMock()
-            with mock.patch.object(fleet, "projected", return_value=projected):
+            with mock.patch.object(fleet, "projected", return_value=projected), \
+                    mock.patch.object(fleet, "schedule_refresh") as refresh:
                 await fleet.reply(reader, writer)
-            return writer.write.call_args.args[0]
+            return writer.write.call_args.args[0], refresh.call_count
 
-        self.assertEqual(asyncio.run(position("cursor actor:focused")), b"pos(2)\n")
-        self.assertEqual(asyncio.run(position("cursor")), b"pos(1)\n")
+        self.assertEqual(asyncio.run(position("cursor actor:focused")),
+                         (b"pos(2)\n", 1))
+        self.assertEqual(asyncio.run(position("cursor")), (b"pos(1)\n", 1))
 
     def test_machine_labels_are_single_cell_and_noether_uses_ligature(self):
         self.assertEqual([machine(host) for host in

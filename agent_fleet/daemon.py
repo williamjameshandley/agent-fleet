@@ -331,6 +331,7 @@ class Fleet:
                 (index for index, item in enumerate(projected, 1)
                  if item.session.ref.key == target), None)
             payload = f"pos({position})" if position else ""
+            self.schedule_refresh()
         elif request.startswith("muster-register\t"):
             try:
                 values = request.split("\t")
