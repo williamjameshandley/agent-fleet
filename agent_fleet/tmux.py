@@ -233,6 +233,15 @@ def inventory(host):
     return sessions
 
 
+def watched_event(path, transcript_roots, quota_path):
+    path = Path(path)
+    if path == quota_path:
+        return "quota"
+    if any(path.is_relative_to(root) for root in transcript_roots):
+        return "transcript"
+    return None
+
+
 def event_stream(host, consumer=None, controls=None, changed=None):
     changed = changed or queue.Queue()
     alan = AlanWatcher(changed, consumer)
@@ -242,14 +251,18 @@ def event_stream(host, consumer=None, controls=None, changed=None):
             changed.put("consumer")
         threading.Thread(target=disconnected, daemon=True).start()
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
-    paths = [path for path in (Path.home() / ".claude/projects",
-                               Path.home() / ".codex/sessions", RUNTIME) if path.exists()]
+    transcript_roots = [path for path in (Path.home() / ".claude/projects",
+                                          Path.home() / ".codex/sessions")
+                        if path.exists()]
+    paths = transcript_roots + ([RUNTIME] if RUNTIME.exists() else [])
     if paths:
         def transcripts():
             quota_path = RUNTIME / "quota.changed"
             for changes in watch(*paths):
-                changed.put("quota" if any(Path(path) == quota_path for _, path in changes)
-                            else "transcript")
+                events = {watched_event(path, transcript_roots, quota_path)
+                          for _, path in changes}
+                for event in events - {None}:
+                    changed.put(event)
         threading.Thread(target=transcripts, daemon=True).start()
     probe = subprocess.run(["/usr/bin/tmux", "-N", "list-sessions"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
