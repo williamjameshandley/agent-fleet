@@ -88,7 +88,7 @@ class ControlClient:
     def __init__(self, process, changed):
         self.process = process
         self.changed = changed
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.pending = None
         self.closed = False
         self.ready = threading.Event()
@@ -96,18 +96,25 @@ class ControlClient:
 
     def _read(self):
         response = None
+        response_id = None
         for raw in self.process.stdout:
             line = raw.rstrip("\n")
             if line.startswith("%begin "):
-                response = [] if self.pending else None
+                if self.pending and response is None:
+                    response_id = int(line.split()[2])
+                    response = []
             elif line.startswith(("%end ", "%error ")):
-                if response is not None and self.pending:
+                terminal_id = int(line.split()[2])
+                if (response is not None and self.pending and
+                        terminal_id == response_id):
                     self.pending.put((line.startswith("%end "), response))
                     response = None
                 else:
                     self.ready.set()
             elif response is not None and not line.startswith("%"):
                 response.append(line)
+            elif response is not None and line == "%message FLEET_STALE":
+                response.append("FLEET_STALE")
             elif line.startswith(("%sessions-changed", "%session-renamed", "%session-changed",
                                   "%window-add", "%window-close", "%window-renamed",
                                   "%unlinked-window-add", "%unlinked-window-close",
@@ -137,17 +144,17 @@ class ControlClient:
 
     def switch(self, target, client):
         socket, pid, started, session_id = target
-        condition = ("#{&&:#{==:#{socket_path},%s},"
-                     "#{&&:#{==:#{pid},%s},"
-                     "#{&&:#{==:#{start_time},%s},"
-                     "#{==:#{session_id},%s}}}}" % target)
         began = time.monotonic()
-        output = self.command([
-            "if-shell", "-t", session_id, "-F", condition,
-            shlex.join(["switch-client", "-c", client, "-t", session_id]),
-            "display-message -p FLEET_STALE"])
-        if output == ["FLEET_STALE"]:
-            raise RuntimeError("source or viewer client identity changed")
+        with self.lock:
+            output = self.command([
+                "display-message", "-p", "-t", session_id,
+                "#{q:socket_path} #{pid} #{start_time} #{q:session_id}"])
+            if len(output) != 1:
+                raise RuntimeError("source or viewer client identity changed")
+            actual = shlex.split(output[0])
+            if actual != list(map(str, target)):
+                raise RuntimeError("source or viewer client identity changed")
+            self.command(["switch-client", "-c", client, "-t", session_id])
         return time.monotonic() - began
 
     def alan_target(self, actor):
@@ -254,10 +261,8 @@ def event_stream(host, consumer=None, controls=None):
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, bufsize=1)
     assert process.stdout and process.stdin
-    process.stdin.write("refresh-client -f no-output\n")
-    process.stdin.flush()
-
     control = ControlClient(process, changed)
+    control.command(["refresh-client", "-f", "no-output"])
     if controls is not None:
         controls.put(control)
     previous = None
