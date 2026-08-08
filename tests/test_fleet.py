@@ -56,6 +56,10 @@ class IdentityTests(unittest.TestCase):
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
 
+    def test_tmux_wrapper_forces_utf8_for_remote_clients(self):
+        wrapper = (Path(__file__).parents[1] / "fleet-tmux").read_text()
+        self.assertIn('exec /usr/bin/tmux -N -u "$@"', wrapper)
+
     def test_event_collector_cannot_create_tmux_server(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
