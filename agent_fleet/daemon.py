@@ -416,8 +416,8 @@ class Fleet:
         header_command = shlex.join(("/usr/bin/cat", str(header_path)))
         rows_remove = shlex.join(("/usr/bin/rm", "-f", str(rows_path)))
         header_remove = shlex.join(("/usr/bin/rm", "-f", str(header_path)))
-        action = (f"reload-sync({rows_command}; {rows_remove})"
-                  f"+transform-header({header_command}; {header_remove})")
+        action = (f"transform-header({header_command}; {header_remove})"
+                  f"+reload-sync({rows_command}; {rows_remove})")
         return action, (rows_path, header_path)
 
     def mutate_view(self, request):
