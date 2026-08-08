@@ -121,6 +121,7 @@ class CommanderContextTests(unittest.TestCase):
         identity = "00000000-0000-4000-8000-000000000001"
         actor = f"codex-{identity}@lovelace"
         fleet = Fleet()
+        fleet.unavailable = set()
 
         async def observation(host, query):
             self.assertEqual((host, query), ("lovelace", "mdjudge"))
@@ -142,6 +143,7 @@ class CommanderContextTests(unittest.TestCase):
 
     def test_unowned_search_hit_remains_standalone_provider_history(self):
         fleet = Fleet()
+        fleet.unavailable = set()
         fleet.search_observation = mock.AsyncMock(return_value={
             "actors": [], "hits": [{
                 "agent": "claude", "session_id": "full-id", "path": "/native/a.jsonl",
@@ -152,8 +154,20 @@ class CommanderContextTests(unittest.TestCase):
         self.assertEqual(result["source"], "lovelace:claude:full-id")
         self.assertEqual(result["lifecycle"], "standalone")
 
+    def test_search_uses_only_available_source_corpora(self):
+        fleet = Fleet()
+        fleet.unavailable = {"noether"}
+        fleet.search_observation = mock.AsyncMock(return_value={
+            "actors": [], "hits": [],
+        })
+        with mock.patch("agent_fleet.daemon.hosts",
+                        return_value=["lovelace", "noether"]):
+            self.assertEqual(asyncio.run(fleet.search_history("topic")), [])
+        fleet.search_observation.assert_awaited_once_with("lovelace", "topic")
+
     def test_multiple_actors_claiming_search_identity_fail_visibly(self):
         fleet = Fleet()
+        fleet.unavailable = set()
         identity = "00000000-0000-4000-8000-000000000001"
         fleet.search_observation = mock.AsyncMock(return_value={
             "actors": [
