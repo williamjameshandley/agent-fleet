@@ -4,7 +4,6 @@ Spawned by fzf on every refresh, preview, and cursor placement; must not
 import the heavy projection modules (rendering lives in the daemon).
 """
 
-import json
 import shutil
 import socket
 import subprocess
@@ -56,19 +55,7 @@ def active_main():
 
 def cursor():
     active = active_main()
-    target = fetch(f"cursor {active}" if active else "cursor").rstrip("\n")
-    if not target:
-        return ""
-    result = subprocess.run(
-        ["curl", "-fsS", "--max-time", "2", "--unix-socket",
-         str(RUNTIME / "muster.sock"), "http://localhost"],
-        capture_output=True, text=True, check=True)
-    status = json.loads(result.stdout)
-    if len(status["matches"]) != status["matchCount"]:
-        raise SystemExit("Muster reported a truncated match list")
-    position = next((i for i, match in enumerate(status["matches"], 1)
-                     if match["text"].partition("\t")[0] == target), None)
-    return f"pos({position})" if position else ""
+    return fetch(f"cursor {active}" if active else "cursor").rstrip("\n")
 
 
 def main(argv):

@@ -128,22 +128,16 @@ class IdentityTests(unittest.TestCase):
         return subprocess.CompletedProcess([], 0, stdout=state)
 
     def test_cursor_position_comes_from_musters_loaded_identities(self):
-        state = self.muster_state([{"text": "actor:first\tfirst"},
-                                   {"text": "actor:focused\tfocused"}])
         with mock.patch.object(hot, "active_main", return_value="actor:focused"), \
                 mock.patch.object(hot, "fetch",
-                                  return_value="actor:focused\n") as fetch, \
-                mock.patch("agent_fleet.hot.subprocess.run", return_value=state):
+                                  return_value="pos(2)\n") as fetch:
             self.assertEqual(hot.cursor(), "pos(2)")
         fetch.assert_called_once_with("cursor actor:focused")
 
     def test_cursor_falls_back_to_the_daemons_first_waiting_row(self):
-        state = self.muster_state([{"text": "actor:first\tfirst"},
-                                   {"text": "actor:second\tsecond"}])
         with mock.patch.object(hot, "active_main", return_value=""), \
                 mock.patch.object(hot, "fetch",
-                                  return_value="actor:first\n") as fetch, \
-                mock.patch("agent_fleet.hot.subprocess.run", return_value=state):
+                                  return_value="pos(1)\n") as fetch:
             self.assertEqual(hot.cursor(), "pos(1)")
         fetch.assert_called_once_with("cursor")
 
@@ -161,13 +155,29 @@ class IdentityTests(unittest.TestCase):
             self.assertIn("transform(/usr/lib/agent-fleet/ui cursor)", request)
             self.assertNotIn("reload-sync", request)
 
-    def test_cursor_refuses_a_truncated_match_list(self):
-        state = self.muster_state([{"text": "actor:first\tfirst"}], count=2)
+    def test_cursor_omits_a_missing_daemon_position(self):
         with mock.patch.object(hot, "active_main", return_value="actor:first"), \
-                mock.patch.object(hot, "fetch", return_value="actor:first\n"), \
-                mock.patch("agent_fleet.hot.subprocess.run", return_value=state):
-            with self.assertRaises(SystemExit):
-                hot.cursor()
+                mock.patch.object(hot, "fetch", return_value=""):
+            self.assertEqual(hot.cursor(), "")
+
+    def test_daemon_cursor_returns_a_position_in_its_projected_order(self):
+        fleet = Fleet()
+        sessions = [mock.Mock(ref=mock.Mock(key="actor:first"), state="waiting"),
+                    mock.Mock(ref=mock.Mock(key="actor:focused"), state="working")]
+        projected = [mock.Mock(session=session) for session in sessions]
+
+        async def position(request):
+            reader = asyncio.StreamReader()
+            reader.feed_data((request + "\n").encode())
+            reader.feed_eof()
+            writer = mock.Mock()
+            writer.drain = mock.AsyncMock()
+            with mock.patch.object(fleet, "projected", return_value=projected):
+                await fleet.reply(reader, writer)
+            return writer.write.call_args.args[0]
+
+        self.assertEqual(asyncio.run(position("cursor actor:focused")), b"pos(2)\n")
+        self.assertEqual(asyncio.run(position("cursor")), b"pos(1)\n")
 
     def test_machine_labels_are_single_cell_and_noether_uses_ligature(self):
         self.assertEqual([machine(host) for host in

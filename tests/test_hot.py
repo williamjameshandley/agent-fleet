@@ -124,20 +124,13 @@ class HotCommands(unittest.TestCase):
         LineServer(self.runtime / "viewer-main.sock",
                    {"STATUS": "actor:focused"})
         daemon = LineServer(self.runtime / "fleet.sock",
-                            {"cursor actor:focused": "actor:focused"})
-        MusterHTTP(self.runtime / "muster.sock",
-                   {"matches": [{"text": "actor:first\tfirst"},
-                                {"text": "actor:focused\tfocused"}],
-                    "matchCount": 2})
+                            {"cursor actor:focused": "pos(2)"})
         self.assertEqual(self.invoke("cursor"), "pos(2)")
         self.assertEqual(daemon.requests, ["cursor actor:focused"])
 
     def test_cursor_without_a_viewer_uses_the_daemons_first_waiting(self):
         daemon = LineServer(self.runtime / "fleet.sock",
-                            {"cursor": "actor:first"})
-        MusterHTTP(self.runtime / "muster.sock",
-                   {"matches": [{"text": "actor:first\tfirst"}],
-                    "matchCount": 1})
+                            {"cursor": "pos(1)"})
         self.assertEqual(self.invoke("cursor"), "pos(1)")
         self.assertEqual(daemon.requests, ["cursor"])
 
