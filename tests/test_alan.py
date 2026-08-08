@@ -385,6 +385,9 @@ def test_projection_derives_recursive_visible_tree():
         (f"alan:{python_nested}", 2, 0),
         (f"alan:{direct_python}", 0, 0),
     ]
+    assert alan.project(
+        sessions, alan.projection_graph(current),
+        expanded={root, python}, show_python=True) == python_open
 
 
 def test_projection_compresses_an_absent_intermediate_inside_an_eligible_tree():

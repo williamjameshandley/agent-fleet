@@ -169,6 +169,22 @@ def inventory(host, actor_descriptors):
     return sessions
 
 
+def projection_graph(graph):
+    descriptors = {actor["addr"]: actor
+                   for actor in graph.graph.get("actors", [])}
+    projected = nx.MultiDiGraph()
+    projected.graph["actors"] = graph.graph.get("actors", [])
+    projected.graph["outstanding_requests"] = _outstanding_requests(
+        graph, descriptors)
+    for source, target, relation in graph.edges(keys=True):
+        if relation != "spawn":
+            continue
+        projected.add_node(source, **graph.nodes[source])
+        projected.add_node(target, **graph.nodes[target])
+        projected.add_edge(source, target, key=relation)
+    return projected
+
+
 def project(sessions, graph, expanded=(), show_python=False):
     descriptors = {actor["addr"]: actor for actor in graph.graph.get("actors", [])}
     ancestry = nx.DiGraph()
@@ -233,7 +249,10 @@ def project(sessions, graph, expanded=(), show_python=False):
         emitted.update(visible(root))
 
     attention = {}
-    for source, request in _outstanding_requests(graph, descriptors):
+    requests = graph.graph.get("outstanding_requests")
+    if requests is None:
+        requests = _outstanding_requests(graph, descriptors)
+    for source, request in requests:
         candidates = (nx.ancestors(ancestry, source) | {source}) & emitted
         if not candidates:
             continue
