@@ -1122,8 +1122,8 @@ class IdentityTests(unittest.TestCase):
         context = {"history": [{
             "key": "alan:codex-1@lovelace", "host": "lovelace",
             "agent": "codex", "name": "work", "cwd": "/work", "mtime": 20}]}
-        with mock.patch("agent_fleet.actions.commander_projection",
-                        return_value=json.dumps(context)):
+        with mock.patch("agent_fleet.actions.history_projection",
+                        return_value=json.dumps(context["history"])):
             rows = actions.history()
         self.assertEqual(rows, [
             ("alan:codex-1@lovelace", "lovelace", "codex", "work", "/work")])
@@ -1132,8 +1132,8 @@ class IdentityTests(unittest.TestCase):
         context = {"history": [{
             "key": "alan:llm-1@lovelace", "host": "lovelace",
             "agent": "llm", "name": "review", "cwd": "/work", "mtime": 20}]}
-        with mock.patch("agent_fleet.actions.commander_projection",
-                        return_value=json.dumps(context)):
+        with mock.patch("agent_fleet.actions.history_projection",
+                        return_value=json.dumps(context["history"])):
             rows = actions.history()
         self.assertEqual(rows, [
             ("alan:llm-1@lovelace", "lovelace", "llm", "review", "/work")])
@@ -1159,8 +1159,8 @@ class IdentityTests(unittest.TestCase):
         context = {"history": [{
             "key": "alan:codex-1@lovelace", "host": "lovelace",
             "agent": "codex", "name": "work", "cwd": "/work", "mtime": 20}]}
-        with mock.patch("agent_fleet.actions.commander_projection",
-                        return_value=json.dumps(context)):
+        with mock.patch("agent_fleet.actions.history_projection",
+                        return_value=json.dumps(context["history"])):
             rows = actions.history()
         self.assertEqual(rows, [
             ("alan:codex-1@lovelace", "lovelace", "codex", "work", "/work")])
@@ -1289,6 +1289,7 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
                       muster)
         self.assertIn("new-session -d -s fleet@main", main)
+        self.assertIn("/usr/bin/tmux -N -L agent-fleet-ui", main)
         self.assertIn("set-option -t fleet@main prefix None", main)
         self.assertIn("set-option -t fleet@main status off", main)
         self.assertIn("set-option -t fleet@main mouse on", main)
@@ -1307,12 +1308,16 @@ class IdentityTests(unittest.TestCase):
             environment["PYTHONPATH"] = str(root)
             (directory / "tmux").mkdir()
             (directory / "runtime").mkdir()
+            subprocess.run(["tmux", "new-session", "-d", "-s", "source",
+                            "sleep 30"], check=True, env=environment)
             subprocess.run(
-                ["tmux", "new-session", "-d", "-s", "fleet@main",
+                ["tmux", "-L", "agent-fleet-ui", "new-session", "-d",
+                 "-s", "fleet@main",
                  f"exec {sys.executable} -c 'from agent_fleet.viewer import serve; "
                  "serve(\"main\")'"], check=True, env=environment)
             try:
-                subprocess.run(["tmux", "set-option", "-t", "fleet@main",
+                subprocess.run(["tmux", "-L", "agent-fleet-ui", "set-option",
+                                "-t", "fleet@main",
                                 "status", "on"], check=True, env=environment)
                 for _ in range(100):
                     if (directory / "runtime" / "agent-fleet" /
@@ -1327,11 +1332,19 @@ class IdentityTests(unittest.TestCase):
                                stderr=subprocess.DEVNULL,
                                env=environment)
                 status = subprocess.run(
-                    ["tmux", "show-option", "-t", "fleet@main", "-v", "status"],
+                    ["tmux", "-L", "agent-fleet-ui", "show-option",
+                     "-t", "fleet@main", "-v", "status"],
                     check=True, text=True, capture_output=True,
                     env=environment).stdout.strip()
                 self.assertEqual(status, "off")
+                source_sessions = subprocess.run(
+                    ["tmux", "list-sessions", "-F", "#{session_name}"],
+                    check=True, text=True, capture_output=True,
+                    env=environment).stdout.splitlines()
+                self.assertEqual(source_sessions, ["source"])
             finally:
+                subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
+                               env=environment)
                 subprocess.run(["tmux", "kill-server"], env=environment)
 
     def test_muster_always_opens_the_global_main_viewer(self):
@@ -1770,7 +1783,7 @@ class IdentityTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         with tempfile.TemporaryDirectory() as runtime:
             env = {**os.environ, "XDG_RUNTIME_DIR": runtime,
-                   "PYTHONPATH": str(root)}
+                   "PYTHONPATH": str(root), "TMUX_TMPDIR": runtime}
             master, slave = pty.openpty()
             process = subprocess.Popen([sys.executable, "-c",
                                         "from agent_fleet.viewer import serve; serve('test')"],

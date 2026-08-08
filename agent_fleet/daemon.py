@@ -214,6 +214,8 @@ class Fleet:
         elif request == "commander-context":
             payload = json.dumps(await self.commander_context(), sort_keys=True,
                                  separators=(",", ":"))
+        elif request == "history":
+            payload = json.dumps(await self.history(), separators=(",", ":"))
         elif request.startswith("history-search "):
             try:
                 query = json.loads(request.removeprefix("history-search "))
@@ -298,6 +300,21 @@ class Fleet:
         canonical = json.dumps(body, sort_keys=True, separators=(",", ":"),
                                ensure_ascii=False).encode()
         return {**body, "revision": hashlib.sha256(canonical).hexdigest()}
+
+    async def history(self):
+        source_hosts = sorted(set(hosts()) - self.unavailable)
+        sessions = [
+            {"host": session.ref.server.host, "agent": session.agent,
+             "transcript_id": session.transcript_id}
+            for group in self.sessions.values() for session in group
+        ]
+        results = await asyncio.gather(
+            *(self.history_observation(host) for host in source_hosts),
+            return_exceptions=True)
+        observed = [(host, result) for host, result in zip(source_hosts, results)
+                    if not isinstance(result, Exception)]
+        return self.history_entries(sessions, [host for host, _ in observed],
+                                    [result for _, result in observed])
 
     def source(self, key):
         matches = [session for group in self.sessions.values()
@@ -636,6 +653,10 @@ def preview(key, columns=0, lines=0):
 
 def commander_context():
     return request("commander-context")
+
+
+def history():
+    return request("history")
 
 
 def history_search(query):
