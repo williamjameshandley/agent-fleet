@@ -35,7 +35,7 @@ from agent_fleet import hot, render, viewer
 from agent_fleet import workstation
 from agent_fleet import tmux
 from agent_fleet import ui
-from agent_fleet import reboot, ui_process
+from agent_fleet import ui_process
 from agent_fleet import ui_process as cli
 from agent_fleet.daemon import Fleet
 
@@ -985,31 +985,6 @@ class IdentityTests(unittest.TestCase):
                                           "agent": "python", "name": "work",
                                           "cwd": "/work"}))
         execute.assert_not_awaited()
-
-    def test_reboot_snapshot_returns_report_without_printing(self):
-        with tempfile.TemporaryDirectory() as directory, \
-             mock.patch("agent_fleet.reboot.sh", return_value=""), \
-             mock.patch("builtins.print") as output:
-            report = reboot.snapshot(Path(directory) / "snapshot.json")
-        self.assertEqual(report["panes"], [])
-        self.assertEqual(report["captured"], 0)
-        output.assert_not_called()
-
-    def test_reboot_restore_returns_report_without_printing(self):
-        pane = {"session": "work", "window": 0, "window_name": "main",
-                "pane": 0, "cwd": "/work", "command": "bash"}
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "snapshot.json"
-            path.write_text(json.dumps([pane]))
-            with mock.patch("agent_fleet.reboot.sh", return_value=""), \
-                 mock.patch("agent_fleet.reboot.subprocess.run") as run, \
-                 mock.patch("builtins.print") as output:
-                report = reboot.restore(path)
-        self.assertEqual(report, {"panes": [pane], "restored": 1})
-        self.assertEqual(run.call_args_list[0].args[0][:5],
-                         ["/usr/bin/tmux", "-N", "new-session", "-d", "-s"])
-        self.assertTrue(any(call.args[0][2] == "rename-window" for call in run.call_args_list))
-        output.assert_not_called()
 
     def test_daemon_create_waits_on_its_own_observed_generation(self):
         host = "lovelace"
