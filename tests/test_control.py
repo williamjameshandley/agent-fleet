@@ -161,6 +161,37 @@ class ResidentControlTests(unittest.TestCase):
 
 
 class ProtocolCorrelationTests(unittest.TestCase):
+    def test_event_stream_keeps_tmux_inventory_when_alan_is_unavailable(self):
+        changed = queue.Queue()
+        consumer = threading.Event()
+        alan = mock.Mock(error="Alan unavailable", actors=[], graph=None)
+        alan.snapshot.return_value = ([], None)
+        process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(),
+                            stderr=mock.Mock())
+        process.poll.return_value = None
+        control = mock.Mock()
+        tmux = mock.Mock()
+        tmux.has_session.return_value = True
+        item = mock.Mock(ref="tmux session")
+        with mock.patch("agent_fleet.tmux.AlanWatcher", return_value=alan), \
+             mock.patch("agent_fleet.tmux.subprocess.run",
+                        return_value=mock.Mock(returncode=0)), \
+             mock.patch("agent_fleet.tmux.subprocess.Popen", return_value=process), \
+             mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
+             mock.patch("agent_fleet.tmux.server", return_value=tmux), \
+             mock.patch("agent_fleet.tmux.inventory", return_value=[item]), \
+             mock.patch("agent_fleet.tmux.alan_inventory", return_value=[]), \
+             mock.patch("agent_fleet.tmux.observe",
+                        side_effect=lambda current, _catalog: current), \
+             mock.patch("agent_fleet.tmux.native_transcripts.catalog",
+                        return_value={}):
+            stream = event_stream("fixture", consumer, changed=changed)
+            self.assertEqual(next(stream), ([item], None))
+            consumer.set()
+            changed.put("consumer")
+            with self.assertRaises(StopIteration):
+                next(stream)
+
     def test_authority_barrier_acknowledges_only_after_forced_observation(self):
         changed = queue.Queue()
         consumer = threading.Event()
@@ -333,7 +364,7 @@ class DaemonBoundaryTests(unittest.TestCase):
         async def exercise():
             fleet = Fleet(); session = self.session()
             fleet.sessions = {"fixture": [session]}
-            fleet.observations = {"fixture": b"observation"}
+            fleet.graphs = {"fixture": mock.Mock()}
             loop = asyncio.get_running_loop()
             preview = loop.create_future(); switch = loop.create_future()
             cleanup = loop.create_future()
@@ -342,7 +373,7 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet.cleanups[3] = ("fixture", cleanup)
             await fleet.host_disconnected("fixture")
             self.assertNotIn("fixture", fleet.sessions)
-            self.assertNotIn("fixture", fleet.observations)
+            self.assertNotIn("fixture", fleet.graphs)
             self.assertFalse(fleet.previews); self.assertFalse(fleet.switches)
             self.assertFalse(fleet.cleanups)
             for future in (preview, switch, cleanup):

@@ -33,8 +33,11 @@ def decode(line):
 
 
 def decode_message(line):
+    return decode_value(json.loads(line))
+
+
+def decode_value(message):
     sessions = []
-    message = json.loads(line)
     if message["version"] != 1:
         raise ValueError(f"unsupported Fleet protocol version {message['version']}")
     for item in message["sessions"]:
@@ -50,5 +53,15 @@ def decode_message(line):
 
 
 def decode_graph(line):
-    data = json.loads(line).get("alan")
+    return graph_value(json.loads(line))
+
+
+def graph_value(message):
+    data = message.get("alan")
     return nx.node_link_graph(data, edges="edges") if data is not None else None
+
+
+def decode_observation(line):
+    message = json.loads(line)
+    sessions, usage, unavailable = decode_value(message)
+    return sessions, usage, unavailable, graph_value(message)
