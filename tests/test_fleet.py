@@ -1200,23 +1200,6 @@ class IdentityTests(unittest.TestCase):
                                        "agent": "codex", "name": "analysis.",
                                        "cwd": "/work"})
 
-    def test_daemon_remote_authority_uses_one_fixed_batch_mode_entrypoint(self):
-        host = "newton" if os.uname().nodename != "newton" else "lovelace"
-        process = mock.Mock(returncode=0)
-        process.communicate = mock.AsyncMock(
-            return_value=(b'{"ok":true,"value":{"name":"safe"}}\n', b''))
-        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
-                        return_value=process) as execute:
-            value = asyncio.run(Fleet().authority(
-                host, {"operation": "rename-alan", "actor": "codex-1@newton",
-                       "name": "work tree;safe"}))
-        self.assertEqual(value, {"name": "safe"})
-        command = execute.call_args.args
-        self.assertEqual(command[:5],
-                         ("ssh", "-T", "-o", "BatchMode=yes", host))
-        self.assertIn("/usr/lib/agent-fleet/action", command[5])
-        self.assertNotIn("python -c", command[5])
-
     def test_next_waiting_module_uses_the_composable_action(self):
         source = (Path(__file__).parents[1] / "agent_fleet/next_waiting.py").read_text()
         self.assertEqual(source, "from .actions import next_waiting\n\n\nnext_waiting()\n")
@@ -1306,7 +1289,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.viewer.request") as request:
             actions.archive(key)
         action.assert_called_once_with({"operation": "archive", "source": key})
-        request.assert_called_once_with("main", "")
+        request.assert_not_called()
 
     def test_archive_retires_alan_claude_without_projected_native_identity(self):
         host = os.uname().nodename
@@ -1357,7 +1340,7 @@ class IdentityTests(unittest.TestCase):
         absent.assert_awaited_once_with(session.ref.key)
 
     def test_tmux_archive_revalidates_full_source_before_kill(self):
-        key = "lovelace:/tmp/tmux:12:10:$1"
+        key = f"{os.uname().nodename}:/tmp/tmux:12:10:$1"
         result = mock.Mock(stdout=[])
         server = mock.Mock()
         server.cmd.return_value = result
@@ -1404,8 +1387,7 @@ class IdentityTests(unittest.TestCase):
             actions.refresh(session.ref.key)
         action.assert_called_once_with(
             {"operation": "refresh", "source": session.ref.key})
-        self.assertEqual(request.call_args_list, [
-            mock.call("main", session.ref.key), mock.call("right", session.ref.key)])
+        request.assert_not_called()
 
     def test_retained_unavailable_actor_remains_the_native_history_authority(self):
         context = {"history": [{
@@ -1660,9 +1642,13 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("f\"--bind=left:transform({fold_close})\"", source)
         self.assertIn("f\"--bind=p:transform({toggle_python})\"", source)
         self.assertIn("f\"--bind=resize:transform({resize})\"", source)
+        self.assertIn("f\"--bind=x:transform({archive})\"", source)
+        self.assertIn("f\"--bind=R:transform({refresh})\"", source)
         self.assertIn("/usr/bin/nc -U", source)
         self.assertNotIn("ui fold", source)
         self.assertNotIn("ui toggle", source)
+        self.assertNotIn("ui archive", source)
+        self.assertNotIn("ui refresh", source)
         self.assertIn('"--footer-border=bottom"', source)
         self.assertNotIn('"--preview=', source)
         self.assertNotIn('"--preview-window=', source)
@@ -1790,6 +1776,36 @@ class IdentityTests(unittest.TestCase):
             finally:
                 subprocess.run(["tmux", "kill-server"], env=environment,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_archive_transform_uses_one_action_and_one_coherent_redraw(self):
+        fleet, root, _, _ = self.fold_fleet()
+        key = f"alan:{root}"
+
+        async def archive(_):
+            fleet.sessions = {}
+            fleet.observed += 1
+            fleet.view_revision += 1
+            fleet._view_cache = None
+            return {}
+
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
+             mock.patch.object(fleet, "action", side_effect=archive) as action:
+            result = asyncio.run(fleet.mutate_action(
+                f"archive\t{key}\t{fleet.view_revision}\t100"))
+        action.assert_awaited_once_with({"operation": "archive", "source": key})
+        self.assertIn("reload-sync(/usr/bin/cat", result)
+        self.assertEqual(fleet.projected(), [])
+
+    def test_archive_transform_rejects_a_stale_displayed_revision(self):
+        fleet, root, _, _ = self.fold_fleet()
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
+             mock.patch.object(fleet, "action") as action:
+            result = asyncio.run(fleet.mutate_action(
+                f"archive\talan:{root}\t{fleet.view_revision - 1}\t100"))
+        action.assert_not_awaited()
+        self.assertIn("transform-header", result)
 
     def test_unregistered_muster_rejects_view_mutation(self):
         fleet, _, _, _ = self.fold_fleet()
@@ -1966,6 +1982,67 @@ class IdentityTests(unittest.TestCase):
                 self.assertIn("1 total", screen)
                 self.assertNotIn("2 total", screen)
                 self.assertTrue(all(not path.exists() for path in artifacts))
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_stock_fzf_x_and_refresh_send_the_displayed_identity_and_revision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            runtime = directory / "runtime"
+            runtime.mkdir()
+            daemon_socket = runtime / "fleet.sock"
+            received = []
+
+            def serve():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(daemon_socket))
+                    server.listen()
+                    while len(received) < 2:
+                        connection, _ = server.accept()
+                        with connection:
+                            request = connection.makefile().readline().rstrip("\n")
+                            if request.startswith(("archive\t", "refresh\t")):
+                                received.append(request)
+                            connection.sendall(b"change-header(done)\n")
+
+            thread = threading.Thread(target=serve, daemon=True)
+            thread.start()
+            with mock.patch("agent_fleet.ui.RUNTIME", runtime), \
+                 mock.patch.object(ui, "header", return_value="header"), \
+                 mock.patch.object(ui, "footer", return_value="footer"), \
+                 mock.patch.object(ui.os, "execvp", side_effect=RuntimeError) as execute, \
+                 self.assertRaises(RuntimeError):
+                ui.muster()
+            command = execute.call_args.args[1]
+            selected = [command[0], "--disabled", "--no-input", "--delimiter=\t",
+                        "--with-nth=3..", "--id-nth=1"]
+            selected.extend(argument for argument in command
+                            if argument.startswith(("--bind=x:", "--bind=R:")))
+            tmux_runtime = directory / "tmux"
+            tmux_runtime.mkdir()
+            environment = {**without_tmux_client(),
+                           "TMUX_TMPDIR": str(tmux_runtime)}
+            key = "alan:codex-one@lovelace"
+            shell = f"printf {shlex.quote(f'{key}\t7\tvisible\n')} | exec {shlex.join(selected)}"
+            subprocess.run(["tmux", "new-session", "-d", "-s", "fixture", shell],
+                           check=True, env=environment)
+            try:
+                time.sleep(.05)
+                subprocess.run(["tmux", "send-keys", "-t", "=fixture:", "x"],
+                               check=True, env=environment)
+                for _ in range(100):
+                    if received:
+                        break
+                    time.sleep(.01)
+                subprocess.run(["tmux", "send-keys", "-t", "=fixture:", "R"],
+                               check=True, env=environment)
+                for _ in range(100):
+                    if len(received) == 2:
+                        break
+                    time.sleep(.01)
+                self.assertEqual([request.split("\t")[:3] for request in received],
+                                 [["archive", key, "7"], ["refresh", key, "7"]])
             finally:
                 subprocess.run(["tmux", "kill-server"], env=environment,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

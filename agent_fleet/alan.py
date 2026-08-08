@@ -32,6 +32,7 @@ class Watcher:
         self.initialized = threading.Event()
         self._changed = changed
         self._consumer = consumer
+        self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         self.initialized.wait(2)
@@ -40,13 +41,7 @@ class Watcher:
         previous = None
         while not (self._consumer and self._consumer.is_set()):
             try:
-                graph = loop.observe()
-                current = actors(graph)
-                self.actors = current
-                self.graph = graph
-                self.available = True
-                self.error = None
-                self.initialized.set()
+                current, graph = self.refresh()
                 snapshot = (
                     graph.graph,
                     tuple(graph.nodes(data=True)),
@@ -56,12 +51,30 @@ class Watcher:
                     self._changed.put("alan")
                     previous = snapshot
             except (loop.LoopError, OSError, ValueError) as error:
-                self._unavailable(f"Alan unavailable: {error}")
                 previous = None
             if self._consumer:
                 self._consumer.wait(0.5)
             else:
                 time.sleep(0.5)
+
+    def refresh(self):
+        with self._lock:
+            try:
+                graph = loop.observe()
+                current = actors(graph)
+            except (loop.LoopError, OSError, ValueError) as error:
+                self._unavailable(f"Alan unavailable: {error}")
+                raise
+            self.actors = current
+            self.graph = graph
+            self.available = True
+            self.error = None
+            self.initialized.set()
+            return current, graph
+
+    def snapshot(self):
+        with self._lock:
+            return self.actors, self.graph
 
     def _unavailable(self, error):
         self.error = error

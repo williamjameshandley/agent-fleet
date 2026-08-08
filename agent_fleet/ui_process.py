@@ -45,10 +45,6 @@ def main(argv=None):
     item.add_argument("key")
     item = command("rename-prompt", lambda args: actions.rename_prompt(args.key))
     item.add_argument("key")
-    item = command("refresh", lambda args: actions.refresh(args.key))
-    item.add_argument("key")
-    item = command("archive", lambda args: actions.archive(args.key))
-    item.add_argument("key")
     item = command("open-history", lambda args: actions.open_history(args.key))
     item.add_argument("key")
 

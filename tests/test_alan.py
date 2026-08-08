@@ -229,6 +229,53 @@ def test_observation_failure_is_visible_and_clears_projection():
     assert watcher.error == "Alan unavailable: closed"
 
 
+def test_watcher_failure_cannot_erase_a_later_successful_refresh():
+    watcher = object.__new__(alan.Watcher)
+    watcher.actors = ["stale"]
+    watcher.graph = "stale graph"
+    watcher.available = True
+    watcher.error = None
+    watcher.initialized = threading.Event()
+    watcher._changed = queue.Queue()
+    watcher._lock = threading.Lock()
+    failed_inside_observe = threading.Event()
+    release_failure = threading.Event()
+    fresh = graph({"op": "create"})
+
+    def observe():
+        if threading.current_thread().name == "failing-observe":
+            failed_inside_observe.set()
+            release_failure.wait()
+            raise OSError("closed")
+        return fresh
+
+    def fail():
+        try:
+            watcher.refresh()
+        except OSError as error:
+            errors.append(str(error))
+
+    errors = []
+    failing = threading.Thread(
+        name="failing-observe", target=fail,
+    )
+    succeeding = threading.Thread(target=watcher.refresh)
+    with mock.patch.object(alan.loop, "observe", side_effect=observe):
+        failing.start()
+        assert failed_inside_observe.wait(1)
+        succeeding.start()
+        release_failure.set()
+        failing.join(1)
+        succeeding.join(1)
+
+    actors, observed = watcher.snapshot()
+    assert errors == ["closed"]
+    assert observed is fresh
+    assert actors == watcher.actors
+    assert watcher.available
+    assert watcher.error is None
+
+
 def actor_session(addr, kind):
     host = addr.rsplit("@", 1)[1]
     return Session(
@@ -367,14 +414,13 @@ def test_projection_compresses_an_absent_intermediate_inside_an_eligible_tree():
     ]
 
 
-def test_projection_rejects_an_actor_without_a_principal_root():
+def test_projection_folds_an_actor_without_a_principal_root():
     actor = "codex-rootless@newton"
     current = nx.MultiDiGraph()
     current.graph["actors"] = [{"addr": actor, "kind": "codex"}]
     current.add_node(f"{actor}#0", stream=actor, op="create")
 
-    with pytest.raises(ValueError):
-        alan.project([actor_session(actor, "codex")], current)
+    assert alan.project([actor_session(actor, "codex")], current) == []
 
 
 def test_projection_composes_spawn_ancestry_from_separate_hosts():

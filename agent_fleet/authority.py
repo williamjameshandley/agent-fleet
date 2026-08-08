@@ -1,8 +1,5 @@
 """Finite source-authority mutations for the Fleet action boundary."""
 
-import json
-import sys
-
 from . import alan, presentation, tmux, transcripts
 
 
@@ -15,6 +12,10 @@ FIELDS = {
     "refresh": {"operation", "actor"},
     "restore-alan": {"operation", "actor"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
+}
+
+ALAN_OPERATIONS = {
+    "create", "rename-alan", "archive-alan", "refresh", "restore-alan",
 }
 
 
@@ -52,18 +53,3 @@ def execute(request):
         request["agent"], request["transcript"], request["name"]
     )
     return {"agent": request["agent"], "transcript": request["transcript"]}
-
-
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 1:
-        raise SystemExit(2)
-    try:
-        response = {"ok": True, "value": execute(json.loads(argv[0]))}
-    except Exception as error:
-        response = {"ok": False, "error": str(error)}
-    print(json.dumps(response, separators=(",", ":")))
-
-
-if __name__ == "__main__":
-    main()

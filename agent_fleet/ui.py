@@ -53,6 +53,10 @@ def muster():
                      f"/usr/bin/nc -U {daemon_socket}")
     resize = ("printf 'resize\\t%s\\n' \"$FZF_COLUMNS\" | "
               f"/usr/bin/nc -U {daemon_socket}")
+    archive = ("printf 'archive\\t%s\\t%s\\t%s\\n' {1} {2} "
+               f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
+    refresh = ("printf 'refresh\\t%s\\t%s\\t%s\\n' {1} {2} "
+               f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
     command = [
         "fzf", "--listen", str(sock), "--track", "--disabled", "--no-input", "--ansi",
         f"--color={FZF_COLOUR}",
@@ -74,8 +78,8 @@ def muster():
         "--bind=double-click:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})",
         "--bind=c:execute-silent(/usr/lib/agent-fleet/ui create-tab)",
         "--bind=r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})",
-        "--bind=R:execute-silent(/usr/lib/agent-fleet/ui refresh {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=x:execute-silent(/usr/lib/agent-fleet/ui archive {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
+        f"--bind=R:transform({refresh})",
+        f"--bind=x:transform({archive})",
         f"--bind=l:transform({fold_open})",
         f"--bind=h:transform({fold_close})",
         f"--bind=right:transform({fold_open})",

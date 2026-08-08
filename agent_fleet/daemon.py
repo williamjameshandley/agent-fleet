@@ -21,6 +21,7 @@ from .model import key_host
 from .tmux import capture, event_stream, split_key
 from .quota import read as quota_read
 from . import proc, render
+from .authority import ALAN_OPERATIONS, execute as authority_execute
 
 
 MARKER_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -38,6 +39,7 @@ def events(host):
     lock = threading.Lock()
     consumer = threading.Event()
     controls = queue.Queue(maxsize=1)
+    changes = queue.Queue()
 
     def emit(message):
         with lock:
@@ -62,10 +64,18 @@ def events(host):
                     elif "cleanup" in request:
                         remove_viewer_marker(host, request["owner"], request["slot"])
                         response = {"cleanup": request["cleanup"]}
+                    elif "authority" in request:
+                        value = authority_execute(request["request"])
+                        observed = threading.Event()
+                        changes.put(("authority", observed,
+                                     request["request"]["operation"] in ALAN_OPERATIONS))
+                        observed.wait()
+                        response = {"authority": request["authority"], "value": value}
                     else:
                         raise RuntimeError("unknown host request")
-                except (KeyError, OSError, RuntimeError, ValueError) as error:
-                    tag = next(name for name in ("preview", "switch", "cleanup")
+                except Exception as error:
+                    tag = next(name for name in
+                               ("preview", "switch", "cleanup", "authority")
                                if name in request)
                     response = {tag: request[tag], "error": str(error)}
                 emit(json.dumps(response, separators=(",", ":")))
@@ -73,7 +83,7 @@ def events(host):
             consumer.set()
 
     threading.Thread(target=requests, daemon=True).start()
-    for sessions, graph in event_stream(host, consumer, controls):
+    for sessions, graph in event_stream(host, consumer, controls, changes):
         usage = quota_read() if host == hosts()[0] else {}
         emit(encode(sessions, usage, graph=graph))
 
@@ -94,6 +104,8 @@ class Fleet:
         self.next_switch = 0
         self.cleanups = {}
         self.next_cleanup = 0
+        self.authorities = {}
+        self.next_authority = 0
         self.changed = asyncio.Condition()
         self.action_error = ""
         self.muster_generation = None
@@ -179,6 +191,13 @@ class Fleet:
             else:
                 future.set_result(None)
             return True
+        if "authority" in message:
+            _, future = self.authorities.pop(message["authority"])
+            if "error" in message:
+                future.set_exception(RuntimeError(message["error"]))
+            else:
+                future.set_result(message["value"])
+            return True
         return False
 
     async def host_disconnected(self, host):
@@ -191,7 +210,8 @@ class Fleet:
         self._view_cache = None
         async with self.changed:
             self.changed.notify_all()
-        for pending in (self.previews, self.switches, self.cleanups):
+        for pending in (self.previews, self.switches, self.cleanups,
+                        self.authorities):
             for number, (owner, future) in list(pending.items()):
                 if owner == host:
                     future.set_exception(RuntimeError(f"{host} disconnected"))
@@ -317,6 +337,9 @@ class Fleet:
         elif request.startswith(("fold\t", "toggle\t", "resize\t")):
             async with self.view_lock:
                 payload = self.mutate_view(request)
+        elif request.startswith(("archive\t", "refresh\t")):
+            async with self.view_lock:
+                payload = await self.mutate_action(request)
         elif request.startswith("next-waiting\t"):
             payload = self.next_waiting(request.removeprefix("next-waiting\t"))
         elif request.startswith("preview "):
@@ -437,6 +460,31 @@ class Fleet:
         except (LookupError, RuntimeError, ValueError) as error:
             self.action_error = str(error)
             width = self.view_width
+            return self.publish_view(width, self.action_error)[0]
+
+    async def mutate_action(self, request):
+        values = request.split("\t")
+        width = self.view_width
+        try:
+            if self.muster_generation is None:
+                raise RuntimeError("Muster generation is not registered")
+            if len(values) != 4 or values[0] not in {"archive", "refresh"}:
+                raise ValueError("invalid Muster action request")
+            operation, key, expected, raw_width = values
+            width = int(raw_width)
+            if width < 1:
+                raise ValueError("invalid Muster width")
+            if int(expected) != self.view_revision:
+                raise RuntimeError(
+                    f"Muster view changed: {expected} != {self.view_revision}")
+            projected, _, _ = self.view(width)
+            if not any(item.session.ref.key == key for item in projected):
+                raise LookupError(f"session is not in the displayed view: {key}")
+            await self.action({"operation": operation, "source": key})
+            self.action_error = ""
+            return self.publish_view(width)[0]
+        except (LookupError, OSError, RuntimeError, ValueError) as error:
+            self.action_error = str(error)
             return self.publish_view(width, self.action_error)[0]
 
     async def register_muster(self, generation, width):
@@ -600,23 +648,54 @@ class Fleet:
         return value
 
     async def authority(self, host, request):
-        encoded = json.dumps(request, separators=(",", ":"))
-        command = ["/usr/lib/agent-fleet/action", encoded]
-        if host != os.uname().nodename.split(".", 1)[0]:
-            command = ["ssh", "-T", "-o", "BatchMode=yes", host,
-                       shlex.join(command)]
-        process = await asyncio.create_subprocess_exec(
-            *command, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE, env=ssh_environment())
-        stdout, stderr = await process.communicate()
-        if process.returncode:
-            raise RuntimeError(stderr.decode().strip() or f"{host}: action failed")
-        response = json.loads(stdout)
-        if set(response) == {"ok", "error"} and response["ok"] is False:
-            raise RuntimeError(response["error"])
-        if set(response) != {"ok", "value"} or response["ok"] is not True:
-            raise RuntimeError(f"{host}: invalid action response")
-        return response["value"]
+        self.available(host)
+        process = self.processes[host]
+        assert process.stdin
+        self.next_authority += 1
+        number = self.next_authority
+        future = asyncio.get_running_loop().create_future()
+        self.authorities[number] = (host, future)
+        process.stdin.write((json.dumps({"authority": number,
+                                         "request": request}) + "\n").encode())
+        await process.stdin.drain()
+        return await future
+
+    async def viewers_showing(self, key):
+        found = []
+        for path in sorted(RUNTIME.glob("viewer-*.sock")):
+            try:
+                reader, writer = await asyncio.open_unix_connection(path)
+                writer.write(b"STATUS\n")
+                await writer.drain()
+                source = (await reader.readline()).decode().rstrip("\n")
+                writer.close()
+                await writer.wait_closed()
+            except OSError:
+                continue
+            if source == key:
+                found.append(path)
+        return found
+
+    @staticmethod
+    async def update_viewer(path, message):
+        reader, writer = await asyncio.open_unix_connection(path)
+        writer.write((message + "\n").encode())
+        await writer.drain()
+        reply = (await reader.readline()).decode().rstrip("\n")
+        writer.close()
+        await writer.wait_closed()
+        if reply != "OK":
+            raise RuntimeError(reply or f"viewer {path.name} did not acknowledge")
+
+    async def update_viewers(self, paths, message):
+        errors = []
+        for path in paths:
+            try:
+                await self.update_viewer(path, message)
+            except (OSError, RuntimeError) as error:
+                errors.append(f"{path.name}: {error}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
 
     async def action(self, request):
         operation = request.get("operation")
@@ -686,6 +765,8 @@ class Fleet:
         key = request["source"]
         session = self.source(key)
         host = session.ref.server.host
+        viewers = (await self.viewers_showing(key)
+                   if operation in {"archive", "refresh"} else [])
         if operation == "rename":
             name = self.action_name(request["name"])
             authority = ({"operation": "rename-alan",
@@ -697,9 +778,12 @@ class Fleet:
         if operation == "refresh":
             if session.ref.server.kind != "alan":
                 raise ValueError("refresh requires an Alan actor")
-            return await self.authority(host, {
+            value = await self.authority(host, {
                 "operation": "refresh", "actor": session.ref.session_id,
             })
+            self.source(key)
+            await self.update_viewers(viewers, f"OPEN {key}")
+            return value
         if session.ref.server.kind == "alan":
             if session.agent not in {"llm", "claude", "codex"}:
                 raise ValueError("archive requires a language actor")
@@ -713,6 +797,7 @@ class Fleet:
                          "transcript": session.transcript_id}
         await self.authority(host, authority)
         await self.wait_for_absence(key)
+        await self.update_viewers(viewers, "CLEAR")
         return {}
 
     async def remote_json(self, host, *command):

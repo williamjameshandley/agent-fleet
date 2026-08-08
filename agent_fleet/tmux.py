@@ -233,8 +233,8 @@ def inventory(host):
     return sessions
 
 
-def event_stream(host, consumer=None, controls=None):
-    changed = queue.Queue()
+def event_stream(host, consumer=None, controls=None, changed=None):
+    changed = changed or queue.Queue()
     alan = AlanWatcher(changed, consumer)
     if consumer:
         def disconnected():
@@ -274,6 +274,8 @@ def event_stream(host, consumer=None, controls=None):
         controls.put(control)
     previous = None
     force = False
+    barriers = []
+    authority_refresh = False
     agent_cache = {}
     alan_error = None
     try:
@@ -281,7 +283,9 @@ def event_stream(host, consumer=None, controls=None):
             if alan.error and alan.error != alan_error:
                 print(alan.error, file=sys.stderr, flush=True)
             alan_error = alan.error
-            current = inventory(host) + alan_inventory(host, alan.actors)
+            actors, graph = (alan.refresh() if authority_refresh
+                             else alan.snapshot())
+            current = inventory(host) + alan_inventory(host, actors)
             try:
                 current = observe(current, native_transcripts.catalog())
                 agent_cache = {session.ref: session for session in current}
@@ -296,17 +300,25 @@ def event_stream(host, consumer=None, controls=None):
                            for session in current]
             serial = tuple(current)
             if serial != previous or force:
-                yield current, alan.graph
+                yield current, graph
                 previous = serial
                 force = False
+                for barrier in barriers:
+                    barrier.set()
+                barriers.clear()
+                authority_refresh = False
             if consumer and consumer.is_set():
                 return
-            events = {changed.get()}
+            events = [changed.get()]
             while not changed.empty():
-                events.add(changed.get_nowait())
+                events.append(changed.get_nowait())
             if consumer and consumer.is_set():
                 return
-            force = "quota" in events
+            authorities = [event for event in events
+                           if isinstance(event, tuple) and event[0] == "authority"]
+            barriers.extend(event[1] for event in authorities)
+            authority_refresh = any(event[2] for event in authorities)
+            force = "quota" in events or bool(barriers)
             if "closed" in events or process.poll() is not None:
                 error = process.stderr.read().strip() if process.stderr else ""
                 raise RuntimeError(error or "tmux control client closed")

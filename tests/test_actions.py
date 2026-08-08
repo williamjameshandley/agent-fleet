@@ -165,19 +165,87 @@ def test_daemon_refuses_stale_disconnected_and_unrecoverable_sources():
         asyncio.run(fleet.action({"operation": "archive", "source": item.ref.key}))
 
 
-def test_local_authority_uses_the_fixed_installed_entrypoint():
-    fleet = Fleet()
-    process = mock.Mock(returncode=0)
-    process.communicate = mock.AsyncMock(
-        return_value=(b'{"ok":true,"value":{"name":"new"}}\n', b''))
-    with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
-                    return_value=process) as execute:
-        value = asyncio.run(fleet.authority(
-            os.uname().nodename.split(".", 1)[0],
-            {"operation": "rename-alan", "actor": "codex-1@lovelace",
-             "name": "new"}))
-    assert value == {"name": "new"}
-    assert execute.call_args.args[0] == "/usr/lib/agent-fleet/action"
+def test_authority_uses_the_resident_host_channel_without_a_subprocess():
+    async def exercise():
+        fleet = Fleet()
+        host = os.uname().nodename.split(".", 1)[0]
+        process = mock.Mock()
+        process.stdin = mock.Mock()
+        process.stdin.drain = mock.AsyncMock()
+        fleet.processes[host] = process
+        fleet.unavailable.clear()
+        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec") as execute:
+            pending = asyncio.create_task(fleet.authority(host, {
+                "operation": "rename-alan", "actor": "codex-1@lovelace",
+                "name": "new"}))
+            await asyncio.sleep(0)
+            request = json.loads(process.stdin.write.call_args.args[0])
+            fleet.host_reply({"authority": request["authority"],
+                              "value": {"name": "new"}})
+            value = await pending
+        assert value == {"name": "new"}
+        assert request["request"]["operation"] == "rename-alan"
+        execute.assert_not_called()
+
+    asyncio.run(exercise())
+
+
+def test_archive_clears_and_refresh_reopens_every_shown_viewer():
+    async def exercise(operation, message):
+        fleet = Fleet()
+        item = session()
+        fleet.sessions = {"lovelace": [item]}
+        fleet.unavailable.clear()
+        paths = [Path("/run/viewer-main.sock"), Path("/run/viewer-right.sock")]
+        with mock.patch.object(fleet, "viewers_showing",
+                               return_value=paths) as showing, \
+             mock.patch.object(fleet, "authority", return_value={}), \
+             mock.patch.object(fleet, "wait_for_absence"), \
+             mock.patch.object(fleet, "update_viewers") as update:
+            await fleet.action({"operation": operation, "source": item.ref.key})
+        showing.assert_awaited_once_with(item.ref.key)
+        update.assert_awaited_once_with(paths, message)
+
+    asyncio.run(exercise("archive", "CLEAR"))
+    asyncio.run(exercise("refresh", "OPEN alan:codex-1@lovelace"))
+
+
+def test_viewer_updates_attempt_every_recorded_slot_before_reporting_failure():
+    async def exercise():
+        fleet = Fleet()
+        paths = [Path("/run/viewer-left.sock"), Path("/run/viewer-right.sock")]
+        with mock.patch.object(fleet, "update_viewer",
+                               side_effect=[RuntimeError("gone"), None]) as update:
+            with pytest.raises(RuntimeError, match="viewer-left.sock: gone"):
+                await fleet.update_viewers(paths, "CLEAR")
+        assert update.await_args_list == [mock.call(paths[0], "CLEAR"),
+                                          mock.call(paths[1], "CLEAR")]
+
+    asyncio.run(exercise())
+
+
+def test_authority_error_and_disconnect_complete_the_outstanding_future():
+    async def exercise(disconnect):
+        fleet = Fleet()
+        host = os.uname().nodename.split(".", 1)[0]
+        process = mock.Mock()
+        process.stdin = mock.Mock()
+        process.stdin.drain = mock.AsyncMock()
+        fleet.processes[host] = process
+        fleet.unavailable.clear()
+        pending = asyncio.create_task(fleet.authority(
+            host, {"operation": "archive-alan", "actor": f"codex-1@{host}"}))
+        await asyncio.sleep(0)
+        number = json.loads(process.stdin.write.call_args.args[0])["authority"]
+        if disconnect:
+            await fleet.host_disconnected(host)
+        else:
+            fleet.host_reply({"authority": number, "error": "refused"})
+        with pytest.raises(RuntimeError, match="disconnected" if disconnect else "refused"):
+            await pending
+
+    asyncio.run(exercise(False))
+    asyncio.run(exercise(True))
 
 
 def test_action_client_cannot_transmit_inherited_actor_identity(tmp_path, monkeypatch):
@@ -208,27 +276,6 @@ def test_action_client_cannot_transmit_inherited_actor_identity(tmp_path, monkey
     assert daemon.action(envelope) == {"source": "alan:codex-1@lovelace"}
     thread.join()
     assert received == [envelope]
-
-
-def test_remote_authority_crosses_a_real_batchmode_ssh_fixture(tmp_path, monkeypatch):
-    ssh = tmp_path / "ssh"
-    ssh.write_text(
-        "#!/usr/bin/python\n"
-        "import shlex, subprocess, sys\n"
-        "command = shlex.split(sys.argv[-1])\n"
-        "assert command[0] == '/usr/lib/agent-fleet/action'\n"
-        "command[:1] = [sys.executable, '-m', 'agent_fleet.authority']\n"
-        "raise SystemExit(subprocess.run(command).returncode)\n"
-    )
-    ssh.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    value = asyncio.run(Fleet().authority(
-        "fixture", {"operation": "rename-alan", "actor": "codex-1@fixture",
-                    "name": "remote name"}))
-    assert value == {"name": "remote name"}
-    assert (tmp_path / "state/agent-fleet/labels/codex-1@fixture").read_text() == \
-        "remote name\n"
 
 
 def test_service_removes_actor_identity_at_the_process_boundary():

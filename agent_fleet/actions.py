@@ -95,17 +95,11 @@ def rename_prompt(key):
 
 
 def archive(key):
-    shown = [slot for slot, source in viewer.slots() if source == key]
     fleet_action({"operation": "archive", "source": key})
-    for slot in shown:
-        viewer.request(slot, "")
 
 
 def refresh(key):
-    shown = [slot for slot, source in viewer.slots() if source == key]
     fleet_action({"operation": "refresh", "source": key})
-    for slot in shown:
-        viewer.request(slot, key)
 
 
 def next_waiting():
