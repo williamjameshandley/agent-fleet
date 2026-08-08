@@ -33,9 +33,6 @@ package() {
   printf '#!/usr/bin/python\nfrom agent_fleet.ui_process import main\nmain()\n' \
     > "$pkgdir/usr/lib/agent-fleet/ui"
   chmod 755 "$pkgdir/usr/lib/agent-fleet/ui"
-  printf '#!/usr/bin/python\nfrom agent_fleet.authority import main\nmain()\n' \
-    > "$pkgdir/usr/lib/agent-fleet/action"
-  chmod 755 "$pkgdir/usr/lib/agent-fleet/action"
   install -Dm755 "$startdir/fleet-open" "$pkgdir/usr/lib/agent-fleet/fleet-open"
   install -Dm755 "$startdir/fleet-present" "$pkgdir/usr/lib/agent-fleet/fleet-present"
   install -Dm755 "$startdir/fleet-status" "$pkgdir/usr/lib/agent-fleet/fleet-status"

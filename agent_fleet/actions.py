@@ -95,34 +95,17 @@ def rename_prompt(key):
 
 
 def archive(key):
-    shown = [slot for slot, source in viewer.slots() if source == key]
     fleet_action({"operation": "archive", "source": key})
-    for slot in shown:
-        viewer.request(slot, "")
 
 
 def refresh(key):
-    shown = [slot for slot, source in viewer.slots() if source == key]
     fleet_action({"operation": "refresh", "source": key})
-    for slot in shown:
-        viewer.request(slot, key)
-
-
-def next_waiting_key(sessions, active):
-    waiting = [session for session in sessions if session.state == "waiting"]
-    if not waiting:
-        return None
-    current = next((i for i, session in enumerate(waiting)
-                    if session.ref.key == active), -1)
-    return waiting[(current + 1) % len(waiting)].ref.key
 
 
 def next_waiting():
-    from .ui import ordered
-    projected, _, _ = ordered()
-    sessions = [item.session for item in projected]
-    key = next_waiting_key(sessions, dict(viewer.slots()).get("main"))
-    if key is None:
+    from .daemon import request
+    key = request("next-waiting\t" + dict(viewer.slots()).get("main", "")).strip()
+    if not key:
         subprocess.run(["/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
                         "No waiting sessions"])
         return

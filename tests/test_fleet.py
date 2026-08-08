@@ -25,7 +25,7 @@ from agent_fleet.model import ServerRef, Session, SessionRef
 from agent_fleet.protocol import decode, decode_graph, encode
 from agent_fleet.render import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.tmux import split_key
-from agent_fleet import actions, authority
+from agent_fleet import actions, authority, proc
 from agent_fleet import alan
 from agent_fleet.config import machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
@@ -52,6 +52,47 @@ class IdentityTests(unittest.TestCase):
     def session(self, host, sid="$1"):
         return Session(SessionRef(ServerRef(host, "/tmp/tmux/default", 12, 10), sid),
                        "work", 1, 2, 0, 1, "codex", "waiting", "/work")
+
+    def fold_fleet(self):
+        host = "lovelace"
+        root = f"codex-root@{host}"
+        child = f"claude-child@{host}"
+        python = f"python-child@{host}"
+        principal = f"will@{host}"
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [
+            {"addr": root, "kind": "codex"},
+            {"addr": child, "kind": "claude"},
+            {"addr": python, "kind": "python"},
+            {"addr": principal, "kind": "principal"},
+        ]
+        for actor in (root, child, python, principal):
+            graph.add_node(f"{actor}#0", stream=actor, op="create")
+        graph.add_node(f"{principal}#1", stream=principal, op="spawn")
+        graph.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
+        for position, descendant in enumerate((child, python), 1):
+            source = f"{root}#{position}"
+            graph.add_node(source, stream=root, op="spawn")
+            graph.add_edge(source, f"{descendant}#0", key="spawn")
+        server = ServerRef(host, "", 0, 0, "alan")
+        sessions = [
+            Session(SessionRef(server, actor), actor, 1, 0, 0, 1, "alan", "",
+                    "/work", kind, "waiting")
+            for actor, kind in ((root, "codex"), (child, "claude"),
+                                (python, "python"))
+        ]
+        fleet = Fleet()
+        fleet.sessions = {host: sessions}
+        fleet.unavailable = set()
+        fleet.observed = fleet.view_revision = 1
+        fleet._composed = (fleet.observed, graph)
+        fleet.muster_generation = ("fixture", 1, 1, "$1")
+        return fleet, root, child, python
+
+    def test_proc_start_time_handles_a_process_name_with_spaces(self):
+        stat = "123 (tmux: server) S " + " ".join(
+            str(number) for number in range(4, 53))
+        self.assertEqual(proc.start_time(123, stat), 22)
 
     def test_identical_tmux_ids_on_different_hosts_are_distinct(self):
         self.assertNotEqual(self.session("newton").ref, self.session("lovelace").ref)
@@ -257,7 +298,7 @@ class IdentityTests(unittest.TestCase):
         async def exercise():
             writer = Writer()
             with mock.patch.object(fleet, "projected",
-                                   mock.AsyncMock(return_value=[])):
+                                   return_value=[]):
                 await fleet.reply(Reader(), writer)
             self.assertTrue(writer.closed)
 
@@ -519,6 +560,7 @@ class IdentityTests(unittest.TestCase):
                             lambda: fleet.sessions.get(host)
                             and fleet.sessions[host][0].name == "needle row"
                         )
+                        await fleet.refresh_muster()
                         await wait_for(
                             lambda: "alan:" in
                             (fzf_state().get("current") or {}).get("text", "")
@@ -1158,23 +1200,6 @@ class IdentityTests(unittest.TestCase):
                                        "agent": "codex", "name": "analysis.",
                                        "cwd": "/work"})
 
-    def test_daemon_remote_authority_uses_one_fixed_batch_mode_entrypoint(self):
-        host = "newton" if os.uname().nodename != "newton" else "lovelace"
-        process = mock.Mock(returncode=0)
-        process.communicate = mock.AsyncMock(
-            return_value=(b'{"ok":true,"value":{"name":"safe"}}\n', b''))
-        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
-                        return_value=process) as execute:
-            value = asyncio.run(Fleet().authority(
-                host, {"operation": "rename-alan", "actor": "codex-1@newton",
-                       "name": "work tree;safe"}))
-        self.assertEqual(value, {"name": "safe"})
-        command = execute.call_args.args
-        self.assertEqual(command[:5],
-                         ("ssh", "-T", "-o", "BatchMode=yes", host))
-        self.assertIn("/usr/lib/agent-fleet/action", command[5])
-        self.assertNotIn("python -c", command[5])
-
     def test_next_waiting_module_uses_the_composable_action(self):
         source = (Path(__file__).parents[1] / "agent_fleet/next_waiting.py").read_text()
         self.assertEqual(source, "from .actions import next_waiting\n\n\nnext_waiting()\n")
@@ -1264,7 +1289,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.actions.viewer.request") as request:
             actions.archive(key)
         action.assert_called_once_with({"operation": "archive", "source": key})
-        request.assert_called_once_with("main", "")
+        request.assert_not_called()
 
     def test_archive_retires_alan_claude_without_projected_native_identity(self):
         host = os.uname().nodename
@@ -1315,7 +1340,7 @@ class IdentityTests(unittest.TestCase):
         absent.assert_awaited_once_with(session.ref.key)
 
     def test_tmux_archive_revalidates_full_source_before_kill(self):
-        key = "lovelace:/tmp/tmux:12:10:$1"
+        key = f"{os.uname().nodename}:/tmp/tmux:12:10:$1"
         result = mock.Mock(stdout=[])
         server = mock.Mock()
         server.cmd.return_value = result
@@ -1362,8 +1387,7 @@ class IdentityTests(unittest.TestCase):
             actions.refresh(session.ref.key)
         action.assert_called_once_with(
             {"operation": "refresh", "source": session.ref.key})
-        self.assertEqual(request.call_args_list, [
-            mock.call("main", session.ref.key), mock.call("right", session.ref.key)])
+        request.assert_not_called()
 
     def test_retained_unavailable_actor_remains_the_native_history_authority(self):
         context = {"history": [{
@@ -1612,170 +1636,416 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("change-prompt(Search: )", source)
         self.assertIn("c:execute-silent(/usr/lib/agent-fleet/ui create-tab)", source)
         self.assertIn("r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})", source)
-        self.assertIn("l:execute-silent(/usr/lib/agent-fleet/ui fold open {1})+transform-header", source)
-        self.assertIn("h:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header", source)
-        self.assertIn("right:execute-silent(/usr/lib/agent-fleet/ui fold open {1})+transform-header", source)
-        self.assertIn("left:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header", source)
-        self.assertIn("p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header", source)
+        self.assertIn("f\"--bind=l:transform({fold_open})\"", source)
+        self.assertIn("f\"--bind=h:transform({fold_close})\"", source)
+        self.assertIn("f\"--bind=right:transform({fold_open})\"", source)
+        self.assertIn("f\"--bind=left:transform({fold_close})\"", source)
+        self.assertIn("f\"--bind=p:transform({toggle_python})\"", source)
+        self.assertIn("f\"--bind=resize:transform({resize})\"", source)
+        self.assertIn("f\"--bind=x:transform({archive})\"", source)
+        self.assertIn("f\"--bind=R:transform({refresh})\"", source)
+        self.assertIn("/usr/bin/nc -U", source)
+        self.assertNotIn("ui fold", source)
+        self.assertNotIn("ui toggle", source)
+        self.assertNotIn("ui archive", source)
+        self.assertNotIn("ui refresh", source)
         self.assertIn('"--footer-border=bottom"', source)
         self.assertNotIn('"--preview=', source)
         self.assertNotIn('"--preview-window=', source)
 
     def test_muster_projects_recursive_folds_and_python_independently(self):
-        root = "codex-root@newton"
-        language = "claude-child@newton"
-        python = "python-child@newton"
-        principal = "will@newton"
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [
-            {"addr": root, "kind": "codex"},
-            {"addr": language, "kind": "claude"},
-            {"addr": python, "kind": "python"},
-            {"addr": principal, "kind": "principal"},
-        ]
-        graph.add_node(f"{root}#0", stream=root, op="create")
-        graph.add_node(f"{principal}#0", stream=principal, op="create")
-        graph.add_node(f"{principal}#1", stream=principal, op="spawn")
-        graph.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
-        for position, child in enumerate((language, python), 1):
-            source = f"{root}#{position}"
-            graph.add_node(source, stream=root, op="spawn")
-            graph.add_node(f"{child}#0", stream=child, op="create", spawn=source)
-            graph.add_edge(source, f"{child}#0", key="spawn")
-        sessions = [
-            Session(SessionRef(ServerRef("newton", "", 0, 0, "alan"), actor),
-                    actor, 1, 0, 0, 1, "alan", "", "/work", kind, "waiting")
-            for actor, kind in ((root, "codex"), (language, "claude"), (python, "python"))
-        ]
-        raw = encode(sessions, graph=graph)
+        fleet, root, language, python = self.fold_fleet()
+        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+                         [root])
+        fleet.expanded.add(root)
+        fleet.view_revision += 1; fleet._view_cache = None
+        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+                         [root, language])
+        fleet.show_python = True
+        fleet.view_revision += 1; fleet._view_cache = None
+        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+                         [root, language, python])
 
-        def projected(opened, python_visible):
-            with mock.patch.object(ui, "snapshot", return_value=raw), \
-                 mock.patch.object(ui, "expanded", return_value=set(opened)), \
-                 mock.patch.object(ui, "option", return_value=python_visible):
-                return [item.session.ref.session_id for item in ui.ordered()[0]]
+    def test_host_observation_updates_availability_and_usage_before_projection(self):
+        fleet = Fleet()
+        host = "lovelace"
+        fleet._view_cache = ("stale",)
+        usage = {"claude": {"five_hour": {"utilization": 37}}}
+        raw = encode([self.session(host)], usage)
+        with mock.patch("agent_fleet.daemon.hosts", return_value=[host]):
+            fleet.update_host(host, raw)
+        self.assertNotIn(host, fleet.unavailable)
+        self.assertEqual(fleet.usage, usage)
+        self.assertIsNone(fleet._view_cache)
+        self.assertNotIn("offline lovelace", fleet.view(100)[2])
 
-        self.assertEqual(projected((), False), [root])
-        self.assertEqual(projected((root,), False), [root, language])
-        self.assertEqual(projected((root,), True), [root, language, python])
+    def test_hidden_orphan_python_does_not_break_the_projection(self):
+        fleet, root, _, python = self.fold_fleet()
+        graph = fleet._composed[1]
+        for source, target, relation in list(graph.edges(keys=True)):
+            if relation == "spawn" and graph.nodes[target]["stream"] == python:
+                graph.remove_edge(source, target, relation)
+        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+                         [root])
+        fleet.show_python = True
+        self.assertNotIn(python, [item.session.ref.session_id
+                                  for item in fleet.projected()])
 
-    def test_toggle_changes_the_named_muster_tmux_option(self):
-        with mock.patch.object(ui, "option", return_value=False), \
-             mock.patch.object(ui.subprocess, "run") as run:
-            ui.toggle("python")
-        run.assert_called_once_with(
-            ["/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", "@fleet_show_python", "1"],
-            check=True,
-        )
+    def test_actor_without_current_principal_ancestry_stays_folded(self):
+        fleet, root, child, _ = self.fold_fleet()
+        graph = fleet._composed[1]
+        for source, target, relation in list(graph.edges(keys=True)):
+            if relation == "spawn" and graph.nodes[target]["stream"] == child:
+                graph.remove_edge(source, target, relation)
+        fleet.expanded.add(root)
+        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+                         [root])
+
+    def test_muster_socket_refuses_a_second_live_listener(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "muster.sock"
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(path))
+                server.listen()
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    ui.prepare_socket(path)
+                self.assertTrue(path.exists())
+
+    def test_muster_socket_removes_only_a_stale_socket(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "muster.sock"
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(path))
+            ui.prepare_socket(path)
+            self.assertFalse(path.exists())
 
     def test_fold_opens_and_closes_only_the_selected_expandable_actor(self):
-        root = Session(
-            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"),
-                       "codex-root@lovelace"),
-            "root", 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting")
-        projection = alan.Projected(root, 0, 2, False)
-        for action, actors, expected in (
-                ("open", {"claude-other@lovelace"},
-                 f"claude-other@lovelace {root.ref.session_id}"),
-                ("open", {"claude-other@lovelace", root.ref.session_id},
-                 f"claude-other@lovelace {root.ref.session_id}"),
-                ("close", {"claude-other@lovelace", root.ref.session_id},
-                 "claude-other@lovelace"),
-                ("close", {"claude-other@lovelace"},
-                 "claude-other@lovelace")):
-            with self.subTest(action=action, actors=actors), \
-                 mock.patch.object(ui, "ordered", return_value=([projection], {}, [])), \
-                 mock.patch.object(ui, "expanded", return_value=actors), \
-                 mock.patch.object(ui.subprocess, "run") as run:
-                ui.fold(action, root.ref.key)
-            run.assert_called_once_with([
-                "/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
-                expected], check=True)
+        fleet, root, child, _ = self.fold_fleet()
+        key = f"alan:{root}"
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)):
+            revision = fleet.view_revision
+            action = fleet.mutate_view(f"fold\topen\t{key}\t{revision}\t100")
+            self.assertIn(root, fleet.expanded)
+            self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+                             [root, child])
+            self.assertIn("reload-sync(/usr/bin/cat", action)
+            self.assertIn("+transform-header(/usr/bin/cat", action)
+            self.assertEqual(action.count("/usr/bin/rm -f"), 2)
+            fleet.mutate_view(
+                f"fold\tclose\t{key}\t{fleet.view_revision}\t100")
+            self.assertNotIn(root, fleet.expanded)
 
-    def test_fold_ignores_native_and_leaf_rows(self):
-        native = self.session("lovelace")
-        actor = Session(
-            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"),
-                       "claude-leaf@lovelace"),
-            "leaf", 1, 0, 0, 1, "alan", "", "/work", "claude", "waiting")
-        for projection in (alan.Projected(native, 0, 1, False),
-                           alan.Projected(actor, 1, 0, False)):
-            with self.subTest(key=projection.session.ref.key), \
-                 mock.patch.object(ui, "ordered", return_value=([projection], {}, [])), \
-                 mock.patch.object(ui, "expanded") as expanded, \
-                 mock.patch.object(ui.subprocess, "run") as run:
-                ui.fold("open", projection.session.ref.key)
-            expanded.assert_not_called()
-            run.assert_not_called()
-
-    def test_recursive_folds_use_ephemeral_state_in_an_isolated_tmux_server(self):
-        host = os.uname().nodename
-        root = f"codex-root@{host}"
-        child = f"claude-child@{host}"
-        grandchild = f"llm-grandchild@{host}"
-        python = f"python-child@{host}"
-        principal = f"will@{host}"
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [
-            {"addr": root, "kind": "codex"},
-            {"addr": child, "kind": "claude"},
-            {"addr": grandchild, "kind": "llm"},
-            {"addr": python, "kind": "python"},
-            {"addr": principal, "kind": "principal"},
-        ]
-        for actor in (root, child, grandchild, python):
-            graph.add_node(f"{actor}#0", stream=actor, op="create")
-        graph.add_node(f"{principal}#0", stream=principal, op="create")
-        graph.add_node(f"{principal}#1", stream=principal, op="spawn")
-        graph.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
-        for position, (parent, descendant) in enumerate((
-                (root, child), (child, grandchild), (root, python)), 1):
-            source = f"{parent}#{position}"
-            graph.add_node(source, stream=parent, op="spawn")
-            graph.add_edge(source, f"{descendant}#0", key="spawn")
-        sessions = [
-            Session(SessionRef(ServerRef(host, "", 0, 0, "alan"), actor),
-                    actor, 1, 0, 0, 1, "alan", "", "/work", kind, "waiting")
-            for actor, kind in ((root, "codex"), (child, "claude"),
-                                (grandchild, "llm"), (python, "python"))
-        ]
-
+    def test_fold_rejects_a_stale_revision_without_changing_state(self):
+        fleet, root, _, _ = self.fold_fleet()
         with tempfile.TemporaryDirectory() as directory:
-            environment = {key: value for key, value in os.environ.items()
-                           if key != "TMUX"}
-            environment["TMUX_TMPDIR"] = directory
+            directory = Path(directory)
+            runtime = directory / "runtime"
+            runtime.mkdir()
+            tmux_runtime = directory / "tmux"
+            tmux_runtime.mkdir()
+            socket_path = runtime / "fzf.sock"
+            environment = {**without_tmux_client(),
+                           "TMUX_TMPDIR": str(tmux_runtime)}
+            subprocess.run(
+                ["tmux", "new-session", "-d", "-s", "fleet@muster",
+                 f"printf 'old\\n' | exec fzf --listen {socket_path} --header initial"],
+                check=True, env=environment)
+            try:
+                for _ in range(100):
+                    if socket_path.exists():
+                        break
+                    time.sleep(.01)
+                with mock.patch("agent_fleet.daemon.RUNTIME", runtime):
+                    action = fleet.mutate_view(
+                        f"fold\topen\talan:{root}\t{fleet.view_revision - 1}\t100")
+                    subprocess.run(
+                        ["curl", "-fsS", "--unix-socket", str(socket_path),
+                         "-XPOST", "-d", action, "http://localhost"],
+                        check=True, stdout=subprocess.DEVNULL)
+                self.assertEqual(fleet.expanded, set())
+                for _ in range(100):
+                    screen = subprocess.run(
+                        ["tmux", "capture-pane", "-p", "-t", "=fleet@muster:"],
+                        check=True, text=True, capture_output=True,
+                        env=environment).stdout
+                    if "Action failed: Muster view changed" in screen:
+                        break
+                    time.sleep(.01)
+                self.assertIn("Action failed: Muster view changed", screen)
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_archive_transform_uses_one_action_and_one_coherent_redraw(self):
+        fleet, root, _, _ = self.fold_fleet()
+        key = f"alan:{root}"
+
+        async def archive(_):
+            fleet.sessions = {}
+            fleet.observed += 1
+            fleet.view_revision += 1
+            fleet._view_cache = None
+            return {}
+
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
+             mock.patch.object(fleet, "action", side_effect=archive) as action:
+            result = asyncio.run(fleet.mutate_action(
+                f"archive\t{key}\t{fleet.view_revision}\t100"))
+        action.assert_awaited_once_with({"operation": "archive", "source": key})
+        self.assertIn("reload-sync(/usr/bin/cat", result)
+        self.assertEqual(fleet.projected(), [])
+
+    def test_archive_transform_rejects_a_stale_displayed_revision(self):
+        fleet, root, _, _ = self.fold_fleet()
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
+             mock.patch.object(fleet, "action") as action:
+            result = asyncio.run(fleet.mutate_action(
+                f"archive\talan:{root}\t{fleet.view_revision - 1}\t100"))
+        action.assert_not_awaited()
+        self.assertIn("transform-header", result)
+
+    def test_unregistered_muster_rejects_view_mutation(self):
+        fleet, _, _, _ = self.fold_fleet()
+        fleet.muster_generation = None
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)):
+            action = fleet.mutate_view("toggle\tpython\t100")
+            self.assertFalse(fleet.show_python)
+            self.assertIn("transform-header", action)
+            [header] = Path(directory).glob("*.header")
+            self.assertIn("Muster generation is not registered", header.read_text())
+
+    def test_python_toggle_needs_no_selected_row(self):
+        fleet, root, child, python = self.fold_fleet()
+        fleet.sessions = {"lovelace": [session for session in fleet.sessions["lovelace"]
+                                        if session.ref.session_id == python]}
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)):
+            self.assertEqual(fleet.projected(), [])
+            fleet.mutate_view("toggle\tpython\t100")
+            self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+                             [python])
+
+    def test_muster_generation_preserves_respawns_and_resets_replacements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            runtime = directory / "runtime"
+            runtime.mkdir()
+            environment = {**without_tmux_client(),
+                           "TMUX_TMPDIR": str(directory / "first")}
+            Path(environment["TMUX_TMPDIR"]).mkdir()
+
+            def start():
+                subprocess.run(["tmux", "new-session", "-d", "-s", "fleet@muster",
+                                "sleep 30"], check=True, env=environment)
+                socket_path, pid, session_id = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", "=fleet@muster:",
+                     "#{socket_path}\t#{pid}\t#{session_id}"],
+                    check=True, text=True, capture_output=True,
+                    env=environment).stdout.rstrip("\n").split("\t")
+                started = proc.start_time(pid)
+                return socket_path, int(pid), started, session_id
+
+            fleet = Fleet()
+            try:
+                first = start()
+                with mock.patch("agent_fleet.daemon.RUNTIME", runtime):
+                    asyncio.run(fleet.register_muster(first, 100))
+                    fleet.expanded.add("root")
+                    fleet.show_python = True
+                    asyncio.run(fleet.register_muster(first, 120))
+                    self.assertEqual(fleet.expanded, {"root"})
+                    self.assertTrue(fleet.show_python)
+                    (runtime / "muster-view-orphan.rows").write_text("old")
+                    subprocess.run(["tmux", "kill-server"], check=True,
+                                   env=environment)
+                    environment["TMUX_TMPDIR"] = str(directory / "second")
+                    Path(environment["TMUX_TMPDIR"]).mkdir()
+                    second = start()
+                    self.assertNotEqual(first[1:3], second[1:3])
+                    asyncio.run(fleet.register_muster(second, 100))
+                    self.assertEqual(fleet.expanded, set())
+                    self.assertFalse(fleet.show_python)
+                    self.assertFalse((runtime / "muster-view-orphan.rows").exists())
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_daemon_restart_registers_an_existing_muster_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            environment = {**without_tmux_client(),
+                           "TMUX_TMPDIR": str(directory / "tmux")}
+            Path(environment["TMUX_TMPDIR"]).mkdir()
             subprocess.run(["tmux", "new-session", "-d", "-s", "fleet@muster",
                             "sleep 30"], check=True, env=environment)
+            fleet = Fleet()
             try:
                 with mock.patch.dict(os.environ, environment, clear=True):
-                    def projected():
-                        return alan.project(
-                            sessions, graph, expanded=ui.expanded(),
-                            show_python=ui.option("@fleet_show_python"))
-
-                    with mock.patch.object(
-                            ui, "ordered", side_effect=lambda: (projected(), {}, [])):
-                        ui.fold("open", f"alan:{root}")
-                        self.assertEqual(
-                            [item.session.ref.session_id for item in projected()],
-                            [root, child])
-                        ui.fold("open", f"alan:{child}")
-                        self.assertEqual(
-                            [item.session.ref.session_id for item in projected()],
-                            [root, child, grandchild])
-                        ui.fold("close", f"alan:{root}")
-                        self.assertEqual(
-                            [item.session.ref.session_id for item in projected()], [root])
-                        ui.fold("open", f"alan:{root}")
-                        self.assertEqual(
-                            [item.session.ref.session_id for item in projected()],
-                            [root, child, grandchild])
-                        ui.toggle("python")
-                        self.assertEqual(
-                            [item.session.ref.session_id for item in projected()],
-                            [root, child, grandchild, python])
+                    asyncio.run(fleet.register_existing_muster())
+                self.assertIsNotNone(fleet.muster_generation)
+                socket_path, pid, started, session_id = fleet.muster_generation
+                self.assertEqual(started, proc.start_time(pid))
+                self.assertTrue(Path(socket_path).is_socket())
+                self.assertRegex(session_id, r"^\$[0-9]+$")
             finally:
-                subprocess.run(["tmux", "kill-server"], env=environment)
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_resize_width_governs_the_next_observation_projection(self):
+        fleet, _, _, _ = self.fold_fleet()
+        graph = fleet._composed[1]
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
+             mock.patch("agent_fleet.daemon.render.rows_text",
+                        wraps=render.rows_text) as rows:
+            fleet.mutate_view("resize\t143")
+            fleet.observed += 1
+            fleet.view_revision += 1
+            fleet._view_cache = None
+            fleet._composed = (fleet.observed, graph)
+            fleet.publish_view(fleet.view_width)
+        self.assertEqual(rows.call_args.args[2], 143)
+
+    def test_muster_launcher_registers_before_starting_live_fzf(self):
+        source = (Path(__file__).parents[1] / "fleet-muster").read_text()
+        inert = source.index("tmux new-session -d -s fleet@muster -n live 'exec sleep infinity'")
+        register = source.index("/usr/lib/agent-fleet/ui register")
+        live = source.index("tmux respawn-pane -k -t '=fleet@muster:live'")
+        self.assertLess(inert, register)
+        self.assertLess(register, live)
+
+    def test_ui_register_sends_the_complete_text_generation(self):
+        result = mock.Mock(stdout="/tmp/tmux.sock\t123\t$4\n")
+        with mock.patch.object(ui.subprocess, "run", return_value=result) as run, \
+             mock.patch.object(ui.proc, "start_time", return_value=456), \
+             mock.patch.object(ui.shutil, "get_terminal_size",
+                               return_value=os.terminal_size((120, 40))), \
+             mock.patch.object(ui, "request", return_value="OK\n") as request:
+            ui.register()
+        run.assert_called_once()
+        request.assert_called_once_with(
+            "muster-register\t/tmp/tmux.sock\t123\t456\t$4\t120")
+
+    def test_stock_fzf_consumes_one_revision_and_cleans_its_artifacts(self):
+        fleet, _, _, _ = self.fold_fleet()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            runtime = directory / "runtime"
+            runtime.mkdir()
+            tmux_runtime = directory / "tmux"
+            tmux_runtime.mkdir()
+            muster_socket = runtime / "muster.sock"
+            environment = {**without_tmux_client(),
+                           "TMUX_TMPDIR": str(tmux_runtime)}
+            subprocess.run(
+                ["tmux", "new-session", "-d", "-s", "fleet@muster",
+                 f"printf 'old\\n' | exec fzf --listen {muster_socket}"],
+                check=True, env=environment)
+            try:
+                for _ in range(100):
+                    if muster_socket.exists():
+                        break
+                    time.sleep(.01)
+                with mock.patch("agent_fleet.daemon.RUNTIME", runtime):
+                    revision = fleet.view_revision
+                    action, artifacts = fleet.publish_view(100)
+                    old_header = artifacts[1].read_text()
+                    fleet.sessions["lovelace"].append(self.session("lovelace", "$99"))
+                    fleet.view_revision += 1
+                    fleet._view_cache = None
+                    self.assertNotEqual(fleet.view(100)[2], old_header.rstrip("\n"))
+                    subprocess.run(
+                        ["curl", "-fsS", "--unix-socket", str(muster_socket),
+                         "-XPOST", "-d", action, "http://localhost"],
+                        check=True, stdout=subprocess.DEVNULL)
+                for _ in range(100):
+                    state = json.loads(subprocess.run(
+                        ["curl", "-fsS", "--unix-socket", str(muster_socket),
+                         "http://localhost?limit=1000"], check=True, text=True,
+                        capture_output=True).stdout)
+                    if (state["matches"] and
+                            all("\t" in row["text"] for row in state["matches"]) and
+                            all(not path.exists() for path in artifacts)):
+                        break
+                    time.sleep(.01)
+                self.assertTrue(state["matches"])
+                self.assertTrue(all(row["text"].split("\t")[1] == str(revision)
+                                    for row in state["matches"]))
+                screen = subprocess.run(
+                    ["tmux", "capture-pane", "-p", "-t", "=fleet@muster:"],
+                    check=True, text=True, capture_output=True,
+                    env=environment).stdout
+                self.assertIn("1 total", screen)
+                self.assertNotIn("2 total", screen)
+                self.assertTrue(all(not path.exists() for path in artifacts))
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_stock_fzf_x_and_refresh_send_the_displayed_identity_and_revision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            runtime = directory / "runtime"
+            runtime.mkdir()
+            daemon_socket = runtime / "fleet.sock"
+            received = []
+
+            def serve():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(daemon_socket))
+                    server.listen()
+                    while len(received) < 2:
+                        connection, _ = server.accept()
+                        with connection:
+                            request = connection.makefile().readline().rstrip("\n")
+                            if request.startswith(("archive\t", "refresh\t")):
+                                received.append(request)
+                            connection.sendall(b"change-header(done)\n")
+
+            thread = threading.Thread(target=serve, daemon=True)
+            thread.start()
+            with mock.patch("agent_fleet.ui.RUNTIME", runtime), \
+                 mock.patch.object(ui, "header", return_value="header"), \
+                 mock.patch.object(ui, "footer", return_value="footer"), \
+                 mock.patch.object(ui.os, "execvp", side_effect=RuntimeError) as execute, \
+                 self.assertRaises(RuntimeError):
+                ui.muster()
+            command = execute.call_args.args[1]
+            selected = [command[0], "--disabled", "--no-input", "--delimiter=\t",
+                        "--with-nth=3..", "--id-nth=1"]
+            selected.extend(argument for argument in command
+                            if argument.startswith(("--bind=x:", "--bind=R:")))
+            tmux_runtime = directory / "tmux"
+            tmux_runtime.mkdir()
+            environment = {**without_tmux_client(),
+                           "TMUX_TMPDIR": str(tmux_runtime)}
+            key = "alan:codex-one@lovelace"
+            shell = f"printf {shlex.quote(f'{key}\t7\tvisible\n')} | exec {shlex.join(selected)}"
+            subprocess.run(["tmux", "new-session", "-d", "-s", "fixture", shell],
+                           check=True, env=environment)
+            try:
+                time.sleep(.05)
+                subprocess.run(["tmux", "send-keys", "-t", "=fixture:", "x"],
+                               check=True, env=environment)
+                for _ in range(100):
+                    if received:
+                        break
+                    time.sleep(.01)
+                subprocess.run(["tmux", "send-keys", "-t", "=fixture:", "R"],
+                               check=True, env=environment)
+                for _ in range(100):
+                    if len(received) == 2:
+                        break
+                    time.sleep(.01)
+                self.assertEqual([request.split("\t")[:3] for request in received],
+                                 [["archive", key, "7"], ["refresh", key, "7"]])
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def test_fzf_reload_preserves_child_selection_by_stable_key(self):
         root = "alan:codex-root@lovelace"
@@ -1838,13 +2108,9 @@ class IdentityTests(unittest.TestCase):
             finally:
                 subprocess.run(["tmux", "kill-server"], env=environment)
 
-    def test_private_ui_dispatches_fold_and_rejects_language_toggle(self):
-        with mock.patch.object(ui, "fold") as fold:
+    def test_private_ui_has_no_fold_or_toggle_commands(self):
+        with self.assertRaises(SystemExit):
             ui_process.main(["fold", "open", "alan:claude-one@lovelace"])
-        fold.assert_called_once_with("open", "alan:claude-one@lovelace")
-        with mock.patch.object(ui, "toggle") as toggle:
-            ui_process.main(["toggle", "python"])
-        toggle.assert_called_once_with("python")
         with self.assertRaises(SystemExit):
             ui_process.main(["toggle", "language"])
 
@@ -1855,13 +2121,12 @@ class IdentityTests(unittest.TestCase):
     def test_next_waiting_unwraps_projected_sessions(self):
         active = replace(self.session("lovelace", "$1"), reported_state="waiting")
         child = replace(self.session("lovelace", "$2"), reported_state="waiting")
-        projected = [alan.Projected(active, 0, 1, True),
-                     alan.Projected(child, 1, 0, False)]
-        with mock.patch.object(ui, "ordered", return_value=(projected, {}, [])), \
+        with mock.patch("agent_fleet.daemon.request", return_value=child.ref.key + "\n") as request, \
              mock.patch.object(actions.viewer, "slots",
                                return_value=[("main", active.ref.key)]), \
              mock.patch.object(actions.viewer, "open_main") as show:
             actions.next_waiting()
+        request.assert_called_once_with("next-waiting\t" + active.ref.key)
         show.assert_called_once_with(child.ref.key)
 
     def test_header_counts_only_the_current_fold_projection(self):

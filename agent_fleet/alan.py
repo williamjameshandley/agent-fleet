@@ -32,6 +32,7 @@ class Watcher:
         self.initialized = threading.Event()
         self._changed = changed
         self._consumer = consumer
+        self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         self.initialized.wait(2)
@@ -40,13 +41,7 @@ class Watcher:
         previous = None
         while not (self._consumer and self._consumer.is_set()):
             try:
-                graph = loop.observe()
-                current = actors(graph)
-                self.actors = current
-                self.graph = graph
-                self.available = True
-                self.error = None
-                self.initialized.set()
+                current, graph = self.refresh()
                 snapshot = (
                     graph.graph,
                     tuple(graph.nodes(data=True)),
@@ -56,12 +51,30 @@ class Watcher:
                     self._changed.put("alan")
                     previous = snapshot
             except (loop.LoopError, OSError, ValueError) as error:
-                self._unavailable(f"Alan unavailable: {error}")
                 previous = None
             if self._consumer:
                 self._consumer.wait(0.5)
             else:
                 time.sleep(0.5)
+
+    def refresh(self):
+        with self._lock:
+            try:
+                graph = loop.observe()
+                current = actors(graph)
+            except (loop.LoopError, OSError, ValueError) as error:
+                self._unavailable(f"Alan unavailable: {error}")
+                raise
+            self.actors = current
+            self.graph = graph
+            self.available = True
+            self.error = None
+            self.initialized.set()
+            return current, graph
+
+    def snapshot(self):
+        with self._lock:
+            return self.actors, self.graph
 
     def _unavailable(self, error):
         self.error = error
@@ -176,12 +189,15 @@ def project(sessions, graph, expanded=(), show_python=False):
     children = {}
     eligible = set()
     session_order = [session.ref.session_id for session in sessions
-                     if session.ref.server.kind == "alan"]
+                     if session.ref.server.kind == "alan"
+                     and (show_python or session.agent != "python")]
     principals = {addr for addr, descriptor in descriptors.items()
                   if descriptor["kind"] == "principal"}
     roots = {}
     for actor in session_order:
         candidates = nx.ancestors(ancestry, actor) & principals
+        if not candidates:
+            continue
         [principal] = candidates
         first = nx.shortest_path(ancestry, principal, actor)[1]
         if descriptors[first].get("preset") == "commander" or (

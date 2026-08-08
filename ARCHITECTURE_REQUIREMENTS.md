@@ -113,8 +113,9 @@ a row drops into the real session for keyboard, mouse or voice input.
   Disposable projections live in memory, while workstation profile markers live
   in that workstation's tmux global options. Placement comes from i3 and viewer
   registrations.
-- Fold controls are disposable state of the current Muster tmux session. They are not
-  durable actor state and do not affect the operation graph.
+- Fold controls are disposable state owned by the Fleet daemon for the exact
+  current Muster tmux server generation. They are not durable actor state and
+  do not affect the operation graph.
 
 ## Performance and transport
 
@@ -127,8 +128,8 @@ a row drops into the real session for keyboard, mouse or voice input.
   and tmux client per opened source host; remote hosts additionally retain one
   interactive BatchMode SSH channel. Warm navigation uses only the existing
   Fleet socket, host control stream and UI tmux control connection. Stock fzf
-  invokes only the finite local selection adapter; the switch creates no SSH
-  channel, PTY, tmux client, Python interpreter or presentation process.
+  invokes only finite local socket adapters; an interactive operation starts no
+  SSH channel, PTY, tmux client, Python interpreter or presentation process.
 - Disconnecting, sleeping or moving a workstation between networks detaches
   only its display client. Viewer slots and their host presentations remain on
   Lovelace until explicit owner-side destruction. A later workstation attach

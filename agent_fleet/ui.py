@@ -1,81 +1,68 @@
 import os
 import shutil
+import shlex
+import socket
 import subprocess
 import textwrap
 import time
 
 from .config import RUNTIME
-from .daemon import snapshot
-from .protocol import decode_graph, decode_message
-from . import hot, render
+from .daemon import request
+from . import hot, proc
 
 
 FZF_COLOUR = "16,fg:-1,bg:-1,fg+:-1,bg+:8,hl:3,hl+:3,info:4,prompt:2,pointer:1,marker:1,spinner:6,header:4,gutter:-1,border:8"
-def ordered():
-    raw = snapshot()
-    sessions, usage, unavailable = decode_message(raw)
-    graph = decode_graph(raw)
-    projected = render.order(sessions, unavailable, graph,
-                             expanded=expanded(),
-                             show_python=option("@fleet_show_python"))
-    return projected, usage, unavailable
 
 
-def option(name):
-    result = subprocess.run(
-        ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "=fleet@muster:", name],
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0 and result.stdout.strip() == "1"
-
-
-def toggle(kind):
-    name = {"python": "@fleet_show_python"}[kind]
-    subprocess.run(
-        ["/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", name, "0" if option(name) else "1"],
-        check=True,
-    )
-
-
-def expanded():
-    result = subprocess.run(
-        ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "=fleet@muster:", "@fleet_expanded"],
-        capture_output=True,
-        text=True,
-    )
-    return set(result.stdout.split())
-
-
-def fold(action, key):
-    projected, _, _ = ordered()
-    [projection] = [item for item in projected if item.session.ref.key == key]
-    session = projection.session
-    if session.ref.server.kind != "alan" or not projection.child_count:
+def prepare_socket(path):
+    if not path.exists():
         return
-    actors = expanded()
-    actor = session.ref.session_id
-    if action == "open":
-        actors.add(actor)
-    else:
-        actors.discard(actor)
-    subprocess.run(
-        ["/usr/bin/tmux", "-N", "set-option", "-t", "=fleet@muster:", "@fleet_expanded",
-         " ".join(sorted(actors))],
-        check=True,
-    )
+    with socket.socket(socket.AF_UNIX) as client:
+        try:
+            client.connect(str(path))
+        except ConnectionRefusedError:
+            path.unlink()
+            return
+    raise RuntimeError(f"Muster listener already exists: {path}")
+
+
+def register():
+    result = subprocess.run(
+        ["/usr/bin/tmux", "-N", "display-message", "-p", "-t", "=fleet@muster:",
+         "#{socket_path}\t#{pid}\t#{session_id}"],
+        capture_output=True, text=True, check=True)
+    socket_path, pid, session_id = result.stdout.rstrip("\n").split("\t")
+    started = proc.start_time(pid)
+    width = shutil.get_terminal_size((100, 24)).columns
+    reply = request("\t".join(
+        ("muster-register", socket_path, pid, str(started), session_id, str(width))))
+    if reply != "OK\n":
+        raise RuntimeError(reply.strip() or "Muster registration failed")
 
 
 def muster():
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     sock = RUNTIME / "muster.sock"
-    sock.unlink(missing_ok=True)
+    prepare_socket(sock)
+    daemon_socket = shlex.quote(str(RUNTIME / "fleet.sock"))
+    fold_open = ("printf 'fold\\topen\\t%s\\t%s\\t%s\\n' {1} {2} "
+                 f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
+    fold_close = ("printf 'fold\\tclose\\t%s\\t%s\\t%s\\n' {1} {2} "
+                  f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
+    toggle_python = ("printf 'toggle\\tpython\\t%s\\n' \"$FZF_COLUMNS\" | "
+                     f"/usr/bin/nc -U {daemon_socket}")
+    resize = ("printf 'resize\\t%s\\n' \"$FZF_COLUMNS\" | "
+              f"/usr/bin/nc -U {daemon_socket}")
+    archive = ("printf 'archive\\t%s\\t%s\\t%s\\n' {1} {2} "
+               f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
+    refresh = ("printf 'refresh\\t%s\\t%s\\t%s\\n' {1} {2} "
+               f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
     command = [
         "fzf", "--listen", str(sock), "--track", "--disabled", "--no-input", "--ansi",
         f"--color={FZF_COLOUR}",
         "--no-unicode", "--pointer=>", "--gutter= ",
         "--no-scrollbar", "--no-hscroll",
-        "--delimiter=\t", "--with-nth=2..", "--id-nth=1",
+        "--delimiter=\t", "--with-nth=3..", "--id-nth=1",
         "--layout=reverse", "--no-sort", "--no-multi", "--info=inline", "--border=none",
         f"--header={header()}",
         f"--footer={footer()}",
@@ -85,18 +72,19 @@ def muster():
         "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,h,j,k,l,p,left,right)",
         "--bind=j:down,k:up",
         "--bind=load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)",
+        f"--bind=resize:transform({resize})",
         "--bind=focus:execute-silent(exec /usr/lib/agent-fleet/fleet-open project main {1})",
         "--bind=enter:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})",
         "--bind=double-click:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})",
         "--bind=c:execute-silent(/usr/lib/agent-fleet/ui create-tab)",
         "--bind=r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})",
-        "--bind=R:execute-silent(/usr/lib/agent-fleet/ui refresh {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=x:execute-silent(/usr/lib/agent-fleet/ui archive {1})+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=l:execute-silent(/usr/lib/agent-fleet/ui fold open {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=h:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=right:execute-silent(/usr/lib/agent-fleet/ui fold open {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=left:execute-silent(/usr/lib/agent-fleet/ui fold close {1})+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
-        "--bind=p:execute-silent(/usr/lib/agent-fleet/ui toggle python)+transform-header(/usr/lib/agent-fleet/ui header)+reload-sync(/usr/lib/agent-fleet/ui items)",
+        f"--bind=R:transform({refresh})",
+        f"--bind=x:transform({archive})",
+        f"--bind=l:transform({fold_open})",
+        f"--bind=h:transform({fold_close})",
+        f"--bind=right:transform({fold_open})",
+        f"--bind=left:transform({fold_close})",
+        f"--bind=p:transform({toggle_python})",
         "--bind=tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history)",
         "--bind=shift-tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history)",
     ]
