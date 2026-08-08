@@ -1750,47 +1750,19 @@ class IdentityTests(unittest.TestCase):
                 f"fold\tclose\t{key}\t{fleet.view_revision}\t100")
             self.assertNotIn(root, fleet.expanded)
 
-    def test_fold_rejects_a_stale_revision_without_changing_state(self):
+    def test_fold_accepts_an_exact_current_parent_across_an_unrelated_revision(self):
         fleet, root, _, _ = self.fold_fleet()
-        with tempfile.TemporaryDirectory() as directory:
-            directory = Path(directory)
-            runtime = directory / "runtime"
-            runtime.mkdir()
-            tmux_runtime = directory / "tmux"
-            tmux_runtime.mkdir()
-            socket_path = runtime / "fzf.sock"
-            environment = {**without_tmux_client(),
-                           "TMUX_TMPDIR": str(tmux_runtime)}
-            subprocess.run(
-                ["tmux", "new-session", "-d", "-s", "fleet@muster",
-                 f"printf 'old\\n' | exec fzf --listen {socket_path} --header initial"],
-                check=True, env=environment)
-            try:
-                for _ in range(100):
-                    if socket_path.exists():
-                        break
-                    time.sleep(.01)
-                with mock.patch("agent_fleet.daemon.RUNTIME", runtime):
-                    action = fleet.mutate_view(
-                        f"fold\topen\talan:{root}\t{fleet.view_revision - 1}\t100")
-                    self.assertNotIn("unbind(focus)", action)
-                    subprocess.run(
-                        ["curl", "-fsS", "--unix-socket", str(socket_path),
-                         "-XPOST", "-d", action, "http://localhost"],
-                        check=True, stdout=subprocess.DEVNULL)
-                self.assertEqual(fleet.expanded, set())
-                for _ in range(100):
-                    screen = subprocess.run(
-                        ["tmux", "capture-pane", "-p", "-t", "=fleet@muster:"],
-                        check=True, text=True, capture_output=True,
-                        env=environment).stdout
-                    if "Action failed: Muster view changed" in screen:
-                        break
-                    time.sleep(.01)
-                self.assertIn("Action failed: Muster view changed", screen)
-            finally:
-                subprocess.run(["tmux", "kill-server"], env=environment,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        displayed = fleet.view_revision
+        raw = encode(fleet.sessions["lovelace"],
+                     {"claude": {"five_hour": {"utilization": 1}}},
+                     graph=fleet._composed[1])
+        fleet.update_host("lovelace", raw)
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)):
+            action = fleet.mutate_view(
+                f"fold\topen\talan:{root}\t{displayed}\t100")
+        self.assertIn(root, fleet.expanded)
+        self.assertIn("unbind(focus)", action)
 
     def test_archive_transform_uses_one_action_and_one_coherent_redraw(self):
         fleet, root, _, _ = self.fold_fleet()
@@ -1812,14 +1784,20 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("reload-sync(/usr/bin/cat", result)
         self.assertEqual(fleet.projected(), [])
 
-    def test_archive_transform_rejects_a_stale_displayed_revision(self):
+    def test_archive_accepts_an_exact_current_source_across_an_unrelated_revision(self):
         fleet, root, _, _ = self.fold_fleet()
+        displayed = fleet.view_revision
+        raw = encode(fleet.sessions["lovelace"],
+                     {"claude": {"five_hour": {"utilization": 1}}},
+                     graph=fleet._composed[1])
+        fleet.update_host("lovelace", raw)
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
              mock.patch.object(fleet, "action") as action:
             result = asyncio.run(fleet.mutate_action(
-                f"archive\talan:{root}\t{fleet.view_revision - 1}\t100"))
-        action.assert_not_awaited()
+                f"archive\talan:{root}\t{displayed}\t100"))
+        action.assert_awaited_once_with({"operation": "archive",
+                                        "source": f"alan:{root}"})
         self.assertIn("transform-header", result)
 
     def test_unregistered_muster_rejects_view_mutation(self):

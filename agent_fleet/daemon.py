@@ -436,9 +436,7 @@ class Fleet:
                 width = int(width)
                 if width < 1:
                     raise ValueError("invalid Muster width")
-                if int(expected) != self.view_revision:
-                    raise RuntimeError(
-                        f"Muster view changed: {expected} != {self.view_revision}")
+                int(expected)
                 projected, _, _ = self.view(int(width))
                 [item] = [item for item in projected if item.session.ref.key == key]
                 if item.session.ref.server.kind != "alan" or not item.child_count:
@@ -487,9 +485,7 @@ class Fleet:
             width = int(raw_width)
             if width < 1:
                 raise ValueError("invalid Muster width")
-            if int(expected) != self.view_revision:
-                raise RuntimeError(
-                    f"Muster view changed: {expected} != {self.view_revision}")
+            int(expected)
             projected, _, _ = self.view(width)
             if not any(item.session.ref.key == key for item in projected):
                 raise LookupError(f"session is not in the displayed view: {key}")
