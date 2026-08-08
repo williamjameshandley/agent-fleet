@@ -1,6 +1,7 @@
 import os
 import shutil
 import shlex
+import socket
 import subprocess
 import textwrap
 import time
@@ -11,6 +12,18 @@ from . import hot, proc
 
 
 FZF_COLOUR = "16,fg:-1,bg:-1,fg+:-1,bg+:8,hl:3,hl+:3,info:4,prompt:2,pointer:1,marker:1,spinner:6,header:4,gutter:-1,border:8"
+
+
+def prepare_socket(path):
+    if not path.exists():
+        return
+    with socket.socket(socket.AF_UNIX) as client:
+        try:
+            client.connect(str(path))
+        except ConnectionRefusedError:
+            path.unlink()
+            return
+    raise RuntimeError(f"Muster listener already exists: {path}")
 
 
 def register():
@@ -30,7 +43,7 @@ def register():
 def muster():
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     sock = RUNTIME / "muster.sock"
-    sock.unlink(missing_ok=True)
+    prepare_socket(sock)
     daemon_socket = shlex.quote(str(RUNTIME / "fleet.sock"))
     fold_open = ("printf 'fold\\topen\\t%s\\t%s\\t%s\\n' {1} {2} "
                  f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")

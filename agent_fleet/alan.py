@@ -176,7 +176,8 @@ def project(sessions, graph, expanded=(), show_python=False):
     children = {}
     eligible = set()
     session_order = [session.ref.session_id for session in sessions
-                     if session.ref.server.kind == "alan"]
+                     if session.ref.server.kind == "alan"
+                     and (show_python or session.agent != "python")]
     principals = {addr for addr, descriptor in descriptors.items()
                   if descriptor["kind"] == "principal"}
     roots = {}

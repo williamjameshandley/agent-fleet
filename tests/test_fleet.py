@@ -1680,6 +1680,36 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
                          [root, language, python])
 
+    def test_hidden_orphan_python_does_not_break_the_projection(self):
+        fleet, root, _, python = self.fold_fleet()
+        graph = fleet._composed[1]
+        for source, target, relation in list(graph.edges(keys=True)):
+            if relation == "spawn" and graph.nodes[target]["stream"] == python:
+                graph.remove_edge(source, target, relation)
+        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+                         [root])
+        fleet.show_python = True
+        with self.assertRaises(ValueError):
+            fleet.projected()
+
+    def test_muster_socket_refuses_a_second_live_listener(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "muster.sock"
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(path))
+                server.listen()
+                with self.assertRaisesRegex(RuntimeError, "already exists"):
+                    ui.prepare_socket(path)
+                self.assertTrue(path.exists())
+
+    def test_muster_socket_removes_only_a_stale_socket(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "muster.sock"
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(path))
+            ui.prepare_socket(path)
+            self.assertFalse(path.exists())
+
     def test_fold_opens_and_closes_only_the_selected_expandable_actor(self):
         fleet, root, child, _ = self.fold_fleet()
         key = f"alan:{root}"
