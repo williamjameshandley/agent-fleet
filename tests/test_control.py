@@ -15,10 +15,24 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_fleet.tmux import ControlClient, event_stream
+from agent_fleet.tmux import ControlClient, event_stream, watched_event
 from agent_fleet.daemon import Fleet
 from agent_fleet import daemon
 from agent_fleet.model import ServerRef, SessionRef, Session
+
+
+class WatchBoundaryTests(unittest.TestCase):
+    def test_runtime_artifacts_do_not_become_transcript_events(self):
+        transcripts = [Path("/home/will/.codex/sessions"),
+                       Path("/home/will/.claude/projects")]
+        quota = Path("/run/user/1000/agent-fleet/quota.changed")
+        self.assertEqual(watched_event(
+            "/home/will/.codex/sessions/2026/thread.jsonl", transcripts, quota),
+            "transcript")
+        self.assertEqual(watched_event(quota, transcripts, quota), "quota")
+        self.assertIsNone(watched_event(
+            "/run/user/1000/agent-fleet/muster-view-12-3.rows",
+            transcripts, quota))
 
 
 class ResidentControlTests(unittest.TestCase):
