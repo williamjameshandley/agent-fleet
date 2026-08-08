@@ -514,14 +514,13 @@ class Fleet:
                 raise LookupError(f"session is not in the displayed view: {key}")
             if operation == "archive":
                 session, host, authority = self.archive_authority(key)
-                viewers = await self.viewers_showing(key)
                 self.pending_archives.add(key)
                 self.view_revision += 1
                 self._view_cache = None
                 self.action_error = ""
                 action, artifacts = self.publish_view(width)
                 task = asyncio.create_task(
-                    self.complete_archive(key, host, authority, viewers, artifacts))
+                    self.complete_archive(key, host, authority, artifacts))
                 self.background_tasks.add(task)
                 task.add_done_callback(self.background_task_done)
                 return action
@@ -549,7 +548,7 @@ class Fleet:
         while any(path.exists() for path in artifacts):
             await asyncio.sleep(.001)
 
-    async def complete_archive(self, key, host, authority, viewers, artifacts):
+    async def complete_archive(self, key, host, authority, artifacts):
         error = ""
         try:
             await self.authority(host, authority)
@@ -558,6 +557,7 @@ class Fleet:
             error = str(caught)
         else:
             try:
+                viewers = await self.viewers_showing(key)
                 await self.update_viewers(viewers, f"CLEAR {key}")
             except (OSError, RuntimeError) as caught:
                 error = f"Archived, but viewer cleanup failed: {caught}"

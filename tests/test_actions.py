@@ -239,7 +239,8 @@ def test_optimistic_archive_commits_absence_despite_viewer_cleanup_failure(
         async def absent(_key):
             fleet.sessions = {}
 
-        with mock.patch.object(fleet, "viewers_showing", return_value=paths), \
+        with mock.patch.object(fleet, "viewers_showing",
+                               return_value=paths) as showing, \
              mock.patch.object(fleet, "authority", return_value={}), \
              mock.patch.object(fleet, "wait_for_absence", side_effect=absent), \
              mock.patch.object(fleet, "update_viewers",
@@ -247,6 +248,7 @@ def test_optimistic_archive_commits_absence_despite_viewer_cleanup_failure(
              mock.patch.object(fleet, "publish_current_view") as publish:
             result = await fleet.mutate_action(
                 f"archive\t{item.ref.key}\t0\t100")
+            showing.assert_not_awaited()
             assert item.ref.key in fleet.pending_archives
             assert "Archiving" in next(tmp_path.glob("*.header")).read_text()
             await asyncio.sleep(0)
