@@ -1289,7 +1289,7 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
                       muster)
         self.assertIn("new-session -d -s fleet@main", main)
-        self.assertIn("/usr/bin/tmux -N -L agent-fleet-ui", main)
+        self.assertIn("/usr/bin/tmux -L agent-fleet-ui", main)
         self.assertIn("set-option -t fleet@main prefix None", main)
         self.assertIn("set-option -t fleet@main status off", main)
         self.assertIn("set-option -t fleet@main mouse on", main)
@@ -1346,6 +1346,38 @@ class IdentityTests(unittest.TestCase):
                 subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
                                env=environment)
                 subprocess.run(["tmux", "kill-server"], env=environment)
+
+    def test_main_viewer_creates_its_dedicated_tmux_server(self):
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {**os.environ, "TMUX_TMPDIR": str(Path(directory) / "tmux"),
+                           "XDG_RUNTIME_DIR": str(Path(directory) / "runtime"),
+                           "PYTHONPATH": str(root)}
+            (Path(directory) / "tmux").mkdir()
+            (Path(directory) / "runtime").mkdir()
+            master, slave = pty.openpty()
+            process = subprocess.Popen([root / "fleet-viewer", "main"],
+                                       stdin=slave, stdout=slave, stderr=slave,
+                                       env=environment, start_new_session=True)
+            os.close(slave)
+            try:
+                socket = Path(directory) / "runtime/agent-fleet/viewer-main.sock"
+                for _ in range(100):
+                    if socket.exists():
+                        break
+                    time.sleep(.01)
+                self.assertTrue(socket.exists())
+                sessions = subprocess.run(
+                    ["tmux", "-L", "agent-fleet-ui", "list-sessions", "-F",
+                     "#{session_name}"], check=True, text=True, capture_output=True,
+                    env=environment).stdout.splitlines()
+                self.assertEqual(sessions, ["fleet@main"])
+            finally:
+                os.killpg(process.pid, signal.SIGHUP)
+                process.wait()
+                os.close(master)
+                subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
+                               env=environment)
 
     def test_muster_always_opens_the_global_main_viewer(self):
         source = (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text()
