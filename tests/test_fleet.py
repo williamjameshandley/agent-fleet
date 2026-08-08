@@ -1740,7 +1740,7 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
                              [root, child])
             self.assertIn("reload-sync(/usr/bin/cat", action)
-            self.assertIn("+transform-header(/usr/bin/cat", action)
+            self.assertTrue(action.startswith("transform-header(/usr/bin/cat"))
             self.assertEqual(action.count("/usr/bin/rm -f"), 2)
             fleet.mutate_view(
                 f"fold\tclose\t{key}\t{fleet.view_revision}\t100")
@@ -1963,6 +1963,8 @@ class IdentityTests(unittest.TestCase):
                 with mock.patch("agent_fleet.daemon.RUNTIME", runtime):
                     revision = fleet.view_revision
                     action, artifacts = fleet.publish_view(100)
+                    self.assertLess(action.index("transform-header"),
+                                    action.index("reload-sync"))
                     old_header = artifacts[1].read_text()
                     fleet.sessions["lovelace"].append(self.session("lovelace", "$99"))
                     fleet.view_revision += 1
