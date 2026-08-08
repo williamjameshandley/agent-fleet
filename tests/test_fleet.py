@@ -1289,6 +1289,7 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
                       muster)
         self.assertIn("new-session -d -s fleet@main", main)
+        self.assertIn("exec env -u TMUX -u TMUX_PANE python", main)
         self.assertIn("/usr/bin/tmux -L agent-fleet-ui", main)
         self.assertIn(
             "exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session "
