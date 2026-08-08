@@ -438,7 +438,12 @@ class Fleet:
                     raise ValueError("invalid Muster width")
                 int(expected)
                 projected, _, _ = self.view(int(width))
-                [item] = [item for item in projected if item.session.ref.key == key]
+                matches = [item for item in projected
+                           if item.session.ref.key == key]
+                if len(matches) != 1:
+                    raise LookupError(
+                        f"session is not in the displayed view: {key}")
+                [item] = matches
                 if item.session.ref.server.kind != "alan" or not item.child_count:
                     raise ValueError("fold requires an Alan parent with children")
                 actor = item.session.ref.session_id

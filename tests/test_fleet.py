@@ -1764,6 +1764,61 @@ class IdentityTests(unittest.TestCase):
         self.assertIn(root, fleet.expanded)
         self.assertIn("unbind(focus)", action)
 
+    def test_fold_rejections_preserve_state_and_are_visible_at_fzf(self):
+        for case in ("missing", "non-parent"):
+            with self.subTest(case=case):
+                fleet, root, child, _ = self.fold_fleet()
+                if case == "missing":
+                    key = "alan:missing@lovelace"
+                    message = "session is not in the displayed view"
+                else:
+                    fleet.expanded.add(root)
+                    fleet.view_revision += 1
+                    fleet._view_cache = None
+                    key = f"alan:{child}"
+                    message = "fold requires an Alan parent with children"
+                expanded = set(fleet.expanded)
+                with tempfile.TemporaryDirectory() as directory:
+                    directory = Path(directory)
+                    runtime = directory / "runtime"
+                    runtime.mkdir()
+                    tmux_runtime = directory / "tmux"
+                    tmux_runtime.mkdir()
+                    socket_path = runtime / "fzf.sock"
+                    environment = {**without_tmux_client(),
+                                   "TMUX_TMPDIR": str(tmux_runtime)}
+                    subprocess.run(
+                        ["tmux", "new-session", "-d", "-s", "fleet@muster",
+                         f"printf 'old\\n' | exec fzf --listen {socket_path} "
+                         "--header initial"], check=True, env=environment)
+                    try:
+                        for _ in range(100):
+                            if socket_path.exists():
+                                break
+                            time.sleep(.01)
+                        with mock.patch("agent_fleet.daemon.RUNTIME", runtime):
+                            action = fleet.mutate_view(
+                                f"fold\topen\t{key}\t{fleet.view_revision}\t100")
+                            self.assertNotIn("unbind(focus)", action)
+                            subprocess.run(
+                                ["curl", "-fsS", "--unix-socket", str(socket_path),
+                                 "-XPOST", "-d", action, "http://localhost"],
+                                check=True, stdout=subprocess.DEVNULL)
+                        self.assertEqual(fleet.expanded, expanded)
+                        for _ in range(100):
+                            screen = subprocess.run(
+                                ["tmux", "capture-pane", "-p",
+                                 "-t", "=fleet@muster:"], check=True, text=True,
+                                capture_output=True, env=environment).stdout
+                            if f"Action failed: {message}" in screen:
+                                break
+                            time.sleep(.01)
+                        self.assertIn(f"Action failed: {message}", screen)
+                    finally:
+                        subprocess.run(["tmux", "kill-server"], env=environment,
+                                       stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+
     def test_archive_transform_uses_one_action_and_one_coherent_redraw(self):
         fleet, root, _, _ = self.fold_fleet()
         key = f"alan:{root}"
