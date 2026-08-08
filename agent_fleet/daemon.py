@@ -104,19 +104,7 @@ class Fleet:
                 assert process.stdout
                 async for raw in process.stdout:
                     message = json.loads(raw)
-                    if "preview" in message:
-                        _, future = self.previews.pop(message["preview"])
-                        if "error" in message:
-                            future.set_exception(RuntimeError(message["error"]))
-                        else:
-                            future.set_result(message["text"])
-                        continue
-                    if "switch" in message:
-                        _, future = self.switches.pop(message["switch"])
-                        if "error" in message:
-                            future.set_exception(RuntimeError(message["error"]))
-                        else:
-                            future.set_result((tuple(message["target"]), message["duration"]))
+                    if self.host_reply(message):
                         continue
                     sessions, usage, _ = decode_message(raw)
                     self.sessions[host] = sessions
@@ -135,22 +123,40 @@ class Fleet:
                     await process.wait()
                 if not drain.done():
                     drain.cancel()
-                self.processes.pop(host, None)
-                self.observations.pop(host, None)
-                self.observed += 1
-                async with self.changed:
-                    self.changed.notify_all()
-                for number, (owner, future) in list(self.previews.items()):
-                    if owner == host:
-                        future.set_exception(RuntimeError(f"{host} disconnected"))
-                        del self.previews[number]
-                for number, (owner, future) in list(self.switches.items()):
-                    if owner == host:
-                        future.set_exception(RuntimeError(f"{host} disconnected"))
-                        del self.switches[number]
+                await self.host_disconnected(host)
             self.unavailable.add(host)
             self.schedule_refresh()
             await asyncio.sleep(1)
+
+    def host_reply(self, message):
+        if "preview" in message:
+            _, future = self.previews.pop(message["preview"])
+            if "error" in message:
+                future.set_exception(RuntimeError(message["error"]))
+            else:
+                future.set_result(message["text"])
+            return True
+        if "switch" in message:
+            _, future = self.switches.pop(message["switch"])
+            if "error" in message:
+                future.set_exception(RuntimeError(message["error"]))
+            else:
+                future.set_result((tuple(message["target"]), message["duration"]))
+            return True
+        return False
+
+    async def host_disconnected(self, host):
+        self.processes.pop(host, None)
+        self.sessions.pop(host, None)
+        self.observations.pop(host, None)
+        self.observed += 1
+        async with self.changed:
+            self.changed.notify_all()
+        for pending in (self.previews, self.switches):
+            for number, (owner, future) in list(pending.items()):
+                if owner == host:
+                    future.set_exception(RuntimeError(f"{host} disconnected"))
+                    del pending[number]
 
     def schedule_refresh(self):
         if not self.refresh_pending:

@@ -1,7 +1,10 @@
+import asyncio
+import json
 import os
 import pty
 import fcntl
 import queue
+import select
 import shlex
 import subprocess
 import tempfile
@@ -13,6 +16,8 @@ from pathlib import Path
 from unittest import mock
 
 from agent_fleet.tmux import ControlClient
+from agent_fleet.daemon import Fleet
+from agent_fleet.model import ServerRef, SessionRef, Session
 
 
 class ResidentControlTests(unittest.TestCase):
@@ -69,12 +74,16 @@ class ResidentControlTests(unittest.TestCase):
 
     def test_repeated_switches_reuse_control_and_interactive_processes(self):
         identities = self.process.pid, self.viewer.pid
+        server_pid = self.target("source-one")[1]
+        children = Path(f"/proc/{server_pid}/task/{server_pid}/children").read_text()
         for _ in range(10):
             self.control.switch(self.target("source-two"), self.client_name)
             self.control.switch(self.target("source-one"), self.client_name)
         self.assertEqual((self.process.pid, self.viewer.pid), identities)
         self.assertIsNone(self.process.poll())
         self.assertIsNone(self.viewer.poll())
+        self.assertEqual(
+            Path(f"/proc/{server_pid}/task/{server_pid}/children").read_text(), children)
 
     def test_exact_switch_rejects_stale_missing_and_wrong_client(self):
         target = self.target("source-two")
@@ -101,6 +110,39 @@ class ResidentControlTests(unittest.TestCase):
         self.process.wait()
         with self.assertRaisesRegex(RuntimeError, "closed"):
             self.control.command(["display-message", "-p", "never"])
+
+    def test_tagged_host_process_switch_and_preview_boundary(self):
+        target = self.target("source-two")
+        self.process.terminate(); self.process.wait()
+        command = [
+            os.environ.get("PYTHON", "python"), "-c",
+            "import sys; from agent_fleet.daemon import events; events(sys.argv[1])",
+            "fixture"]
+        host = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+            env={**self.environment,
+                 "PYTHONPATH": str(Path(__file__).parents[1])})
+        try:
+            host.stdin.write(json.dumps({"switch": 7, "target": target,
+                                         "client": self.client_name}) + "\n")
+            host.stdin.write(json.dumps({"preview": 8,
+                                         "key": "fixture:/tmp/absent:1:1:$1",
+                                         "columns": 80, "lines": 20}) + "\n")
+            host.stdin.flush()
+            replies = {}
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and set(replies) != {"switch", "preview"}:
+                ready, _, _ = select.select([host.stdout], [], [], .2)
+                if not ready: continue
+                message = json.loads(host.stdout.readline())
+                for tag in ("switch", "preview"):
+                    if tag in message: replies[tag] = message
+            self.assertEqual(replies["switch"]["target"], list(target))
+            self.assertLess(replies["switch"]["duration"], 1)
+            self.assertIn("error", replies["preview"])
+        finally:
+            host.terminate(); host.wait()
 
 
 class ProtocolCorrelationTests(unittest.TestCase):
@@ -141,6 +183,93 @@ class ProtocolCorrelationTests(unittest.TestCase):
         thread.join(1)
         self.assertEqual(result, [["ok"]])
         lines.put(None)
+
+    def test_notification_survives_inflight_reply_and_disconnect_fails_it(self):
+        lines = queue.Queue()
+
+        class Output:
+            def __iter__(self): return self
+            def __next__(self):
+                value = lines.get()
+                if value is None: raise StopIteration
+                return value
+
+        class Input:
+            def write(self, value): self.value = value
+            def flush(self): pass
+
+        process = mock.Mock(stdout=Output(), stdin=Input(), poll=lambda: None)
+        changed = queue.Queue()
+        control = ControlClient(process, changed)
+        lines.put("%begin 1 10 0\n"); lines.put("%end 1 10 0\n")
+        error = []
+
+        def request():
+            try:
+                control.command(["display-message", "-p", "never"])
+            except RuntimeError as caught:
+                error.append(str(caught))
+
+        thread = threading.Thread(target=request); thread.start()
+        while not hasattr(process.stdin, "value"): time.sleep(.001)
+        lines.put("%begin 1 20 1\n")
+        lines.put("%sessions-changed\n")
+        self.assertEqual(changed.get(timeout=1), "tmux")
+        lines.put(None); thread.join(1)
+        self.assertEqual(error, ["tmux control client closed"])
+
+
+class DaemonBoundaryTests(unittest.TestCase):
+    @staticmethod
+    def session():
+        ref = SessionRef(ServerRef("fixture", "/tmp/tmux/default", 12, 10), "$1")
+        return Session(ref, "one", 1, 1, 0, 1, "zsh", "", "/tmp")
+
+    def test_preview_and_switch_share_tagged_host_stream(self):
+        class Input:
+            def __init__(self): self.writes = []
+            def write(self, value): self.writes.append(json.loads(value))
+            async def drain(self): pass
+
+        async def exercise():
+            fleet = Fleet(); session = self.session(); stdin = Input()
+            fleet.sessions = {"fixture": [session]}; fleet.unavailable.clear()
+            fleet.processes = {"fixture": mock.Mock(stdin=stdin)}
+            preview = asyncio.create_task(fleet.preview(session.ref.key, 80, 20))
+            switch = asyncio.create_task(fleet.switch(session.ref.key, "/dev/pts/9"))
+            await asyncio.sleep(0)
+            self.assertEqual({next(iter(item)) for item in stdin.writes},
+                             {"preview", "switch"})
+            preview_request = next(item for item in stdin.writes if "preview" in item)
+            switch_request = next(item for item in stdin.writes if "switch" in item)
+            fleet.host_reply({"switch": switch_request["switch"],
+                              "target": ["/tmp/tmux/default", 12, 10, "$1"],
+                              "duration": .001})
+            fleet.host_reply({"preview": preview_request["preview"], "text": "screen"})
+            self.assertEqual(await preview, "screen")
+            self.assertEqual(await switch,
+                             (("/tmp/tmux/default", 12, 10, "$1"), .001))
+
+        asyncio.run(exercise())
+
+    def test_disconnect_removes_inventory_and_fails_outstanding_requests(self):
+        async def exercise():
+            fleet = Fleet(); session = self.session()
+            fleet.sessions = {"fixture": [session]}
+            fleet.observations = {"fixture": b"observation"}
+            loop = asyncio.get_running_loop()
+            preview = loop.create_future(); switch = loop.create_future()
+            fleet.previews[1] = ("fixture", preview)
+            fleet.switches[2] = ("fixture", switch)
+            await fleet.host_disconnected("fixture")
+            self.assertNotIn("fixture", fleet.sessions)
+            self.assertNotIn("fixture", fleet.observations)
+            self.assertFalse(fleet.previews); self.assertFalse(fleet.switches)
+            for future in (preview, switch):
+                with self.assertRaisesRegex(RuntimeError, "fixture disconnected"):
+                    await future
+
+        asyncio.run(exercise())
 
 
 if __name__ == "__main__":

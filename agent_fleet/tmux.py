@@ -107,7 +107,12 @@ class ControlClient:
                 terminal_id = int(line.split()[2])
                 if (response is not None and self.pending and
                         terminal_id == response_id):
-                    self.pending.put((line.startswith("%end "), response))
+                    self.pending["success"] &= line.startswith("%end ")
+                    self.pending["output"].extend(response)
+                    self.pending["remaining"] -= 1
+                    if not self.pending["remaining"]:
+                        self.pending["reply"].put(
+                            (self.pending["success"], self.pending["output"]))
                     response = None
                 else:
                     self.ready.set()
@@ -122,16 +127,17 @@ class ControlClient:
                 self.changed.put("tmux")
         self.closed = True
         if self.pending:
-            self.pending.put((False, ["tmux control client closed"]))
+            self.pending["reply"].put((False, ["tmux control client closed"]))
         self.changed.put("closed")
 
-    def command(self, arguments):
+    def command(self, arguments, replies=1):
         with self.lock:
             self.ready.wait()
             if self.closed or self.process.poll() is not None:
                 raise RuntimeError("tmux control client closed")
             reply = queue.Queue(maxsize=1)
-            self.pending = reply
+            self.pending = {"reply": reply, "remaining": replies,
+                            "success": True, "output": []}
             try:
                 self.process.stdin.write(shlex.join(arguments) + "\n")
                 self.process.stdin.flush()
@@ -144,17 +150,18 @@ class ControlClient:
 
     def switch(self, target, client):
         socket, pid, started, session_id = target
+        condition = ("#{&&:#{==:#{socket_path},%s},"
+                     "#{&&:#{==:#{pid},%s},"
+                     "#{&&:#{==:#{start_time},%s},"
+                     "#{==:#{session_id},%s}}}}" % target)
         began = time.monotonic()
-        with self.lock:
-            output = self.command([
-                "display-message", "-p", "-t", session_id,
-                "#{q:socket_path} #{pid} #{start_time} #{q:session_id}"])
-            if len(output) != 1:
-                raise RuntimeError("source or viewer client identity changed")
-            actual = shlex.split(output[0])
-            if actual != list(map(str, target)):
-                raise RuntimeError("source or viewer client identity changed")
-            self.command(["switch-client", "-c", client, "-t", session_id])
+        success = shlex.join(["switch-client", "-c", client, "-t", session_id])
+        success += " ; display-message -p FLEET_SWITCHED"
+        output = self.command([
+            "if-shell", "-t", session_id, "-F", condition, success,
+            "display-message -p FLEET_STALE"], replies=2)
+        if output != ["FLEET_SWITCHED"]:
+            raise RuntimeError("source or viewer client identity changed")
         return time.monotonic() - began
 
     def alan_target(self, actor):
