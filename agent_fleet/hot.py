@@ -31,6 +31,12 @@ def items():
 
 
 def header():
+    result = subprocess.run(
+        ["/usr/bin/tmux", "-N", "show-options", "-qv", "-t", "=fleet@muster:",
+         "@fleet_viewer_error"], capture_output=True, text=True)
+    error = result.stdout.strip()
+    if error:
+        sys.stdout.write(f"{error}\n")
     sys.stdout.write(fetch("header"))
 
 

@@ -7,7 +7,7 @@ arch=('x86_64')
 url='https://github.com/williamjameshandley/agent-fleet'
 license=('MIT')
 options=('!debug')
-depends=('alan>=1:3.0.0.a1' python python-libtmux python-watchfiles jupyter-console openai-codex tmux fzf openssh curl procps-ng libvterm)
+depends=('alan>=1:3.0.0.a1' python python-libtmux python-watchfiles jupyter-console openai-codex tmux fzf openssh openbsd-netcat curl procps-ng libvterm)
 optdepends=(
     'ghostty: workstation viewer terminals'
     'i3-wm: workstation layout and focus control'
@@ -36,6 +36,10 @@ package() {
   printf '#!/usr/bin/python\nfrom agent_fleet.authority import main\nmain()\n' \
     > "$pkgdir/usr/lib/agent-fleet/action"
   chmod 755 "$pkgdir/usr/lib/agent-fleet/action"
+  install -Dm755 "$startdir/fleet-open" "$pkgdir/usr/lib/agent-fleet/fleet-open"
+  install -Dm755 "$startdir/fleet-present" "$pkgdir/usr/lib/agent-fleet/fleet-present"
+  install -Dm755 "$startdir/fleet-status" "$pkgdir/usr/lib/agent-fleet/fleet-status"
+  install -Dm755 "$startdir/fleet-switch" "$pkgdir/usr/lib/agent-fleet/fleet-switch"
   install -Dm755 "$startdir/fleet-tmux" "$pkgdir/usr/lib/agent-fleet/fleet-tmux"
   cc -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
     "$startdir/fleet-preview.c" -o "$pkgdir/usr/lib/agent-fleet/fleet-preview" -lvterm

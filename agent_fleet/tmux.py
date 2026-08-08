@@ -4,6 +4,7 @@ import subprocess
 import queue
 import sys
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -50,6 +51,36 @@ def mutate(key, operation, arguments):
                           "display-message -p FLEET_STALE")
     if result.stdout and result.stdout[0] == "FLEET_STALE":
         raise RuntimeError(f"stale source identity: {key}")
+
+
+def switch_session(socket, pid, started, session_id, client):
+    began = time.monotonic()
+    condition = ("#{&&:#{==:#{socket_path},%s},"
+                 "#{&&:#{==:#{pid},%s},"
+                 "#{&&:#{==:#{start_time},%s},"
+                 "#{==:#{session_id},%s}}}}" %
+                 (socket, pid, started, session_id))
+    result = server().cmd("if-shell", "-t", session_id, "-F", condition,
+                          shlex.join(["switch-client", "-c", client, "-t", session_id]),
+                          "display-message -p FLEET_STALE")
+    if result.stdout and result.stdout[0] == "FLEET_STALE":
+        raise RuntimeError("source or viewer client identity changed")
+    return time.monotonic() - began
+
+
+def client_ready(target_value, client):
+    socket, pid, started, session_id = target_value
+    condition = ("#{&&:#{==:#{socket_path},%s},"
+                 "#{&&:#{==:#{pid},%s},"
+                 "#{&&:#{==:#{start_time},%s},#{==:#{session_id},%s}}}}" %
+                 (socket, pid, started, session_id))
+    checked = server().cmd("if-shell", "-t", session_id, "-F", condition,
+                           "display-message -p FLEET_READY",
+                           "display-message -p FLEET_STALE")
+    if checked.stdout != ["FLEET_READY"]:
+        return False
+    attached = server().cmd("list-clients", "-t", session_id, "-F", "#{client_name}")
+    return client in attached.stdout
 
 
 def capture(key, columns=0, lines=0):

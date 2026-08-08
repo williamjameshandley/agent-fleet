@@ -82,7 +82,8 @@ class VoiceModelTests(unittest.TestCase):
 
         command = run.call_args_list[1].args[0]
         self.assertEqual(command[:5], ["ssh", "-T", "-o", "BatchMode=yes", "lovelace"])
-        self.assertIn("agent_fleet.viewer import exchange", command[5])
+        self.assertIn("/usr/lib/agent-fleet/fleet-status main", command[5])
+        self.assertNotIn("python", command[5])
         self.assertEqual(selected.key, "source-key")
 
     @patch("alan_composer.destination.subprocess.run")
