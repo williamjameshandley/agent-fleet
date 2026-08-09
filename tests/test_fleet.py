@@ -24,6 +24,7 @@ import networkx as nx
 from agent_fleet.model import ServerRef, Session, SessionRef
 from agent_fleet.protocol import decode, decode_graph, decode_observation, encode
 from agent_fleet.render import AGENT_COLOUR, STATE_ORDER, recency
+from agent_fleet.transcripts import fold_adopted
 from agent_fleet.tmux import split_key
 from agent_fleet import actions, authority, proc
 from agent_fleet import alan
@@ -237,6 +238,57 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(requests[0]["key"], attachment.key)
         self.assertEqual(requests[1]["target"],
                          ["/tmp/tmux/native", 44, 12, "$9"])
+
+    def test_adopted_attachment_survives_leave_reattach_and_fleet_restart(self):
+        host = os.uname().nodename.split(".", 1)[0]
+        identity = "00000000-0000-0000-0000-000000000001"
+        actor = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"),
+                       f"codex-{identity}@{host}"),
+            "actor", 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting",
+            transcript_id=identity,
+        )
+        provider = replace(
+            self.session(host, "$9"),
+            ref=SessionRef(ServerRef(host, "/tmp/tmux/native", 44, 12), "$9"),
+            transcript_id=identity,
+        )
+        [composite] = fold_adopted([provider, actor])
+        expected = ("/tmp/tmux/native", 44, 12, "$9")
+
+        current = composite
+        requests = []
+
+        def daemon(request):
+            requests.append(request)
+            if request.startswith("resolve "):
+                return json.dumps({
+                    "agent": current.agent,
+                    "state": current.state,
+                    "cwd": current.cwd,
+                    "attachment": current.attachment.key,
+                })
+            return json.dumps({"target": expected, "duration": 0.01})
+
+        ui = mock.Mock()
+        ui.command.side_effect = lambda command: (
+            ["@1"] if command[0] == "new-window" else
+            ["/dev/pts/10"] if command[0] == "display-message" else []
+        )
+        state = viewer.Attachment("main", "/dev/pts/8", ui)
+        state.daemon = daemon
+        state.open(actor.ref.key)
+        state.clear()
+
+        [restarted] = decode(encode([composite]))
+        current = restarted
+        state.open(actor.ref.key)
+        self.assertEqual(restarted.ref, actor.ref)
+        self.assertEqual(restarted.attachment, provider.ref)
+        self.assertEqual(sum(request.startswith("resolve ") for request in requests), 2)
+        self.assertEqual(sum(request.startswith("switch ") for request in requests), 2)
+        self.assertEqual(sum(call.args[0][0] == "kill-window"
+                             for call in ui.command.call_args_list), 1)
 
     def test_protocol_round_trip_preserves_the_alan_graph(self):
         graph = nx.MultiDiGraph()
