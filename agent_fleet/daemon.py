@@ -21,7 +21,6 @@ from .model import key_host
 from .tmux import capture, event_stream, split_key
 from .quota import read as quota_read
 from . import journal, proc, render
-from .authority import ALAN_OPERATIONS, execute as authority_execute
 
 
 MARKER_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -64,18 +63,11 @@ def events(host):
                     elif "cleanup" in request:
                         remove_viewer_marker(host, request["owner"], request["slot"])
                         response = {"cleanup": request["cleanup"]}
-                    elif "authority" in request:
-                        value = authority_execute(request["request"])
-                        observed = threading.Event()
-                        changes.put(("authority", observed,
-                                     request["request"]["operation"] in ALAN_OPERATIONS))
-                        observed.wait()
-                        response = {"authority": request["authority"], "value": value}
                     else:
                         raise RuntimeError("unknown host request")
                 except Exception as error:
                     tag = next(name for name in
-                               ("preview", "switch", "cleanup", "authority")
+                               ("preview", "switch", "cleanup")
                                if name in request)
                     response = {tag: request[tag], "error": str(error)}
                 emit(json.dumps(response, separators=(",", ":")))
@@ -104,8 +96,6 @@ class Fleet:
         self.next_switch = 0
         self.cleanups = {}
         self.next_cleanup = 0
-        self.authorities = {}
-        self.next_authority = 0
         self.changed = asyncio.Condition()
         self.action_error = ""
         self.muster_generation = None
@@ -199,13 +189,6 @@ class Fleet:
             else:
                 future.set_result(None)
             return True
-        if "authority" in message:
-            _, future = self.authorities.pop(message["authority"])
-            if "error" in message:
-                future.set_exception(RuntimeError(message["error"]))
-            else:
-                future.set_result(message["value"])
-            return True
         return False
 
     async def host_disconnected(self, host, pid=None, status=None):
@@ -223,8 +206,7 @@ class Fleet:
         self._view_cache = None
         async with self.changed:
             self.changed.notify_all()
-        for pending in (self.previews, self.switches, self.cleanups,
-                        self.authorities):
+        for pending in (self.previews, self.switches, self.cleanups):
             for number, (owner, future) in list(pending.items()):
                 if owner == host:
                     future.set_exception(RuntimeError(f"{host} disconnected"))
@@ -746,16 +728,11 @@ class Fleet:
 
     async def authority(self, host, request):
         self.available(host)
-        process = self.processes[host]
-        assert process.stdin
-        self.next_authority += 1
-        number = self.next_authority
-        future = asyncio.get_running_loop().create_future()
-        self.authorities[number] = (host, future)
-        process.stdin.write((json.dumps({"authority": number,
-                                         "request": request}) + "\n").encode())
-        await process.stdin.drain()
-        return await future
+        return await self.remote_json(
+            host, sys.executable, "-c",
+            "import sys; from agent_fleet.authority import execute_json; "
+            "print(execute_json(sys.argv[1]))",
+            json.dumps(request, separators=(",", ":")))
 
     async def viewers_showing(self, key):
         found = []
@@ -905,11 +882,16 @@ class Fleet:
         return {}
 
     async def remote_json(self, host, *command):
-        argv = list(command) if host == os.uname().nodename.split(".", 1)[0] else [
-            "ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(command)]
+        target = ("/usr/bin/env", "-u", "LOOP_SOCKET", "-u", "LOOP_CAPABILITIES",
+                  *command)
+        argv = list(target) if host == os.uname().nodename.split(".", 1)[0] else [
+            "ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(target)]
+        environment = ssh_environment()
+        environment.pop("LOOP_SOCKET", None)
+        environment.pop("LOOP_CAPABILITIES", None)
         process = await asyncio.create_subprocess_exec(
             *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            env=ssh_environment())
+            env=environment)
         stdout, stderr = await process.communicate()
         if process.returncode:
             raise RuntimeError(stderr.decode().strip() or f"{host}: {' '.join(command)} failed")

@@ -1,5 +1,7 @@
 """Finite source-authority mutations for the Fleet action boundary."""
 
+import json
+
 from . import alan, presentation, tmux, transcripts
 
 
@@ -13,11 +15,6 @@ FIELDS = {
     "restore-alan": {"operation", "actor"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
 }
-
-ALAN_OPERATIONS = {
-    "create", "rename-alan", "archive-alan", "refresh", "restore-alan",
-}
-
 
 def execute(request):
     operation = request.get("operation")
@@ -53,3 +50,7 @@ def execute(request):
         request["agent"], request["transcript"], request["name"]
     )
     return {"agent": request["agent"], "transcript": request["transcript"]}
+
+
+def execute_json(raw):
+    return json.dumps(execute(json.loads(raw)), separators=(",", ":"))

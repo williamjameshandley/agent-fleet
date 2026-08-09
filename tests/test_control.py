@@ -192,30 +192,23 @@ class ProtocolCorrelationTests(unittest.TestCase):
             with self.assertRaises(StopIteration):
                 next(stream)
 
-    def test_authority_barrier_acknowledges_only_after_forced_observation(self):
+    def test_alan_watcher_change_publishes_without_an_authority_barrier(self):
         changed = queue.Queue()
         consumer = threading.Event()
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
         alan = mock.Mock(error=None, actors=["stale"], graph="stale graph")
         alan.snapshot.side_effect = lambda: (alan.actors, alan.graph)
-        def refresh():
-            alan.actors = ["fresh"]
-            alan.graph = "fresh graph"
-            return alan.actors, alan.graph
-        alan.refresh.side_effect = refresh
         control = mock.Mock()
         tmux = mock.Mock()
         tmux.has_session.return_value = True
-        tmux_change = mock.Mock(ref="tmux change")
         with mock.patch("agent_fleet.tmux.AlanWatcher", return_value=alan), \
              mock.patch("agent_fleet.tmux.subprocess.run",
                         return_value=mock.Mock(returncode=0)), \
              mock.patch("agent_fleet.tmux.subprocess.Popen", return_value=process), \
              mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
              mock.patch("agent_fleet.tmux.server", return_value=tmux), \
-             mock.patch("agent_fleet.tmux.inventory",
-                        side_effect=[[], [], [tmux_change]]), \
+             mock.patch("agent_fleet.tmux.inventory", return_value=[]), \
              mock.patch("agent_fleet.tmux.alan_inventory", return_value=[]) as inventory, \
              mock.patch("agent_fleet.tmux.observe",
                         side_effect=lambda current, _catalog: current), \
@@ -225,15 +218,11 @@ class ProtocolCorrelationTests(unittest.TestCase):
                         return_value={}):
             stream = event_stream("fixture", consumer, changed=changed)
             self.assertEqual(next(stream), ([], "stale graph"))
-            observed = threading.Event()
-            changed.put(("authority", observed, True))
+            alan.actors = ["fresh"]
+            alan.graph = "fresh graph"
+            changed.put("alan")
             self.assertEqual(next(stream), ([], "fresh graph"))
-            alan.refresh.assert_called_once_with()
             self.assertEqual(inventory.call_args.args, ("fixture", ["fresh"]))
-            self.assertFalse(observed.is_set())
-            changed.put("tmux")
-            self.assertEqual(next(stream), ([tmux_change], "fresh graph"))
-            self.assertTrue(observed.is_set())
             finished = threading.Event()
 
             def resume():
@@ -244,7 +233,6 @@ class ProtocolCorrelationTests(unittest.TestCase):
 
             thread = threading.Thread(target=resume)
             thread.start()
-            self.assertTrue(observed.wait(1))
             consumer.set()
             changed.put("consumer")
             thread.join(1)

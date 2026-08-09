@@ -291,8 +291,6 @@ def event_stream(host, consumer=None, controls=None, changed=None):
         controls.put(control)
     previous = None
     force = False
-    barriers = []
-    authority_refresh = False
     agent_cache = {}
     alan_error = None
     try:
@@ -300,8 +298,7 @@ def event_stream(host, consumer=None, controls=None, changed=None):
             if alan.error and alan.error != alan_error:
                 print(alan.error, file=sys.stderr, flush=True)
             alan_error = alan.error
-            actors, graph = (alan.refresh() if authority_refresh
-                             else alan.snapshot())
+            actors, graph = alan.snapshot()
             current = inventory(host) + alan_inventory(host, actors)
             try:
                 current = observe(current, native_transcripts.catalog())
@@ -320,10 +317,6 @@ def event_stream(host, consumer=None, controls=None, changed=None):
                 yield current, alan_projection_graph(graph)
                 previous = serial
                 force = False
-                for barrier in barriers:
-                    barrier.set()
-                barriers.clear()
-                authority_refresh = False
             if consumer and consumer.is_set():
                 return
             events = [changed.get()]
@@ -331,11 +324,7 @@ def event_stream(host, consumer=None, controls=None, changed=None):
                 events.append(changed.get_nowait())
             if consumer and consumer.is_set():
                 return
-            authorities = [event for event in events
-                           if isinstance(event, tuple) and event[0] == "authority"]
-            barriers.extend(event[1] for event in authorities)
-            authority_refresh = any(event[2] for event in authorities)
-            force = "quota" in events or bool(barriers)
+            force = bool({"alan", "quota"} & set(events))
             if "closed" in events or process.poll() is not None:
                 error = process.stderr.read().strip() if process.stderr else ""
                 raise RuntimeError(error or "tmux control client closed")

@@ -2933,5 +2933,5 @@ class IdentityTests(unittest.TestCase):
 
     def test_quota_only_events_force_an_inventory_emit(self):
         source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()
-        self.assertIn('force = "quota" in events', source)
+        self.assertIn('force = bool({"alan", "quota"} & set(events))', source)
         self.assertIn("if serial != previous or force:", source)
