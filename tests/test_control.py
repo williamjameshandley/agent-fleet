@@ -21,7 +21,7 @@ from libtmux.exc import LibTmuxException
 from agent_fleet.tmux import (ControlClient, event_stream, watched_event,
                               watch_socket)
 from agent_fleet.daemon import Fleet
-from agent_fleet import daemon
+from agent_fleet import alan, daemon
 from agent_fleet.model import ServerRef, SessionRef, Session
 
 
@@ -123,6 +123,26 @@ class ResidentControlTests(unittest.TestCase):
                            env=self.environment)
             self.assertEqual(self.control.alan_target("codex-actor@host"),
                              self.target("fleet@alan-actor"))
+
+    def test_resident_control_constructs_exact_bare_target_but_not_codex(self):
+        identities = self.process.pid, self.target("source-one")[:3]
+        descriptor = {"addr": "llm-actor@host", "kind": "llm",
+                      "cwd": str(Path.cwd())}
+        codex = {"addr": "codex-actor@host", "kind": "codex",
+                 "cwd": str(Path.cwd())}
+        with mock.patch.dict(os.environ, self.environment, clear=True), \
+             mock.patch("agent_fleet.tmux.alan.actors",
+                        return_value=[descriptor, codex]), \
+             mock.patch("agent_fleet.presentation.shlex",
+                        mock.Mock(join=mock.Mock(return_value="sleep 30"))):
+            self.assertEqual(self.control.alan_target("llm-actor@host"),
+                             self.target("fleet@alan-" +
+                                         alan.runtime_name("llm-actor@host")))
+            with self.assertRaisesRegex(RuntimeError, "unavailable or ambiguous"):
+                self.control.alan_target("codex-actor@host")
+        self.assertEqual((self.process.pid, self.target("source-one")[:3]), identities)
+        names = self.control.command(["list-sessions", "-F", "#{session_name}"])
+        self.assertNotIn("fleet@alan-" + alan.runtime_name(codex["addr"]), names)
 
     def test_disconnect_fails_an_outstanding_command(self):
         self.process.terminate()

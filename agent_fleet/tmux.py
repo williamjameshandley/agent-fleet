@@ -190,10 +190,18 @@ class ControlClient:
 
     def alan_target(self, actor):
         name = "fleet@alan-" + alan.runtime_name(actor)
-        output = self.command([
+        arguments = [
             "list-sessions", "-f", f"#{{==:#{{session_name}},{name}}}", "-F",
-            "#{q:socket_path} #{pid} #{start_time} #{q:session_id}"])
-        matches = [shlex.split(line) for line in output if line]
+            "#{q:socket_path} #{pid} #{start_time} #{q:session_id}"]
+        def locate():
+            return [shlex.split(line) for line in self.command(arguments) if line]
+        matches = locate()
+        if not matches:
+            descriptor = next((item for item in alan.actors()
+                               if item["addr"] == actor), None)
+            if descriptor and descriptor["kind"] in {"python", "llm"}:
+                presentation.target(actor, descriptor)
+                matches = locate()
         if len(matches) != 1 or len(matches[0]) != 4:
             raise RuntimeError(f"Alan evaluator terminal is unavailable or ambiguous: {actor}")
         socket, pid, started, session_id = matches[0]
