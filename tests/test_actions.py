@@ -388,6 +388,71 @@ def test_remote_authority_strips_actor_socket_on_the_target():
     asyncio.run(exercise())
 
 
+def test_local_and_remote_authority_use_the_target_default_alan_socket(
+        tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    public = state / "alan" / "loop.sock"
+    private = tmp_path / "private.sock"
+    public.parent.mkdir(parents=True)
+    requests = {"public": [], "private": []}
+    stopped = threading.Event()
+
+    def serve(path, name):
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(path))
+            server.listen()
+            server.settimeout(.05)
+            while not stopped.is_set():
+                try:
+                    connection, _ = server.accept()
+                except TimeoutError:
+                    continue
+                with connection:
+                    line = connection.makefile("rb").readline()
+                    requests[name].append(json.loads(line))
+                    connection.sendall(b'{"ok":true}\n')
+
+    servers = [threading.Thread(target=serve, args=(public, "public"), daemon=True),
+               threading.Thread(target=serve, args=(private, "private"), daemon=True)]
+    for server in servers:
+        server.start()
+    for _ in range(100):
+        if public.exists() and private.exists():
+            break
+        time.sleep(.01)
+    assert public.exists() and private.exists()
+
+    ssh = tmp_path / "ssh"
+    ssh.write_text('#!/bin/sh\nexec /bin/sh -c "$5"\n')
+    ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("LOOP_SOCKET", str(private))
+    monkeypatch.setenv("LOOP_CAPABILITIES", '"full"')
+    command = (sys.executable, "-c",
+               "import loop; loop.control('codex-1@target', 'retire'); print('{}')")
+
+    async def exercise():
+        fleet = Fleet()
+        local = os.uname().nodename.split(".", 1)[0]
+        assert await fleet.remote_json(local, *command) == {}
+        assert await fleet.remote_json("remote-fixture", *command) == {}
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        stopped.set()
+        for server in servers:
+            server.join(1)
+    assert requests == {
+        "public": [
+            {"op": "control", "actor": "codex-1@target", "operation": "retire"},
+            {"op": "control", "actor": "codex-1@target", "operation": "retire"},
+        ],
+        "private": [],
+    }
+
+
 def test_blocked_authority_does_not_enter_or_delay_the_host_control_lane():
     async def exercise():
         fleet = Fleet()
