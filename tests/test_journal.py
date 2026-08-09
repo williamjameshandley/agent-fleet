@@ -240,6 +240,31 @@ def test_dead_presentation_records_tmux_exit_metadata_without_capture(monkeypatc
     assert "newton" not in state.attachments
 
 
+def test_dead_presentation_records_exit_once_after_removal_succeeds(monkeypatch):
+    state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+    state.host = "newton"
+    state.source = "source"
+    state.attachments["newton"] = mock.Mock(
+        window="@2", remote_file=None, master=None)
+    records = []
+    values = {"#{pane_dead}": "1",
+              "#{pane_dead_status}\t#{pane_dead_signal}": "7\t9"}
+    monkeypatch.setattr(state, "ui_value", lambda window, value: values[value])
+    state.ui.command.side_effect = [RuntimeError("kill failed"), ["@2"], []]
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+
+    with pytest.raises(RuntimeError, match="kill failed"):
+        state.check()
+    assert records == []
+    assert "newton" in state.attachments
+
+    assert state.check() == "Viewer attachment exited unexpectedly"
+    assert [event for event, _ in records] == [
+        "attachment_exited", "attachment_removed"]
+    assert "newton" not in state.attachments
+
+
 def test_viewer_failure_stages_are_assigned_at_the_owning_boundary(monkeypatch):
     state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
     failures = []
@@ -338,6 +363,59 @@ def test_failed_attachment_creation_records_only_removal(monkeypatch):
         "reason": "create_failed"})]
 
 
+def test_failed_window_removal_retains_attachment_without_removed_event(monkeypatch):
+    records = []
+    ui = mock.Mock()
+    ui.command.side_effect = [RuntimeError("kill failed"), ["@2"]]
+    state = viewer.Attachment("main", "/dev/pts/9", ui)
+    entry = mock.Mock(window="@2", remote_file=None)
+    state.attachments["lovelace"] = entry
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+
+    with pytest.raises(RuntimeError, match="kill failed"):
+        state.remove_host("lovelace", "shutdown")
+
+    assert state.attachments == {"lovelace": entry}
+    assert records == []
+
+
+def test_absent_window_completes_removal_after_kill_reports_failure(monkeypatch):
+    records = []
+    ui = mock.Mock()
+    ui.command.side_effect = [RuntimeError("can't find window"), ["@3"]]
+    state = viewer.Attachment("main", "/dev/pts/9", ui)
+    state.attachments["lovelace"] = mock.Mock(window="@2", remote_file=None)
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+
+    state.remove_host("lovelace", "shutdown")
+
+    assert state.attachments == {}
+    assert records == [("attachment_removed", {
+        "slot": "main", "host": "lovelace", "window": "@2",
+        "reason": "shutdown"})]
+
+
+def test_create_cleanup_failure_preserves_original_attachment_failure(monkeypatch):
+    records = []
+    ui = mock.Mock()
+    ui.command.side_effect = [
+        ["@2"], [], RuntimeError("kill failed"), ["@2"]]
+    state = viewer.Attachment("main", "/dev/pts/9", ui)
+    monkeypatch.setattr(viewer.os, "uname", lambda: mock.Mock(nodename="lovelace"))
+    monkeypatch.setattr(state, "resolve", lambda key: ("/tmp/tmux", 12, 10, "$1"))
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+
+    with pytest.raises(viewer.ViewerFailure) as raised:
+        state.create_host("lovelace", "source")
+
+    assert (raised.value.stage, raised.value.cause) == (
+        "attach", "client_registration")
+    assert records == []
+
+
 def test_nested_boundary_preserves_the_first_specific_failure():
     error = OSError("content")
     with pytest.raises(viewer.ViewerFailure) as raised:
@@ -381,7 +459,7 @@ def test_operation_failure_records_controlled_cause_once_without_error_text(monk
     state = mock.Mock(source="lovelace:/tmp/tmux/default:1:1:$1", host="lovelace")
     state.check.return_value = ""
 
-    def fail(key, selected=None):
+    def fail(key, selected=None, host=None):
         failed.set()
         error = RuntimeError("prompt and transcript content")
         raise viewer.ViewerFailure("switch", "identity_or_client", error) from error
@@ -403,6 +481,37 @@ def test_operation_failure_records_controlled_cause_once_without_error_text(monk
         "source": "newton:/tmp/tmux/default:2:2:$2", "stage": "switch",
         "cause": "identity_or_client",
         "error_type": "RuntimeError"})]
+
+
+@pytest.mark.parametrize("key", [
+    "not-a-canonical-key",
+    "alan:malformed",
+    "-oProxyCommand=touch:/tmp/tmux:1:1:$1",
+    "alan:x@-oProxyCommand=touch",
+    "elsewhere:/tmp/tmux:1:1:$1",
+])
+def test_malformed_identity_fails_once_without_routing_or_stopping_worker(
+        monkeypatch, key):
+    records = []
+    state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+    ensure_master = mock.Mock()
+    monkeypatch.setattr(state, "ensure_master", ensure_master)
+    monkeypatch.setattr(viewer, "viewer_error", lambda value: None)
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+    worker = viewer.ViewerWorker(state, "main")
+    try:
+        worker.intent("PROJECT", key)
+        assert worker.barrier("SOURCE") == ""
+        assert worker.thread.is_alive()
+    finally:
+        worker.close()
+
+    ensure_master.assert_not_called()
+    assert records == [("viewer_operation_failed", {
+        "slot": "main", "operation": "PROJECT", "host": "", "source": "",
+        "stage": "resolve", "cause": "invalid_identity",
+        "error_type": "ValueError"})]
 
 
 def test_unexpected_worker_failure_records_controller_event_once(monkeypatch):

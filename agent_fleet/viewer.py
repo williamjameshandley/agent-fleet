@@ -10,7 +10,7 @@ import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from .config import HUB, RUNTIME, ssh_environment
+from .config import HUB, RUNTIME, hosts as configured_hosts, ssh_environment
 from .daemon import request as daemon_request
 from .model import key_host
 from . import alan, journal, presentation, proc, workstation
@@ -18,6 +18,8 @@ from .tmux import ControlClient, split_key
 
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
+TMUX_SESSION = re.compile(r"^\$[0-9]+$")
+SOURCE_HOSTS = frozenset(configured_hosts())
 EXPECTED = (LookupError, OSError, RuntimeError, ValueError,
             subprocess.CalledProcessError)
 
@@ -28,6 +30,22 @@ class ViewerFailure(RuntimeError):
         self.stage = stage
         self.cause = cause
         self.error_type = type(error).__name__
+
+
+def source_host(key):
+    try:
+        if key.startswith("alan:"):
+            actor, host = key.removeprefix("alan:").rsplit("@", 1)
+            if not actor or host not in SOURCE_HOSTS:
+                raise ValueError("incomplete Alan identity")
+            return host
+        host, socket_path, pid, started, session = split_key(key)
+        if (host not in SOURCE_HOSTS or not socket_path.startswith("/") or
+                pid <= 0 or started <= 0 or not TMUX_SESSION.fullmatch(session)):
+            raise ValueError("incomplete tmux identity")
+        return host
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ViewerFailure("resolve", "invalid_identity", error) from error
 
 
 @contextmanager
@@ -358,9 +376,13 @@ class Attachment:
                            window=window, client=client)
             return entry
         except Exception:
-            self.ui.command(["kill-window", "-t", window])
-            journal.record("attachment_removed", slot=self.slot, host=host,
-                           window=window, reason="create_failed")
+            try:
+                self.remove_window(window)
+            except EXPECTED:
+                pass
+            else:
+                journal.record("attachment_removed", slot=self.slot, host=host,
+                               window=window, reason="create_failed")
             if remote_file:
                 try:
                     self.reclaim_marker(host, owner)
@@ -423,9 +445,9 @@ class Attachment:
                     f"{session.agent.capitalize()} evaluator terminal is unavailable: {actor}")
             return values[0], int(values[1]), int(values[2]), values[3]
 
-    def open(self, key, selected=None):
+    def open(self, key, selected=None, host=None):
         started = time.monotonic()
-        new_host = key_host(key) if key else ""
+        new_host = source_host(key) if host is None else host
         entry = self.attachments.get(new_host)
         if entry is None:
             path = "cold"
@@ -467,7 +489,19 @@ class Attachment:
             self.remove_host(host, reason)
         self.source = self.host = ""
 
-    def remove_host(self, host, reason, missing_ok=False):
+    def remove_window(self, window):
+        try:
+            self.ui.command(["kill-window", "-t", window])
+        except EXPECTED as error:
+            try:
+                windows = self.ui.command(
+                    ["list-windows", "-a", "-F", "#{window_id}"])
+            except EXPECTED:
+                raise error
+            if window in windows:
+                raise error
+
+    def remove_host(self, host, reason, exit_status=None):
         entry = self.attachments[host]
         if entry.remote_file:
             try:
@@ -475,12 +509,12 @@ class Attachment:
             except RuntimeError as error:
                 if "disconnected; refusing cleanup" not in str(error):
                     raise
+        self.remove_window(entry.window)
+        if exit_status is not None:
+            status, signal = exit_status
+            journal.record("attachment_exited", slot=self.slot, host=host,
+                           window=entry.window, status=status, signal=signal)
         self.attachments.pop(host)
-        try:
-            self.ui.command(["kill-window", "-t", entry.window])
-        except EXPECTED:
-            if not missing_ok:
-                raise
         journal.record("attachment_removed", slot=self.slot, host=host,
                        window=entry.window, reason=reason)
 
@@ -499,9 +533,7 @@ class Attachment:
                             entry.window, "#{pane_dead_status}\t#{pane_dead_signal}").split("\t")
                     except (RuntimeError, ValueError):
                         pass
-                journal.record("attachment_exited", slot=self.slot, host=host,
-                               window=entry.window, status=status, signal=signal)
-                self.remove_host(host, "exited", missing_ok=True)
+                self.remove_host(host, "exited", (status, signal))
                 if host == self.host:
                     self.source = self.host = ""
                     return "Viewer attachment exited unexpectedly"
@@ -522,13 +554,19 @@ def focus_projected(state, slot, key):
     focus(slot, state.workstation)
 
 
-def project(state, key, selected=None):
+def project(state, key, selected=None, host=None):
     if state.source != key:
+        if host is None:
+            state.open(key, selected)
+        else:
+            state.open(key, selected, host)
+
+
+def activate(state, slot, key, selected=None, host=None):
+    if host is None:
         state.open(key, selected)
-
-
-def activate(state, slot, key, selected=None):
-    state.open(key, selected)
+    else:
+        state.open(key, selected, host)
     try:
         focus(slot, state.workstation)
     except ViewerFailure as error:
@@ -557,7 +595,8 @@ class ViewerWorker:
     @staticmethod
     def job(kind, key="", selected=None):
         return SimpleNamespace(kind=kind, key=key, selected=selected,
-                               event=threading.Event(), value=None, error=None)
+                               host="", source="", event=threading.Event(),
+                               value=None, error=None)
 
     def intent(self, kind, key, selected=None):
         job = self.job(kind, key, selected)
@@ -593,14 +632,18 @@ class ViewerWorker:
         return job.value
 
     def perform(self, job):
+        if job.kind in {"PROJECT", "FOCUS", "OPEN"}:
+            job.host = source_host(job.key)
+            job.source = job.key
         if job.kind == "PROJECT":
-            project(self.state, job.key, job.selected)
+            project(self.state, job.key, job.selected, job.host)
         elif job.kind == "FOCUS":
             if self.state.source != job.key:
-                self.state.open(job.key, job.selected)
+                self.state.open(job.key, job.selected, job.host)
             focus(self.slot, self.state.workstation)
         elif job.kind == "OPEN":
-            error = activate(self.state, self.slot, job.key, job.selected)
+            error = activate(
+                self.state, self.slot, job.key, job.selected, job.host)
             if error:
                 self.record_failure("viewer_operation_failed", job, error)
                 viewer_error(f"Focus failed: {error}")
@@ -620,10 +663,8 @@ class ViewerWorker:
                 raise ValueError(f"invalid workstation {job.key!r}")
             self.state.workstation = job.key
         elif job.kind == "SHUTDOWN":
-            try:
-                self.state.shutdown()
-            finally:
-                self.stopped = True
+            self.state.shutdown()
+            self.stopped = True
         elif job.kind == "CHECK":
             if error := self.state.check():
                 viewer_error(error)
@@ -636,9 +677,9 @@ class ViewerWorker:
         cause = error.cause if isinstance(error, ViewerFailure) else "unexpected"
         error_type = (error.error_type if isinstance(error, ViewerFailure)
                       else type(error).__name__)
-        source = job.key or self.state.source
+        source = job.source or self.state.source
         journal.record(event, slot=self.slot, operation=job.kind,
-                       host=key_host(source) if job.key else self.state.host, source=source,
+                       host=job.host if job.source else self.state.host, source=source,
                        stage=stage, cause=cause, error_type=error_type)
 
     def execute(self, job):
@@ -684,7 +725,9 @@ class ViewerWorker:
             try:
                 self.barrier("SHUTDOWN")
             except EXPECTED:
-                pass
+                with self.condition:
+                    self.stopped = True
+                    self.condition.notify()
         self.thread.join()
 
 
@@ -697,7 +740,6 @@ def serve(slot):
     state = Attachment(slot, tty)
     worker = ViewerWorker(state, slot)
     viewer_error("")
-    shut_down = False
     with socket.socket(socket.AF_UNIX) as server:
         server.bind(str(path)); os.chmod(path, 0o600); server.listen(); server.settimeout(.25)
         journal.record("viewer_ready", slot=slot, tty=tty)
@@ -744,12 +786,10 @@ def serve(slot):
                                 worker.barrier("SHUTDOWN")
                             except EXPECTED as error:
                                 viewer_error(f"Open failed: {error}")
-                                response = (f"ERROR {error}\n").encode()
-                            else:
-                                response = b"OK\n"
-                            shut_down = True
+                                respond((f"ERROR {error}\n").encode())
+                                continue
                             path.unlink(missing_ok=True)
-                            respond(response)
+                            respond(b"OK\n")
                             return
                         elif message.startswith("FOCUS "):
                             worker.intent("FOCUS", message.removeprefix("FOCUS "))
@@ -774,6 +814,5 @@ def serve(slot):
                         respond(b"OK\n")
         finally:
             journal.record("viewer_stopping", slot=slot, tty=tty)
-            if not shut_down:
-                worker.close()
+            worker.close()
             path.unlink(missing_ok=True)
