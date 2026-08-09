@@ -12,7 +12,7 @@ VALUES = {
                   "SOURCE", "STATUS", "WORKSTATION"},
     "path": {"cold", "cross_host", "same_host"},
     "reason": {"clear", "create_failed", "exited", "rollback_failed",
-               "select_failed", "shutdown"},
+               "missing", "select_failed", "shutdown"},
     "route": {"local", "remote"},
     "stage": {"attach", "daemon", "focus", "resolve", "select", "ssh", "switch",
               "worker"},

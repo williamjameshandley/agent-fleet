@@ -242,6 +242,16 @@ def test_dead_presentation_records_tmux_exit_metadata_without_capture(monkeypatc
     assert "newton" not in state.attachments
 
 
+def test_missing_presentation_reason_is_valid_journal_data(monkeypatch):
+    entries = []
+    monkeypatch.setattr(journal, "_send", lambda **entry: entries.append(entry))
+
+    assert journal.record("attachment_removed", slot="main", host="lovelace",
+                          window="@2", reason="missing")
+
+    assert entries[0]["FLEET_REASON"] == "missing"
+
+
 def test_dead_presentation_records_exit_once_after_removal_succeeds(monkeypatch):
     state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
     state.host = "newton"
