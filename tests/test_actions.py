@@ -46,10 +46,45 @@ def test_authority_operations_are_finite_and_direct():
                            "name": "new"})
     mutate.assert_called_once_with("source", "rename", ["new"])
 
-    with mock.patch("agent_fleet.authority.alan.retire") as retire:
+    with mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         mock.patch("agent_fleet.authority.presentation.close") as close:
         assert authority.execute({"operation": "archive-alan",
-                                  "actor": "codex-1@lovelace"}) == {}
+                                  "actor": "codex-1@lovelace",
+                                  "agent": "codex"}) == {}
     retire.assert_called_once_with("codex-1@lovelace")
+    close.assert_not_called()
+
+    with mock.patch("agent_fleet.authority.alan.retire"), \
+         mock.patch("agent_fleet.authority.presentation.close") as close:
+        authority.execute({"operation": "archive-alan",
+                           "actor": "llm-1@lovelace", "agent": "llm"})
+    close.assert_called_once_with("llm-1@lovelace")
+
+    calls = []
+    with mock.patch("agent_fleet.authority.presentation.close",
+                    side_effect=lambda actor: calls.append(("close", actor))), \
+         mock.patch("agent_fleet.authority.alan.retire",
+                    side_effect=lambda actor: calls.append(("retire", actor))):
+        authority.execute({"operation": "archive-alan",
+                           "actor": "llm-ordered@lovelace", "agent": "llm"})
+    assert calls == [("close", "llm-ordered@lovelace"),
+                     ("retire", "llm-ordered@lovelace")]
+
+    with mock.patch("agent_fleet.authority.presentation.close",
+                    side_effect=RuntimeError("tmux failed")), \
+         mock.patch("agent_fleet.authority.alan.retire") as retire:
+        with pytest.raises(RuntimeError, match="tmux failed"):
+            authority.execute({"operation": "archive-alan",
+                               "actor": "llm-retry@lovelace", "agent": "llm"})
+    retire.assert_not_called()
+
+    with mock.patch("agent_fleet.authority.presentation.close") as close, \
+         mock.patch("agent_fleet.authority.alan.retire",
+                    side_effect=RuntimeError("retire failed")):
+        with pytest.raises(RuntimeError, match="retire failed"):
+            authority.execute({"operation": "archive-alan",
+                               "actor": "llm-rebuild@lovelace", "agent": "llm"})
+    close.assert_called_once_with("llm-rebuild@lovelace")
 
     with mock.patch("agent_fleet.authority.presentation.refresh") as refresh:
         authority.execute({"operation": "refresh", "actor": "codex-1@lovelace"})
@@ -91,6 +126,9 @@ def test_authority_rejects_generic_or_extra_operations():
                     {"operation": "archive-alan", "actor": "a", "fallback": True}):
         with pytest.raises(ValueError, match="invalid authority action"):
             authority.execute(request)
+    with pytest.raises(ValueError, match="language actor"):
+        authority.execute({"operation": "archive-alan", "actor": "python-a",
+                           "agent": "python"})
 
 
 def test_daemon_rename_and_refresh_revalidate_its_projection():
@@ -298,7 +336,8 @@ def test_authority_command_error_is_preserved():
                                side_effect=RuntimeError("refused")):
             with pytest.raises(RuntimeError, match="refused"):
                 await fleet.authority(host, {
-                    "operation": "archive-alan", "actor": f"codex-1@{host}"})
+                    "operation": "archive-alan", "actor": f"codex-1@{host}",
+                    "agent": "codex"})
 
     asyncio.run(exercise())
 
@@ -335,7 +374,8 @@ def test_remote_authority_strips_actor_socket_on_the_target():
         fleet = Fleet()
         process = mock.Mock(returncode=0)
         process.communicate = mock.AsyncMock(return_value=(b"{}\n", b""))
-        envelope = '{"operation":"archive-alan","actor":"codex-1@newton"}'
+        envelope = ('{"operation":"archive-alan","actor":"codex-1@newton",'
+                    '"agent":"codex"}')
         with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
                         return_value=process) as execute:
             assert await fleet.remote_json("newton", "/usr/bin/python", "-c",

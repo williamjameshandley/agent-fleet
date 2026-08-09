@@ -1495,7 +1495,8 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(asyncio.run(fleet.action(
                 {"operation": "archive", "source": session.ref.key})), {})
         execute.assert_awaited_once_with(
-            host, {"operation": "archive-alan", "actor": f"claude-1@{host}"})
+            host, {"operation": "archive-alan", "actor": f"claude-1@{host}",
+                   "agent": "claude"})
         absent.assert_awaited_once_with(session.ref.key)
 
     def test_archive_retires_bare_alan_language_actor_by_address(self):
@@ -1512,7 +1513,8 @@ class IdentityTests(unittest.TestCase):
             asyncio.run(fleet.action(
                 {"operation": "archive", "source": session.ref.key}))
         execute.assert_awaited_once_with(
-            host, {"operation": "archive-alan", "actor": f"llm-1@{host}"})
+            host, {"operation": "archive-alan", "actor": f"llm-1@{host}",
+                   "agent": "llm"})
 
     def test_archive_verifies_transcript_then_closes_exact_tmux_identity(self):
         session = self.session("lovelace")

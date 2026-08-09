@@ -796,7 +796,8 @@ class Fleet:
             if session.agent not in {"llm", "claude", "codex"}:
                 raise ValueError("archive requires a language actor")
             authority = {"operation": "archive-alan",
-                         "actor": session.ref.session_id}
+                         "actor": session.ref.session_id,
+                         "agent": session.agent}
         else:
             if session.agent not in {"claude", "codex"} or not session.transcript_id:
                 raise ValueError("archive requires a durable Claude or Codex identity")
