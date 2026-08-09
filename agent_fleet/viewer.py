@@ -7,6 +7,7 @@ import subprocess
 import syslog
 import time
 import queue
+import threading
 from types import SimpleNamespace
 
 from .config import HUB, RUNTIME, ssh_environment
@@ -459,6 +460,142 @@ def activate(state, slot, key, selected=None):
     return ""
 
 
+class ViewerWorker:
+    """Own one Attachment and collapse cursor movement to its latest intent."""
+
+    INTENTS = {"PROJECT", "FOCUS"}
+
+    def __init__(self, state, slot):
+        self.state = state
+        self.slot = slot
+        self.jobs = []
+        self.condition = threading.Condition()
+        self.stopped = False
+        self.failure = None
+        self.reported = False
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    @staticmethod
+    def job(kind, key="", selected=None):
+        return SimpleNamespace(kind=kind, key=key, selected=selected,
+                               event=threading.Event(), value=None, error=None)
+
+    def intent(self, kind, key, selected=None):
+        job = self.job(kind, key, selected)
+        with self.condition:
+            if self.failure:
+                raise self.failure
+            if self.stopped:
+                raise RuntimeError("viewer worker has stopped")
+            self.jobs = [pending for pending in self.jobs
+                         if pending.kind not in self.INTENTS]
+            self.jobs.append(job)
+            self.condition.notify()
+
+    def barrier(self, kind, key="", selected=None):
+        job = self.job(kind, key, selected)
+        with self.condition:
+            if self.failure:
+                raise self.failure
+            if self.stopped:
+                raise RuntimeError("viewer worker has stopped")
+            if kind in {"OPEN", "SHUTDOWN"}:
+                self.jobs = [pending for pending in self.jobs
+                             if pending.kind not in self.INTENTS]
+            elif kind == "CLEAR":
+                self.jobs = [pending for pending in self.jobs
+                             if not (pending.kind in self.INTENTS
+                                     and (not key or pending.key == key))]
+            self.jobs.append(job)
+            self.condition.notify()
+        job.event.wait()
+        if job.error:
+            raise job.error
+        return job.value
+
+    def perform(self, job):
+        if job.kind == "PROJECT":
+            project(self.state, job.key, job.selected)
+        elif job.kind == "FOCUS":
+            if self.state.source != job.key:
+                self.state.open(job.key, job.selected)
+            focus(self.slot, self.state.workstation)
+        elif job.kind == "OPEN":
+            error = activate(self.state, self.slot, job.key, job.selected)
+            if error:
+                viewer_error(error)
+                self.reported = True
+        elif job.kind == "CLEAR":
+            if not job.key or self.state.source == job.key:
+                self.state.clear()
+        elif job.kind == "SOURCE":
+            job.value = self.state.source
+        elif job.kind == "STATUS":
+            if error := self.state.check():
+                viewer_error(error)
+                self.reported = True
+            job.value = self.state.source
+        elif job.kind == "WORKSTATION":
+            if not SLOT.fullmatch(job.key):
+                raise ValueError(f"invalid workstation {job.key!r}")
+            self.state.workstation = job.key
+        elif job.kind == "SHUTDOWN":
+            try:
+                self.state.shutdown()
+            finally:
+                self.stopped = True
+        elif job.kind == "CHECK":
+            if error := self.state.check():
+                viewer_error(error)
+                self.reported = True
+        else:
+            raise ValueError(f"unknown viewer operation {job.kind!r}")
+
+    def execute(self, job):
+        if self.reported and job.kind not in {"CHECK", "STATUS"}:
+            viewer_error("")
+            self.reported = False
+        try:
+            self.perform(job)
+        except EXPECTED as error:
+            viewer_error(f"Open failed: {error}")
+            self.reported = True
+            job.error = error
+        except BaseException as error:
+            job.error = RuntimeError(f"viewer worker failed: {error}")
+            raise
+        finally:
+            job.event.set()
+
+    def run(self):
+        try:
+            while not self.stopped:
+                with self.condition:
+                    if not self.jobs:
+                        self.condition.wait(.25)
+                    job = self.jobs.pop(0) if self.jobs else self.job("CHECK")
+                self.execute(job)
+        except BaseException as error:
+            failure = RuntimeError(f"viewer worker failed: {error}")
+            with self.condition:
+                self.failure = failure
+                self.stopped = True
+                pending, self.jobs = self.jobs, []
+            for job in pending:
+                job.error = failure
+                job.event.set()
+            viewer_error(str(failure))
+
+    def close(self):
+        if not self.stopped and not self.failure:
+            try:
+                self.barrier("SHUTDOWN")
+            except EXPECTED:
+                pass
+        self.thread.join()
+
+
 def serve(slot):
     check_slot(slot)
     tty = os.ttyname(0)
@@ -466,8 +603,8 @@ def serve(slot):
     path = RUNTIME / f"viewer-{slot}.sock"
     path.unlink(missing_ok=True)
     state = Attachment(slot, tty)
+    worker = ViewerWorker(state, slot)
     viewer_error("")
-    reported = False
     shut_down = False
     with socket.socket(socket.AF_UNIX) as server:
         server.bind(str(path)); os.chmod(path, 0o600); server.listen(); server.settimeout(.25)
@@ -476,67 +613,73 @@ def serve(slot):
                 try:
                     connection, _ = server.accept()
                 except TimeoutError:
-                    error = state.check()
-                    if error:
-                        viewer_error(error)
-                        reported = True
                     continue
                 with connection:
+                    def respond(value):
+                        try:
+                            connection.sendall(value)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+
                     message = connection.makefile().readline().strip()
                     if message == "SOURCE":
-                        connection.sendall((state.source + "\n").encode()); continue
+                        try:
+                            value = worker.barrier("SOURCE")
+                        except EXPECTED as error:
+                            respond((f"ERROR {error}\n").encode())
+                        else:
+                            respond((value + "\n").encode())
+                        continue
                     if message == "STATUS":
-                        error = state.check()
-                        if error:
-                            viewer_error(error)
-                            reported = True
-                        connection.sendall((state.source + "\n").encode()); continue
-                    if reported:
-                        viewer_error("")
-                        reported = False
+                        try:
+                            value = worker.barrier("STATUS")
+                        except EXPECTED as error:
+                            respond((f"ERROR {error}\n").encode())
+                        else:
+                            respond((value + "\n").encode())
+                        continue
                     try:
                         if message == "CLEAR":
-                            state.clear()
+                            worker.barrier("CLEAR")
                         elif message.startswith("CLEAR "):
-                            key = message.removeprefix("CLEAR ")
-                            if state.source == key:
-                                state.clear()
+                            worker.barrier("CLEAR", message.removeprefix("CLEAR "))
                         elif message.startswith("WORKSTATION "):
-                            name = message.removeprefix("WORKSTATION ")
-                            if not SLOT.fullmatch(name):
-                                raise ValueError(f"invalid workstation {name!r}")
-                            state.workstation = name
+                            worker.barrier(
+                                "WORKSTATION", message.removeprefix("WORKSTATION "))
                         elif message == "SHUTDOWN":
-                            state.shutdown()
+                            try:
+                                worker.barrier("SHUTDOWN")
+                            except EXPECTED as error:
+                                viewer_error(f"Open failed: {error}")
+                                response = (f"ERROR {error}\n").encode()
+                            else:
+                                response = b"OK\n"
                             shut_down = True
                             path.unlink(missing_ok=True)
-                            connection.sendall(b"OK\n")
+                            respond(response)
                             return
                         elif message.startswith("FOCUS "):
-                            focus_projected(state, slot, message.removeprefix("FOCUS "))
+                            worker.intent("FOCUS", message.removeprefix("FOCUS "))
                         elif message.startswith("PROJECT "):
                             values = message.removeprefix("PROJECT ").split(" ", 1)
                             key = values[0]
                             selected = values[1] if len(values) == 2 else ""
-                            project(state, key, float(selected) if selected else None)
+                            worker.intent(
+                                "PROJECT", key, float(selected) if selected else None)
                         elif message.startswith("OPEN "):
                             values = message.removeprefix("OPEN ").split(" ", 1)
                             key = values[0]
                             selected = values[1] if len(values) == 2 else ""
-                            error = activate(
-                                state, slot, key, float(selected) if selected else None)
-                            if error:
-                                viewer_error(error)
-                                reported = True
+                            worker.barrier(
+                                "OPEN", key, float(selected) if selected else None)
                         else:
                             raise ValueError(f"unknown viewer request {message!r}")
                     except EXPECTED as error:
                         viewer_error(f"Open failed: {error}")
-                        reported = True
-                        connection.sendall((f"ERROR {error}\n").encode())
+                        respond((f"ERROR {error}\n").encode())
                     else:
-                        connection.sendall(b"OK\n")
+                        respond(b"OK\n")
         finally:
             if not shut_down:
-                state.shutdown()
+                worker.close()
             path.unlink(missing_ok=True)
