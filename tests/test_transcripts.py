@@ -3,7 +3,7 @@ from unittest import mock
 
 import agent_fleet.transcripts as transcripts
 from agent_fleet.transcripts import (PANE_FORMAT, indexed_claude_agents, last_human_time,
-                                    latest_assistant_text, preview,
+                                    latest_assistant_text, fold_adopted, preview,
                                     project_native, select_codex, transcript, verify)
 from agent_fleet.model import ServerRef, Session, SessionRef
 
@@ -202,6 +202,61 @@ def test_unmatched_alan_provider_has_no_invented_summary_or_path():
     [projected] = project_native([session], {})
     assert projected.summary == ""
     assert projected.transcript_path == ""
+
+
+def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
+    identity = "00000000-0000-0000-0000-000000000001"
+    alan_server = ServerRef("newton", "", 0, 0, "alan")
+    tmux_server = ServerRef("newton", "/tmp/tmux/default", 42, 10)
+    actor = Session(
+        SessionRef(alan_server, f"codex-{identity}@newton"),
+        "actor",
+        1,
+        0,
+        0,
+        1,
+        "alan",
+        "",
+        "/work",
+        "codex",
+        "waiting",
+        transcript_id=identity,
+    )
+    provider = Session(
+        SessionRef(tmux_server, "$7"),
+        "fleet@native-test",
+        1,
+        2,
+        1,
+        1,
+        "codex",
+        "",
+        "/work",
+        "codex",
+        "working",
+        transcript_id=identity,
+    )
+
+    assert fold_adopted([provider, actor]) == [
+        __import__("dataclasses").replace(actor, attachment=provider.ref)
+    ]
+
+
+def test_adoption_join_is_host_local():
+    identity = "00000000-0000-0000-0000-000000000001"
+    actor = Session(
+        SessionRef(ServerRef("newton", "", 0, 0, "alan"),
+                   f"codex-{identity}@newton"),
+        "actor", 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting",
+        transcript_id=identity,
+    )
+    provider = Session(
+        SessionRef(ServerRef("boltzmann", "/tmp/tmux/default", 42, 10), "$7"),
+        "fleet@native-test", 1, 2, 1, 1, "codex", "", "/work", "codex", "working",
+        transcript_id=identity,
+    )
+
+    assert fold_adopted([provider, actor]) == [provider, actor]
 
 
 def test_empty_native_transcript_projects_blank_state(tmp_path):

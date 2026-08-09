@@ -20,6 +20,16 @@ def encode(sessions, usage=None, unavailable=None, graph=None):
         "evaluation": s.evaluation,
         "evaluation_started": s.evaluation_started,
         "transcript_path": s.transcript_path,
+        "attachment": ({
+            "server": {
+                "host": s.attachment.server.host,
+                "socket": s.attachment.server.socket,
+                "pid": s.attachment.server.pid,
+                "started": s.attachment.server.started,
+                "kind": s.attachment.server.kind,
+            },
+            "id": s.attachment.session_id,
+        } if s.attachment else None),
     } for s in sessions]
     message = {"version": 1, "sessions": items, "usage": usage or {},
                "unavailable": unavailable or []}
@@ -44,11 +54,24 @@ def decode_value(message):
         raw = item.pop("server")
         sid = item.pop("id")
         kind = raw.pop("kind")
+        attachment = item.pop("attachment", None)
+        if attachment:
+            attachment_server = attachment["server"]
+            attachment = SessionRef(
+                ServerRef(
+                    attachment_server["host"],
+                    attachment_server["socket"],
+                    attachment_server["pid"],
+                    attachment_server["started"],
+                    attachment_server["kind"],
+                ),
+                attachment["id"],
+            )
         ref = SessionRef(
             ServerRef(raw["host"], raw["socket"], raw["pid"], raw["started"], kind),
             sid,
         )
-        sessions.append(Session(ref=ref, **item))
+        sessions.append(Session(ref=ref, attachment=attachment, **item))
     return sessions, message["usage"], message["unavailable"]
 
 

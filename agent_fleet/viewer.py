@@ -404,7 +404,7 @@ class Attachment:
         if set(value) == {"error"}:
             error = RuntimeError(value["error"])
             raise ViewerFailure("resolve", "refused", error) from error
-        if set(value) != {"agent", "state", "cwd"}:
+        if set(value) != {"agent", "state", "cwd", "attachment"}:
             error = RuntimeError("invalid Fleet resolver response")
             raise ViewerFailure("daemon", "invalid_reply", error) from error
         return SimpleNamespace(**value)
@@ -417,6 +417,8 @@ class Attachment:
                 raise ViewerFailure("resolve", "invalid_identity", error) from error
             return socket_path, pid, started, sid
         session = self.find(key)
+        if session.attachment:
+            return split_key(session.attachment)[1:]
         actor = key.removeprefix("alan:")
         if session.state in {"retired", "unavailable"}:
             error = RuntimeError(f"Alan actor is {session.state}: {actor}")

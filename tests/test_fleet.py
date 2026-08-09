@@ -195,12 +195,48 @@ class IdentityTests(unittest.TestCase):
 
     def test_protocol_round_trip_preserves_canonical_identity(self):
         sessions = [self.session("newton"), self.session("lovelace")]
+        sessions[0] = replace(
+            sessions[0],
+            attachment=SessionRef(
+                ServerRef("newton", "/tmp/tmux/native", 44, 12), "$9"
+            ),
+        )
         encoded = json.loads(encode(sessions))
         self.assertEqual(set(encoded), {"version", "sessions", "usage", "unavailable"})
         self.assertEqual(encoded["sessions"][0]["server"]["kind"], "tmux")
         self.assertEqual(decode(json.dumps(encoded)), sessions)
         with self.assertRaisesRegex(ValueError, "unsupported Fleet protocol version"):
             decode('{"version":2,"sessions":[],"usage":{},"unavailable":[]}')
+
+    def test_composite_actor_operations_use_the_exact_provider_attachment(self):
+        fleet = Fleet()
+        actor = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
+                           "codex-a@newton")
+        attachment = SessionRef(
+            ServerRef("newton", "/tmp/tmux/native", 44, 12), "$9"
+        )
+        session = replace(self.session("newton"), ref=actor, attachment=attachment)
+        fleet.sessions = {"newton": [session]}
+        fleet.unavailable = set()
+        process = mock.Mock(stdin=mock.Mock())
+        process.stdin.drain = mock.AsyncMock()
+        fleet.processes = {"newton": process}
+
+        async def exercise():
+            preview = asyncio.create_task(fleet.preview(actor.key, 80, 24))
+            await asyncio.sleep(0)
+            fleet.previews[1][1].set_result("pane")
+            self.assertEqual(await preview, "pane")
+            switch = asyncio.create_task(fleet.switch(actor.key, "/dev/pts/8"))
+            await asyncio.sleep(0)
+            fleet.switches[1][1].set_result(None)
+            await switch
+
+        asyncio.run(exercise())
+        requests = [json.loads(call.args[0]) for call in process.stdin.write.call_args_list]
+        self.assertEqual(requests[0]["key"], attachment.key)
+        self.assertEqual(requests[1]["target"],
+                         ["/tmp/tmux/native", 44, 12, "$9"])
 
     def test_protocol_round_trip_preserves_the_alan_graph(self):
         graph = nx.MultiDiGraph()
@@ -351,7 +387,7 @@ class IdentityTests(unittest.TestCase):
         asyncio.run(exercise())
         self.assertEqual(json.loads(writer.write.call_args.args[0]),
                          {"agent": session.agent, "state": session.state,
-                          "cwd": session.cwd})
+                          "cwd": session.cwd, "attachment": ""})
 
     def test_daemon_switch_reply_preserves_the_host_control_error(self):
         fleet = Fleet()
@@ -2512,7 +2548,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_remote_actor_resolution_survives_the_remote_shell(self):
         actor = "codex-1@newton"
-        session = mock.Mock(agent="codex", state="waiting", cwd="/work")
+        session = mock.Mock(agent="codex", state="waiting", cwd="/work", attachment="")
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         listed = mock.Mock(
             stdout="/tmp/tmux-1000/default 2548 1784382062 \\$191\n")
