@@ -562,6 +562,10 @@ class IdentityTests(unittest.TestCase):
             subprocess.run([
                 "tmux", "new-session", "-d", "-s", "fleet@muster", command,
             ], check=True, env=environment)
+            subprocess.run([
+                "tmux", "new-session", "-d", "-s",
+                "fleet@alan-" + alan.runtime_name(addr), "sleep", "30",
+            ], check=True, env=environment)
             master = slave = None
             client = None
             try:
@@ -704,6 +708,116 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(projected[0].evaluation_started, 3)
         self.assertEqual(projected[1].transcript_id, "")
         self.assertEqual(projected[1].transcript_path, "")
+
+    def test_host_inventory_projects_only_actors_with_current_presentations(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            actors = []
+            for addr, kind in [
+                ("codex-full@newton", "codex"),
+                ("claude-full@newton", "claude"),
+                ("codex-read-reviewer@newton", "codex"),
+                ("python-one@newton", "python"),
+                ("llm-one@newton", "llm"),
+            ]:
+                actors.append({
+                    "addr": addr, "kind": kind, "state": "waiting",
+                    "cwd": cwd, "created": 1, "human_activity": 0,
+                    "label": "same human label", "active_evaluation": None,
+                    "evaluation_started": 0,
+                })
+            native = ["codex-full@newton", "claude-full@newton"]
+            items = [mock.Mock(
+                session_name="fleet@alan-" + alan.runtime_name(actor),
+                session_id=f"${number}",
+            ) for number, actor in enumerate(native, 1)]
+            server = mock.Mock(sessions=items)
+            server.cmd.return_value.stdout = []
+            native = Path(cwd) / "native"
+            native.mkdir()
+            (native / "kernel.json").touch()
+            with mock.patch("agent_fleet.tmux.server", return_value=server), \
+                 mock.patch("agent_fleet.presentation.alan.native_dir",
+                            return_value=native):
+                projected = tmux.inventory("newton", actors)
+        self.assertEqual(
+            [session.ref.session_id for session in projected],
+            ["codex-full@newton", "claude-full@newton",
+             "python-one@newton", "llm-one@newton"],
+        )
+        self.assertNotIn("codex-read-reviewer@newton",
+                         [session.ref.session_id for session in projected])
+
+    def test_every_rendered_actor_resolves_from_the_same_host_generation(self):
+        host = os.uname().nodename
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = {**without_tmux_client(), "TMUX_TMPDIR": str(root),
+                           "TERM": "xterm-256color"}
+            cwd = root / "work"
+            cwd.mkdir()
+            specifications = [
+                (f"codex-full@{host}", "codex"),
+                (f"claude-full@{host}", "claude"),
+                (f"codex-read-reviewer@{host}", "codex"),
+                (f"claude-disappeared@{host}", "claude"),
+                (f"python-one@{host}", "python"),
+                (f"llm-one@{host}", "llm"),
+            ]
+            descriptors = [{
+                "addr": addr, "kind": kind, "state": "waiting",
+                "cwd": str(cwd), "created": 1, "human_activity": 0,
+                "label": "colliding label", "active_evaluation": None,
+                "evaluation_started": 0,
+            } for addr, kind in specifications]
+            native = [specifications[0][0], specifications[1][0],
+                      specifications[4][0]]
+            try:
+                for actor in native:
+                    subprocess.run([
+                        "tmux", "new-session", "-d", "-s",
+                        "fleet@alan-" + alan.runtime_name(actor), "sleep", "30",
+                    ], check=True, env=environment)
+
+                graph = nx.MultiDiGraph()
+                principal = f"will@{host}"
+                graph.graph["actors"] = [
+                    {"addr": principal, "kind": "principal"}, *descriptors]
+                for number, descriptor in enumerate(descriptors):
+                    source = f"{principal}#{number}"
+                    target = f'{descriptor["addr"]}#0'
+                    graph.add_node(source, stream=principal)
+                    graph.add_node(target, stream=descriptor["addr"])
+                    graph.add_edge(source, target, key="spawn")
+
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    sessions = tmux.inventory(host, descriptors)
+                    projected_graph = alan.projection_graph(graph)
+                    projected = render.order(
+                        sessions, [], projected_graph, show_python=True)
+                    rows = render.rows_text(projected, [], 120)
+                    emitted = [item.session for item in projected]
+                    emitted_by_key = {session.ref.key: session for session in emitted}
+                    self.assertTrue(all(session.ref.key in rows for session in emitted))
+                    excluded = {specifications[2][0], specifications[3][0]}
+                    self.assertTrue(excluded.isdisjoint(
+                        session.ref.session_id for session in emitted))
+                    graph_actors = {
+                        actor["addr"] for actor in projected_graph.graph["actors"]}
+                    self.assertTrue(excluded <= graph_actors)
+
+                    attachment = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+                    with mock.patch.object(
+                            attachment, "find",
+                            side_effect=lambda key: emitted_by_key[key]):
+                        targets = [attachment.resolve(session.ref.key)
+                                   for session in emitted]
+                self.assertEqual(len(targets), 4)
+                self.assertEqual(len({target[1:3] for target in targets}), 1)
+                self.assertTrue(all(target[0] == targets[0][0] for target in targets))
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
 
     def test_fleet_uses_loop_client_instead_of_reimplementing_its_wire(self):
         source = (Path(__file__).parents[1] / "agent_fleet/alan.py").read_text()

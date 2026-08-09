@@ -18,7 +18,7 @@ from .agent import observe
 from .config import RUNTIME
 from .alan import (Watcher as AlanWatcher, inventory as alan_inventory,
                    projection_graph as alan_projection_graph)
-from . import alan, transcripts as native_transcripts
+from . import alan, presentation, transcripts as native_transcripts
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
 
@@ -237,14 +237,15 @@ def capture_pane(session, columns=0, lines=0):
     return result.stdout
 
 
-def inventory(host):
+def inventory(host, actor_descriptors):
     tmux = server()
     metadata = {sid: int(activity or 0)
                 for sid, activity in (line.split("\t") for line in tmux.cmd(
                     "list-sessions", "-F",
                     "#{session_id}\t#{@fleet_human_activity}").stdout)}
+    items = list(tmux.sessions)
     sessions = []
-    for item in tmux.sessions:
+    for item in items:
         if item.session_name.startswith("fleet@"):
             continue
         source = ServerRef(host, item.socket_path, int(item.pid), int(item.start_time))
@@ -254,7 +255,10 @@ def inventory(host):
             int(item.session_attached), int(item.session_windows),
             item.pane_current_command, item.pane_title, item.pane_current_path,
             human_activity=metadata[item.session_id]))
-    return sessions
+    names = [item.session_name for item in items]
+    actors = [actor for actor in actor_descriptors
+              if presentation.available(actor["addr"], actor, names)]
+    return sessions + alan_inventory(host, actors)
 
 
 def watched_event(path, transcript_roots, quota_path):
@@ -361,8 +365,7 @@ def event_stream(host, consumer=None, controls=None, changed=None):
             alan_error = alan.error
             actors, graph = alan.snapshot()
             try:
-                current = ((inventory(host) if control is not None else []) +
-                           alan_inventory(host, actors))
+                current = inventory(host, actors) if control is not None else []
             except (subprocess.CalledProcessError, LibTmuxException) as error:
                 if control is None:
                     raise

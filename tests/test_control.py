@@ -400,8 +400,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
              mock.patch("agent_fleet.tmux.subprocess.Popen", return_value=process), \
              mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
              mock.patch("agent_fleet.tmux.server", return_value=tmux), \
-             mock.patch("agent_fleet.tmux.inventory", return_value=[]), \
-             mock.patch("agent_fleet.tmux.alan_inventory", return_value=[]) as inventory, \
+             mock.patch("agent_fleet.tmux.inventory", return_value=[]) as inventory, \
              mock.patch("agent_fleet.tmux.observe",
                         side_effect=lambda current, _catalog: current), \
              mock.patch("agent_fleet.tmux.alan_projection_graph",
