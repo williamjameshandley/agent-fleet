@@ -1702,6 +1702,7 @@ class IdentityTests(unittest.TestCase):
         fleet._view_cache = ("stale",)
         usage = {"claude": {"five_hour": {"utilization": 37}}}
         raw = encode([self.session(host)], usage)
+        fleet.processes[host] = mock.Mock(pid=42)
         with mock.patch("agent_fleet.daemon.hosts", return_value=[host]):
             fleet.update_host(host, raw)
         self.assertNotIn(host, fleet.unavailable)

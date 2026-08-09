@@ -308,7 +308,7 @@ def test_authority_error_and_disconnect_complete_the_outstanding_future():
         await asyncio.sleep(0)
         number = json.loads(process.stdin.write.call_args.args[0])["authority"]
         if disconnect:
-            await fleet.host_disconnected(host)
+            await fleet.host_disconnected(host, 42, 1)
         else:
             fleet.host_reply({"authority": number, "error": "refused"})
         with pytest.raises(RuntimeError, match="disconnected" if disconnect else "refused"):

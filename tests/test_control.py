@@ -371,7 +371,7 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet.previews[1] = ("fixture", preview)
             fleet.switches[2] = ("fixture", switch)
             fleet.cleanups[3] = ("fixture", cleanup)
-            await fleet.host_disconnected("fixture")
+            await fleet.host_disconnected("fixture", 42, 1)
             self.assertNotIn("fixture", fleet.sessions)
             self.assertNotIn("fixture", fleet.graphs)
             self.assertFalse(fleet.previews); self.assertFalse(fleet.switches)

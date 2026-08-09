@@ -20,7 +20,7 @@ from .protocol import decode_message, decode_observation, encode
 from .model import key_host
 from .tmux import capture, event_stream, split_key
 from .quota import read as quota_read
-from . import proc, render
+from . import journal, proc, render
 from .authority import ALAN_OPERATIONS, execute as authority_execute
 
 
@@ -118,6 +118,7 @@ class Fleet:
         self.publication = 0
         self.pending_archives = set()
         self.background_tasks = set()
+        self.task_names = {}
 
     async def collect(self, host):
         python = (sys.executable, "-c",
@@ -158,15 +159,18 @@ class Fleet:
                     await process.wait()
                 if not drain.done():
                     drain.cancel()
-                await self.host_disconnected(host)
+                await self.host_disconnected(host, process.pid, process.returncode)
             self.schedule_refresh()
             await asyncio.sleep(1)
 
     def update_host(self, host, raw):
         sessions, usage, _, graph = decode_observation(raw)
+        connected = host in self.unavailable
         self.sessions[host] = sessions
         self.graphs[host] = graph
         self.unavailable.discard(host)
+        if connected:
+            journal.record("host_connected", host=host, pid=self.processes[host].pid)
         if host == hosts()[0] and usage:
             self.usage = usage
         self.observed += 1
@@ -204,11 +208,16 @@ class Fleet:
             return True
         return False
 
-    async def host_disconnected(self, host):
+    async def host_disconnected(self, host, pid=None, status=None):
+        connected = host not in self.unavailable
+        if connected and (pid is None or status is None):
+            raise RuntimeError("connected host disconnect requires process identity and status")
         self.processes.pop(host, None)
         self.sessions.pop(host, None)
         self.graphs.pop(host, None)
         self.unavailable.add(host)
+        if connected:
+            journal.record("host_disconnected", host=host, pid=pid, status=status)
         self.observed += 1
         self.view_revision += 1
         self._view_cache = None
@@ -224,7 +233,7 @@ class Fleet:
     def schedule_refresh(self):
         if not self.refresh_pending:
             self.refresh_pending = True
-            asyncio.create_task(self.refresh_muster())
+            self.own_task(asyncio.create_task(self.refresh_muster()), "refresh_muster")
 
     async def refresh_muster(self):
         try:
@@ -521,8 +530,7 @@ class Fleet:
                 action, artifacts = self.publish_view(width)
                 task = asyncio.create_task(
                     self.complete_archive(key, host, authority, artifacts))
-                self.background_tasks.add(task)
-                task.add_done_callback(self.background_task_done)
+                self.own_task(task, "archive")
                 return action
             await self.action({"operation": operation, "source": key})
             self.action_error = ""
@@ -533,8 +541,16 @@ class Fleet:
 
     def background_task_done(self, task):
         self.background_tasks.discard(task)
+        name = self.task_names.pop(task)
         if not task.cancelled():
-            task.exception()
+            if error := task.exception():
+                journal.record("daemon_task_failed", task=name,
+                               error_type=type(error).__name__)
+
+    def own_task(self, task, name):
+        self.background_tasks.add(task)
+        self.task_names[task] = name
+        task.add_done_callback(self.background_task_done)
 
     async def publish_current_view(self, error=""):
         path = RUNTIME / "muster.sock"
@@ -1003,13 +1019,17 @@ class Fleet:
         server = await asyncio.start_unix_server(self.reply, path)
         os.chmod(path, 0o600)
         await self.register_existing_muster()
+        configured = hosts()
+        fields = {"socket": str(path), "hosts_text": " ".join(configured)}
+        journal.record("daemon_ready", **fields)
         try:
             async with server:
                 async with asyncio.TaskGroup() as group:
                     group.create_task(server.serve_forever())
-                    for host in hosts():
+                    for host in configured:
                         group.create_task(self.collect(host))
         finally:
+            journal.record("daemon_stopping", **fields)
             for task in tuple(self.background_tasks):
                 task.cancel()
             await asyncio.gather(*tuple(self.background_tasks), return_exceptions=True)
