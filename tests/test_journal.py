@@ -1,10 +1,14 @@
 from pathlib import Path
 import asyncio
+import socket
+import subprocess
+import threading
+import time
 from unittest import mock
 
 import pytest
 
-from agent_fleet import daemon, journal
+from agent_fleet import daemon, journal, viewer
 
 
 def test_event_supplies_fixed_native_fields(monkeypatch):
@@ -187,3 +191,235 @@ def test_daemon_ready_and_stopping_bracket_its_owned_server(tmp_path, monkeypatc
 
     fields = {"socket": str(tmp_path / "fleet.sock"), "hosts_text": "lovelace"}
     assert records == [("daemon_ready", fields), ("daemon_stopping", fields)]
+
+
+def test_projection_events_distinguish_cold_same_host_and_cross_host(monkeypatch):
+    state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+    records = []
+    entries = {
+        "lovelace": mock.Mock(source="local-old", client="/dev/pts/1", window="@1"),
+        "newton": mock.Mock(source="remote-old", client="/dev/pts/2", window="@2"),
+    }
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+    monkeypatch.setattr(state, "create_host", lambda host, key: entries[host])
+    monkeypatch.setattr(state, "resident_switch", lambda key, client: None)
+    monkeypatch.setattr(state, "select_host", lambda entry: None)
+
+    state.open("lovelace:/tmp/tmux/default:12:10:$1")
+    state.open("lovelace:/tmp/tmux/default:12:10:$2")
+    state.attachments["newton"] = entries["newton"]
+    state.open("newton:/tmp/tmux/default:13:11:$1")
+
+    assert [fields["path"] for event, fields in records
+            if event == "projection_completed"] == ["cold", "same_host", "cross_host"]
+
+
+def test_dead_presentation_records_tmux_exit_metadata_without_capture(monkeypatch):
+    state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+    state.host = "newton"
+    state.source = "source"
+    state.attachments["newton"] = mock.Mock(
+        window="@2", remote_file=None, master=None)
+    records = []
+    values = {"#{pane_dead}": "1", "#{pane_dead_status}\t#{pane_dead_signal}": "7\t9"}
+    monkeypatch.setattr(state, "ui_value", lambda window, value: values[value])
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+
+    assert state.check() == "Viewer attachment exited unexpectedly"
+
+    assert records == [
+        ("attachment_exited", {
+            "slot": "main", "host": "newton", "window": "@2",
+            "status": "7", "signal": "9"}),
+        ("attachment_removed", {
+            "slot": "main", "host": "newton", "window": "@2",
+            "reason": "exited"}),
+    ]
+    assert "newton" not in state.attachments
+
+
+def test_viewer_failure_stages_are_assigned_at_the_owning_boundary(monkeypatch):
+    state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+    failures = []
+    monkeypatch.setattr(viewer.os, "uname", lambda: mock.Mock(nodename=viewer.HUB))
+
+    def caught(call):
+        with pytest.raises(viewer.ViewerFailure) as raised:
+            call()
+        failures.append((raised.value.stage, raised.value.cause))
+
+    monkeypatch.setattr(viewer, "daemon_request", mock.Mock(side_effect=OSError("down")))
+    caught(lambda: state.daemon("status"))
+    monkeypatch.setattr(viewer.subprocess, "run",
+                        mock.Mock(side_effect=subprocess.CalledProcessError(1, "ssh")))
+    caught(lambda: state.ssh("newton", "true"))
+    caught(lambda: state.resolve("invalid"))
+    state.ui.command.side_effect = RuntimeError("tmux failed")
+    caught(lambda: state.create_host("lovelace", "lovelace:/tmp/tmux:1:1:$1"))
+    monkeypatch.setattr(state, "daemon", lambda message: '{"error":"stale"}')
+    caught(lambda: state.resident_switch("source", "/dev/pts/8"))
+    caught(lambda: state.select_host(mock.Mock(window="@2")))
+    monkeypatch.setattr(viewer.workstation, "request", mock.Mock(side_effect=OSError("gone")))
+    caught(lambda: viewer.focus("main", "boltzmann"))
+
+    assert failures == [
+        ("daemon", "unavailable"),
+        ("ssh", "command"),
+        ("resolve", "invalid_identity"),
+        ("attach", "window"),
+        ("switch", "identity_or_client"),
+        ("select", "window"),
+        ("focus", "workstation"),
+    ]
+
+
+def test_journal_transport_failure_does_not_stop_successful_projection(monkeypatch):
+    state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+    key = "lovelace:/tmp/tmux/default:12:10:$1"
+    entry = mock.Mock(source=key, client="/dev/pts/8", window="@2",
+                      remote_file=None, master=None)
+    records = []
+    monkeypatch.setattr(state, "create_host", lambda host, source: entry)
+    monkeypatch.setattr(state, "select_host", lambda selected: None)
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)) or False)
+    worker = viewer.ViewerWorker(state, "main")
+    try:
+        worker.intent("PROJECT", key)
+        assert worker.barrier("SOURCE") == key
+        assert worker.thread.is_alive()
+    finally:
+        worker.close()
+    assert [event for event, _ in records].count("projection_completed") == 1
+
+
+def test_attachment_creation_and_removal_events_follow_real_lifecycle(monkeypatch):
+    records = []
+    ui = mock.Mock()
+    ui.command.side_effect = [["@2"], ["/dev/pts/8"], []]
+    state = viewer.Attachment("main", "/dev/pts/9", ui)
+    monkeypatch.setattr(viewer.os, "uname", lambda: mock.Mock(nodename="lovelace"))
+    monkeypatch.setattr(state, "resolve", lambda key: ("/tmp/tmux", 12, 10, "$1"))
+    monkeypatch.setattr(state, "prove_switch", lambda key, client: None)
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+
+    entry = state.create_host("lovelace", "source")
+    state.attachments["lovelace"] = entry
+    state.remove_host("lovelace", "clear")
+
+    assert records == [
+        ("attachment_created", {
+            "slot": "main", "host": "lovelace", "route": "local",
+            "window": "@2", "client": "/dev/pts/8"}),
+        ("attachment_removed", {
+            "slot": "main", "host": "lovelace", "window": "@2",
+            "reason": "clear"}),
+    ]
+
+
+def test_failed_attachment_creation_records_only_removal(monkeypatch):
+    records = []
+    ui = mock.Mock()
+    ui.command.side_effect = [["@2"], [], []]
+    state = viewer.Attachment("main", "/dev/pts/9", ui)
+    monkeypatch.setattr(viewer.os, "uname", lambda: mock.Mock(nodename="lovelace"))
+    monkeypatch.setattr(state, "resolve", lambda key: ("/tmp/tmux", 12, 10, "$1"))
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+
+    with pytest.raises(viewer.ViewerFailure):
+        state.create_host("lovelace", "source")
+
+    assert records == [("attachment_removed", {
+        "slot": "main", "host": "lovelace", "window": "@2",
+        "reason": "create_failed"})]
+
+
+def test_nested_boundary_preserves_the_first_specific_failure():
+    error = OSError("content")
+    with pytest.raises(viewer.ViewerFailure) as raised:
+        with viewer.boundary("daemon", "unavailable"):
+            raise viewer.ViewerFailure("ssh", "command", error) from error
+    assert (raised.value.stage, raised.value.cause, raised.value.error_type) == (
+        "ssh", "command", "OSError")
+
+
+def test_viewer_ready_and_stopping_bracket_the_controller_socket(tmp_path, monkeypatch):
+    records = []
+    state = mock.Mock(source="", host="")
+    state.check.return_value = ""
+    monkeypatch.setattr(viewer, "RUNTIME", tmp_path)
+    monkeypatch.setattr(viewer.os, "ttyname", lambda fd: "/dev/pts/9")
+    monkeypatch.setattr(viewer, "Attachment", lambda slot, tty: state)
+    monkeypatch.setattr(viewer, "viewer_error", lambda value: None)
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+    thread = threading.Thread(target=viewer.serve, args=("test",))
+    thread.start()
+    path = tmp_path / "viewer-test.sock"
+    for _ in range(100):
+        if path.exists():
+            break
+        time.sleep(.01)
+    with socket.socket(socket.AF_UNIX) as client:
+        client.connect(str(path))
+        client.sendall(b"SHUTDOWN\n")
+        assert client.recv(16) == b"OK\n"
+    thread.join(1)
+
+    assert not thread.is_alive()
+    fields = {"slot": "test", "tty": "/dev/pts/9"}
+    assert records == [("viewer_ready", fields), ("viewer_stopping", fields)]
+
+
+def test_operation_failure_records_controlled_cause_once_without_error_text(monkeypatch):
+    records = []
+    failed = threading.Event()
+    state = mock.Mock(source="lovelace:/tmp/tmux/default:1:1:$1", host="lovelace")
+    state.check.return_value = ""
+
+    def fail(key, selected=None):
+        failed.set()
+        error = RuntimeError("prompt and transcript content")
+        raise viewer.ViewerFailure("switch", "identity_or_client", error) from error
+
+    state.open.side_effect = fail
+    monkeypatch.setattr(viewer, "viewer_error", lambda value: None)
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+    worker = viewer.ViewerWorker(state, "main")
+    try:
+        worker.intent("PROJECT", "newton:/tmp/tmux/default:2:2:$2")
+        assert failed.wait(1)
+        assert worker.barrier("SOURCE") == "lovelace:/tmp/tmux/default:1:1:$1"
+    finally:
+        worker.close()
+
+    assert records == [("viewer_operation_failed", {
+        "slot": "main", "operation": "PROJECT", "host": "newton",
+        "source": "newton:/tmp/tmux/default:2:2:$2", "stage": "switch",
+        "cause": "identity_or_client",
+        "error_type": "RuntimeError"})]
+
+
+def test_unexpected_worker_failure_records_controller_event_once(monkeypatch):
+    records = []
+    state = mock.Mock(source="old", host="newton")
+    state.check.return_value = ""
+    state.open.side_effect = AssertionError("prompt and transcript content")
+    monkeypatch.setattr(viewer, "viewer_error", lambda value: None)
+    monkeypatch.setattr(viewer.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+    worker = viewer.ViewerWorker(state, "main")
+    worker.intent("PROJECT", "newton:/tmp/tmux/default:2:2:$2")
+    worker.thread.join(1)
+
+    assert not worker.thread.is_alive()
+    assert records == [("viewer_controller_failed", {
+        "slot": "main", "operation": "PROJECT", "host": "newton",
+        "source": "newton:/tmp/tmux/default:2:2:$2", "stage": "worker",
+        "cause": "unexpected",
+        "error_type": "AssertionError"})]

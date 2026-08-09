@@ -934,7 +934,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(state, "remove_host") as remove:
             with self.assertRaisesRegex(RuntimeError, "UI failed"):
                 state.open("new-host:/tmp/tmux/default:12:10:$1")
-        remove.assert_called_once_with("new-host")
+        remove.assert_called_once_with("new-host", "rollback_failed")
         self.assertEqual((state.source, state.host), ("old-source", "old-host"))
 
     def test_cross_host_open_retains_both_host_windows(self):
@@ -1035,7 +1035,8 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(viewer, "viewer_error") as report:
             error = viewer.activate(state, "side", "source", 12.0)
         state.open.assert_called_once_with("source", 12.0)
-        self.assertEqual(error, "Focus failed: no display")
+        self.assertEqual(str(error), "no display")
+        self.assertEqual((error.stage, error.cause), ("focus", "workstation"))
         report.assert_not_called()
 
     def test_focus_requires_the_selected_source_to_be_projected(self):
@@ -2313,8 +2314,11 @@ class IdentityTests(unittest.TestCase):
         with mock.patch.object(state, "find", return_value=session), \
              mock.patch.object(viewer.subprocess, "run", side_effect=failed), \
              mock.patch.object(viewer.subprocess, "Popen") as popen:
-            with self.assertRaises(subprocess.CalledProcessError):
+            with self.assertRaises(viewer.ViewerFailure) as raised:
                 state.resolve(f"alan:{actor}")
+        self.assertEqual((raised.exception.stage, raised.exception.cause,
+                          raised.exception.error_type),
+                         ("resolve", "unavailable", "CalledProcessError"))
         popen.assert_not_called()
 
     def test_python_open_retains_the_fleet_owned_presentation(self):
@@ -2544,6 +2548,7 @@ class IdentityTests(unittest.TestCase):
     def test_viewer_worker_terminal_failure_rejects_future_work_without_hanging(self):
         state = mock.Mock()
         state.source = ""
+        state.host = ""
         state.check.return_value = ""
         entered = threading.Event()
         release = threading.Event()
@@ -2583,6 +2588,7 @@ class IdentityTests(unittest.TestCase):
     def test_viewer_worker_close_terminates_after_expected_shutdown_failure(self):
         state = mock.Mock()
         state.source = ""
+        state.host = ""
         state.check.return_value = ""
         state.shutdown.side_effect = RuntimeError("cleanup failed")
         with mock.patch.object(viewer, "viewer_error") as report:
@@ -2597,6 +2603,7 @@ class IdentityTests(unittest.TestCase):
     def test_viewer_worker_reports_projection_failure_then_applies_newest(self):
         state = mock.Mock()
         state.source = ""
+        state.host = ""
         state.check.return_value = ""
         failed = threading.Event()
 
@@ -2836,6 +2843,7 @@ class IdentityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as runtime:
             runtime = Path(runtime)
             state = mock.Mock()
+            state.host = state.source = ""
             state.shutdown.side_effect = OSError("planted cleanup failure")
             state.check.return_value = ""
             with mock.patch.object(viewer, "RUNTIME", runtime), \

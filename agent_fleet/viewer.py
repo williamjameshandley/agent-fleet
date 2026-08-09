@@ -4,22 +4,40 @@ import re
 import shlex
 import socket
 import subprocess
-import syslog
 import time
 import queue
 import threading
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from .config import HUB, RUNTIME, ssh_environment
 from .daemon import request as daemon_request
 from .model import key_host
-from . import alan, presentation, proc, workstation
+from . import alan, journal, presentation, proc, workstation
 from .tmux import ControlClient, split_key
 
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
 EXPECTED = (LookupError, OSError, RuntimeError, ValueError,
             subprocess.CalledProcessError)
+
+
+class ViewerFailure(RuntimeError):
+    def __init__(self, stage, cause, error):
+        super().__init__(str(error))
+        self.stage = stage
+        self.cause = cause
+        self.error_type = type(error).__name__
+
+
+@contextmanager
+def boundary(stage, cause):
+    try:
+        yield
+    except ViewerFailure:
+        raise
+    except EXPECTED as error:
+        raise ViewerFailure(stage, cause, error) from error
 
 
 def check_slot(slot):
@@ -51,9 +69,10 @@ def attached_workstation():
 
 
 def focus(slot, name):
-    if not name:
-        raise RuntimeError("Muster has no attached workstation")
-    workstation.request(name, {"operation": "focus", "slot": slot})
+    with boundary("focus", "workstation"):
+        if not name:
+            raise RuntimeError("Muster has no attached workstation")
+        workstation.request(name, {"operation": "focus", "slot": slot})
 
 
 def viewer_error(value):
@@ -150,39 +169,43 @@ class Attachment:
 
     def ssh(self, host, *arguments, capture=False, check=True):
         command = ["ssh", "-o", "BatchMode=yes", host, *arguments]
-        return subprocess.run(command, text=True, capture_output=capture, check=check,
-                              env=ssh_environment())
+        with boundary("ssh", "command"):
+            return subprocess.run(command, text=True, capture_output=capture, check=check,
+                                  env=ssh_environment())
 
     def master_identity(self, host):
-        checked = subprocess.run(
-            ["ssh", "-O", "check", host],
-            text=True, capture_output=True, check=True, env=ssh_environment())
-        match = re.search(r"pid=(\d+)", checked.stdout + checked.stderr)
-        if not match:
-            raise RuntimeError("SSH did not report its master identity")
-        pid = int(match.group(1))
-        return pid, process_identity(pid)
+        with boundary("ssh", "unavailable"):
+            checked = subprocess.run(
+                ["ssh", "-O", "check", host],
+                text=True, capture_output=True, check=True, env=ssh_environment())
+            match = re.search(r"pid=(\d+)", checked.stdout + checked.stderr)
+            if not match:
+                raise RuntimeError("SSH did not report its master identity")
+            pid = int(match.group(1))
+            return pid, process_identity(pid)
 
     def master_policy(self, host):
-        result = subprocess.run(["ssh", "-G", host], text=True, capture_output=True,
-                                check=True, env=ssh_environment())
-        policy = dict(line.split(None, 1) for line in result.stdout.splitlines()
-                      if " " in line)
-        if policy.get("controlmaster") not in {"yes", "auto"}:
-            raise RuntimeError(f"SSH ControlMaster is not configured for {host}")
-        if not policy.get("controlpath") or policy["controlpath"] == "none":
-            raise RuntimeError(f"SSH ControlPath is not configured for {host}")
-        if policy.get("controlpersist") in {None, "no", "0"}:
-            raise RuntimeError(f"persistent SSH ControlMaster is not configured for {host}")
+        with boundary("ssh", "policy"):
+            result = subprocess.run(["ssh", "-G", host], text=True, capture_output=True,
+                                    check=True, env=ssh_environment())
+            policy = dict(line.split(None, 1) for line in result.stdout.splitlines()
+                          if " " in line)
+            if policy.get("controlmaster") not in {"yes", "auto"}:
+                raise RuntimeError(f"SSH ControlMaster is not configured for {host}")
+            if not policy.get("controlpath") or policy["controlpath"] == "none":
+                raise RuntimeError(f"SSH ControlPath is not configured for {host}")
+            if policy.get("controlpersist") in {None, "no", "0"}:
+                raise RuntimeError(f"persistent SSH ControlMaster is not configured for {host}")
 
     def ensure_master(self, host):
-        checked = subprocess.run(["ssh", "-O", "check", host], env=ssh_environment(),
-                                 text=True, capture_output=True)
-        if checked.returncode:
-            self.master_policy(host)
-            subprocess.run(["ssh", "-MNf", "-o", "BatchMode=yes", host],
-                           check=True, env=ssh_environment())
-        return self.master_identity(host)
+        with boundary("ssh", "unavailable"):
+            checked = subprocess.run(["ssh", "-O", "check", host], env=ssh_environment(),
+                                     text=True, capture_output=True)
+            if checked.returncode:
+                self.master_policy(host)
+                subprocess.run(["ssh", "-MNf", "-o", "BatchMode=yes", host],
+                               check=True, env=ssh_environment())
+            return self.master_identity(host)
 
     def daemon_forward(self):
         local = RUNTIME / f"viewer-{self.slot}-fleet.sock"
@@ -207,46 +230,63 @@ class Attachment:
         return b"".join(chunks).decode()
 
     def daemon(self, message):
-        local = os.uname().nodename.split(".", 1)[0]
-        if local == HUB:
-            return daemon_request(message)
-        if self.daemon_socket and not process_alive(self.daemon_master):
-            self.daemon_socket.unlink(missing_ok=True)
-            self.daemon_socket = self.daemon_master = None
-        if not self.daemon_socket:
-            forwarded, specification = self.daemon_forward()
-            self.daemon_master = self.ensure_master(HUB)
-            self.cancel_daemon_forward()
-            try:
-                subprocess.run(
-                    ["ssh", "-O", "forward", "-o", "StreamLocalBindUnlink=yes",
-                     "-L", specification, HUB], check=True, env=ssh_environment())
-                value = self.socket_request(forwarded, message)
-            except Exception:
+        with boundary("daemon", "unavailable"):
+            local = os.uname().nodename.split(".", 1)[0]
+            if local == HUB:
+                return daemon_request(message)
+            if self.daemon_socket and not process_alive(self.daemon_master):
+                self.daemon_socket.unlink(missing_ok=True)
+                self.daemon_socket = self.daemon_master = None
+            if not self.daemon_socket:
+                forwarded, specification = self.daemon_forward()
+                self.daemon_master = self.ensure_master(HUB)
                 self.cancel_daemon_forward()
-                raise
-            self.daemon_socket = forwarded
-            return value
-        return self.socket_request(self.daemon_socket, message)
+                try:
+                    with boundary("ssh", "command"):
+                        subprocess.run(
+                            ["ssh", "-O", "forward", "-o", "StreamLocalBindUnlink=yes",
+                             "-L", specification, HUB], check=True,
+                            env=ssh_environment())
+                    value = self.socket_request(forwarded, message)
+                except Exception:
+                    self.cancel_daemon_forward()
+                    raise
+                self.daemon_socket = forwarded
+                return value
+            return self.socket_request(self.daemon_socket, message)
 
     def resident_switch(self, key, client):
-        value = json.loads(self.daemon("switch " + json.dumps(
-            {"key": key, "client": client}, separators=(",", ":"))))
+        try:
+            value = json.loads(self.daemon("switch " + json.dumps(
+                {"key": key, "client": client}, separators=(",", ":"))))
+        except ViewerFailure:
+            raise
+        except (TypeError, ValueError) as error:
+            raise ViewerFailure("daemon", "invalid_reply", error) from error
         if set(value) == {"error"}:
-            raise RuntimeError(value["error"])
+            error = RuntimeError(value["error"])
+            raise ViewerFailure("switch", "identity_or_client", error) from error
         if set(value) != {"target", "duration"}:
-            raise RuntimeError("invalid Fleet switch response")
+            error = RuntimeError("invalid Fleet switch response")
+            raise ViewerFailure("daemon", "invalid_reply", error) from error
         self.switch_duration = value["duration"]
         return tuple(value["target"])
 
     def reclaim_marker(self, host, owner):
-        value = json.loads(self.daemon("cleanup " + json.dumps(
-            {"host": host, "owner": owner, "slot": self.slot},
-            separators=(",", ":"))))
+        try:
+            value = json.loads(self.daemon("cleanup " + json.dumps(
+                {"host": host, "owner": owner, "slot": self.slot},
+                separators=(",", ":"))))
+        except ViewerFailure:
+            raise
+        except (TypeError, ValueError) as error:
+            raise ViewerFailure("daemon", "invalid_reply", error) from error
         if set(value) == {"error"}:
-            raise RuntimeError(value["error"])
+            error = RuntimeError(value["error"])
+            raise ViewerFailure("daemon", "refused", error) from error
         if value != {"ok": True}:
-            raise RuntimeError("invalid Fleet cleanup response")
+            error = RuntimeError("invalid Fleet cleanup response")
+            raise ViewerFailure("daemon", "invalid_reply", error) from error
 
     def prove_switch(self, key, client, timeout=3):
         deadline = time.monotonic() + timeout
@@ -259,10 +299,11 @@ class Attachment:
                 time.sleep(.02)
 
     def ui_value(self, window, value):
-        output = self.ui.command(["display-message", "-p", "-t", window, value])
-        if len(output) != 1:
-            raise RuntimeError(f"UI server did not report {value}")
-        return output[0]
+        with boundary("attach", "client_registration"):
+            output = self.ui.command(["display-message", "-p", "-t", window, value])
+            if len(output) != 1:
+                raise RuntimeError(f"UI server did not report {value}")
+            return output[0]
 
     def create_host(self, host, key):
         local = os.uname().nodename.split(".", 1)[0]
@@ -286,10 +327,11 @@ class Attachment:
                     f"exec /usr/lib/agent-fleet/fleet-tmux attach-session "
                     f"-t {shlex.quote(expected[3])}")
             command = shlex.join(["ssh", "-tt", "-o", "BatchMode=yes", host, body])
-        output = self.ui.command(["new-window", "-d", "-P", "-F", "#{window_id}",
-                                  "-t", f"fleet@{self.slot}", "-n", host, command])
-        if len(output) != 1:
-            raise RuntimeError("UI server did not create one presentation window")
+        with boundary("attach", "window"):
+            output = self.ui.command(["new-window", "-d", "-P", "-F", "#{window_id}",
+                                      "-t", f"fleet@{self.slot}", "-n", host, command])
+            if len(output) != 1:
+                raise RuntimeError("UI server did not create one presentation window")
         window = output[0]
         try:
             if host == local:
@@ -305,13 +347,20 @@ class Attachment:
                         break
                     time.sleep(.02)
                 if not client:
-                    raise RuntimeError("remote tmux did not report the viewer attachment")
+                    error = RuntimeError("remote tmux did not report the viewer attachment")
+                    raise ViewerFailure("attach", "client_registration", error) from error
             self.prove_switch(key, client)
-            return SimpleNamespace(host=host, window=window, client=client,
-                                   source=key, remote_file=remote_file,
-                                   owner=owner, master=master)
+            entry = SimpleNamespace(host=host, window=window, client=client,
+                                    source=key, remote_file=remote_file,
+                                    owner=owner, master=master)
+            journal.record("attachment_created", slot=self.slot, host=host,
+                           route="local" if host == local else "remote",
+                           window=window, client=client)
+            return entry
         except Exception:
             self.ui.command(["kill-window", "-t", window])
+            journal.record("attachment_removed", slot=self.slot, host=host,
+                           window=window, reason="create_failed")
             if remote_file:
                 try:
                     self.reclaim_marker(host, owner)
@@ -320,24 +369,36 @@ class Attachment:
             raise
 
     def select_host(self, entry):
-        self.ui.command(["select-window", "-t", entry.window])
+        with boundary("select", "window"):
+            self.ui.command(["select-window", "-t", entry.window])
 
     def find(self, key):
-        value = json.loads(self.daemon(f"resolve {key}"))
+        try:
+            value = json.loads(self.daemon(f"resolve {key}"))
+        except ViewerFailure:
+            raise
+        except (TypeError, ValueError) as error:
+            raise ViewerFailure("daemon", "invalid_reply", error) from error
         if set(value) == {"error"}:
-            raise RuntimeError(value["error"])
+            error = RuntimeError(value["error"])
+            raise ViewerFailure("resolve", "refused", error) from error
         if set(value) != {"agent", "state", "cwd"}:
-            raise RuntimeError("invalid Fleet resolver response")
+            error = RuntimeError("invalid Fleet resolver response")
+            raise ViewerFailure("daemon", "invalid_reply", error) from error
         return SimpleNamespace(**value)
 
     def resolve(self, key, remote=False):
         if not key.startswith("alan:"):
-            _, socket_path, pid, started, sid = split_key(key)
+            try:
+                _, socket_path, pid, started, sid = split_key(key)
+            except (TypeError, ValueError) as error:
+                raise ViewerFailure("resolve", "invalid_identity", error) from error
             return socket_path, pid, started, sid
         session = self.find(key)
         actor = key.removeprefix("alan:")
         if session.state in {"retired", "unavailable"}:
-            raise RuntimeError(f"Alan actor is {session.state}: {actor}")
+            error = RuntimeError(f"Alan actor is {session.state}: {actor}")
+            raise ViewerFailure("resolve", "unavailable", error) from error
         name = "fleet@alan-" + alan.runtime_name(actor)
         fmt = "#{q:socket_path} #{pid} #{start_time} #{q:session_id}"
         command = ["/usr/bin/tmux", "-N", "list-sessions", "-f",
@@ -346,36 +407,41 @@ class Attachment:
             if remote:
                 return self.ssh(key_host(key), shlex.join(command), capture=True)
             return subprocess.run(command, text=True, capture_output=True, check=True)
-        result = locate()
-        values = shlex.split(result.stdout.strip())
-        if len(values) != 4 and session.agent not in {"claude", "codex"}:
-            if remote:
-                self.ssh(key_host(key), shlex.join([
-                    "/usr/lib/agent-fleet/fleet-present", actor, session.agent, session.cwd]))
-            else:
-                presentation.target(actor, {"kind": session.agent, "cwd": session.cwd})
-            values = shlex.split(locate().stdout.strip())
-        if len(values) != 4:
-            raise RuntimeError(f"{session.agent.capitalize()} evaluator terminal is unavailable: {actor}")
-        return values[0], int(values[1]), int(values[2]), values[3]
+        with boundary("resolve", "unavailable"):
+            result = locate()
+            values = shlex.split(result.stdout.strip())
+            if len(values) != 4 and session.agent not in {"claude", "codex"}:
+                if remote:
+                    self.ssh(key_host(key), shlex.join([
+                        "/usr/lib/agent-fleet/fleet-present", actor, session.agent,
+                        session.cwd]))
+                else:
+                    presentation.target(actor, {"kind": session.agent, "cwd": session.cwd})
+                values = shlex.split(locate().stdout.strip())
+            if len(values) != 4:
+                raise RuntimeError(
+                    f"{session.agent.capitalize()} evaluator terminal is unavailable: {actor}")
+            return values[0], int(values[1]), int(values[2]), values[3]
 
     def open(self, key, selected=None):
         started = time.monotonic()
         new_host = key_host(key) if key else ""
-        local = os.uname().nodename.split(".", 1)[0]
         entry = self.attachments.get(new_host)
         if entry is None:
+            path = "cold"
             entry = self.create_host(new_host, key)
             self.attachments[new_host] = entry
             try:
                 self.select_host(entry)
             except Exception:
-                self.remove_host(new_host)
+                self.remove_host(new_host, "select_failed")
                 raise
         elif new_host == self.host:
+            path = "same_host"
             self.resident_switch(key, entry.client)
             entry.source = key
         else:
+            path = "cross_host"
             previous = entry.source
             self.resident_switch(key, entry.client)
             try:
@@ -384,25 +450,24 @@ class Attachment:
                 try:
                     self.resident_switch(previous, entry.client)
                 except Exception:
-                    self.remove_host(new_host)
+                    self.remove_host(new_host, "rollback_failed")
                 raise
             entry.source = key
         self.source, self.host = key, new_host
         duration = time.monotonic() - started
         acknowledged = time.clock_gettime(time.CLOCK_BOOTTIME)
         selection_duration = acknowledged - selected if selected is not None else duration
-        syslog.syslog(syslog.LOG_INFO, f"fleet_viewer_switch slot={self.slot} source={key} "
-                      f"route={'local' if new_host == local else 'remote'} "
-                      f"selection_ack_duration={selection_duration:.6f} "
-                      f"transport_reply_duration={duration:.6f} "
-                      f"revalidate_switch_duration={self.switch_duration:.6f}")
+        journal.record(
+            "projection_completed", slot=self.slot, host=new_host, source=key, path=path,
+            selection_ack_seconds=selection_duration, transport_reply_seconds=duration,
+            revalidate_switch_seconds=self.switch_duration)
 
-    def clear(self):
+    def clear(self, reason="clear"):
         for host in list(self.attachments):
-            self.remove_host(host)
+            self.remove_host(host, reason)
         self.source = self.host = ""
 
-    def remove_host(self, host, missing_ok=False):
+    def remove_host(self, host, reason, missing_ok=False):
         entry = self.attachments[host]
         if entry.remote_file:
             try:
@@ -416,6 +481,8 @@ class Attachment:
         except EXPECTED:
             if not missing_ok:
                 raise
+        journal.record("attachment_removed", slot=self.slot, host=host,
+                       window=entry.window, reason=reason)
 
     def check(self):
         for host, entry in list(self.attachments.items()):
@@ -425,14 +492,23 @@ class Attachment:
             except RuntimeError:
                 dead = True
             if master_dead or dead:
-                self.remove_host(host, missing_ok=True)
+                status = signal = ""
+                if dead:
+                    try:
+                        status, signal = self.ui_value(
+                            entry.window, "#{pane_dead_status}\t#{pane_dead_signal}").split("\t")
+                    except (RuntimeError, ValueError):
+                        pass
+                journal.record("attachment_exited", slot=self.slot, host=host,
+                               window=entry.window, status=status, signal=signal)
+                self.remove_host(host, "exited", missing_ok=True)
                 if host == self.host:
                     self.source = self.host = ""
                     return "Viewer attachment exited unexpectedly"
         return ""
 
     def shutdown(self):
-        self.clear()
+        self.clear("shutdown")
         if self.ui_process and self.ui_process.poll() is None:
             self.ui_process.terminate()
             self.ui_process.wait()
@@ -455,9 +531,11 @@ def activate(state, slot, key, selected=None):
     state.open(key, selected)
     try:
         focus(slot, state.workstation)
+    except ViewerFailure as error:
+        return error
     except EXPECTED as error:
-        return f"Focus failed: {error}"
-    return ""
+        return ViewerFailure("focus", "workstation", error)
+    return None
 
 
 class ViewerWorker:
@@ -524,7 +602,8 @@ class ViewerWorker:
         elif job.kind == "OPEN":
             error = activate(self.state, self.slot, job.key, job.selected)
             if error:
-                viewer_error(error)
+                self.record_failure("viewer_operation_failed", job, error)
+                viewer_error(f"Focus failed: {error}")
                 self.reported = True
         elif job.kind == "CLEAR":
             if not job.key or self.state.source == job.key:
@@ -552,6 +631,16 @@ class ViewerWorker:
         else:
             raise ValueError(f"unknown viewer operation {job.kind!r}")
 
+    def record_failure(self, event, job, error):
+        stage = error.stage if isinstance(error, ViewerFailure) else "worker"
+        cause = error.cause if isinstance(error, ViewerFailure) else "unexpected"
+        error_type = (error.error_type if isinstance(error, ViewerFailure)
+                      else type(error).__name__)
+        source = job.key or self.state.source
+        journal.record(event, slot=self.slot, operation=job.kind,
+                       host=key_host(source) if job.key else self.state.host, source=source,
+                       stage=stage, cause=cause, error_type=error_type)
+
     def execute(self, job):
         if self.reported and job.kind not in {"CHECK", "STATUS"}:
             viewer_error("")
@@ -559,6 +648,7 @@ class ViewerWorker:
         try:
             self.perform(job)
         except EXPECTED as error:
+            self.record_failure("viewer_operation_failed", job, error)
             viewer_error(f"Open failed: {error}")
             self.reported = True
             job.error = error
@@ -569,6 +659,7 @@ class ViewerWorker:
             job.event.set()
 
     def run(self):
+        job = self.job("CHECK")
         try:
             while not self.stopped:
                 with self.condition:
@@ -577,6 +668,7 @@ class ViewerWorker:
                     job = self.jobs.pop(0) if self.jobs else self.job("CHECK")
                 self.execute(job)
         except BaseException as error:
+            self.record_failure("viewer_controller_failed", job, error)
             failure = RuntimeError(f"viewer worker failed: {error}")
             with self.condition:
                 self.failure = failure
@@ -608,6 +700,7 @@ def serve(slot):
     shut_down = False
     with socket.socket(socket.AF_UNIX) as server:
         server.bind(str(path)); os.chmod(path, 0o600); server.listen(); server.settimeout(.25)
+        journal.record("viewer_ready", slot=slot, tty=tty)
         try:
             while True:
                 try:
@@ -680,6 +773,7 @@ def serve(slot):
                     else:
                         respond(b"OK\n")
         finally:
+            journal.record("viewer_stopping", slot=slot, tty=tty)
             if not shut_down:
                 worker.close()
             path.unlink(missing_ok=True)
