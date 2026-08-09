@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from libtmux import Server
+from libtmux.exc import LibTmuxException
 from libtmux.session import Session as TmuxSession
 from watchfiles import watch
 
@@ -25,6 +26,28 @@ PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
 def server():
     return Server(tmux_bin=os.environ.get(
         "FLEET_TMUX", "/usr/lib/agent-fleet/fleet-tmux"))
+
+
+class ControlSlot:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._control = None
+
+    def set(self, control):
+        with self._lock:
+            self._control = control
+
+    def clear(self, control):
+        with self._lock:
+            if self._control is control:
+                self._control = None
+
+    def get(self):
+        with self._lock:
+            control = self._control
+        if control is None or control.closed:
+            raise RuntimeError("tmux server is unavailable")
+        return control
 
 
 def split_key(key):
@@ -243,6 +266,25 @@ def watched_event(path, transcript_roots, quota_path):
     return None
 
 
+def default_socket():
+    root = Path(os.environ.get("TMUX_TMPDIR", "/tmp"))
+    return root / f"tmux-{os.getuid()}" / "default"
+
+
+def watch_socket(changed, consumer):
+    socket = default_socket()
+    while not consumer.is_set():
+        parent = socket.parent
+        while not parent.is_dir():
+            parent = parent.parent
+        expected = parent / socket.relative_to(parent).parts[0]
+        for changes in watch(parent, recursive=False, stop_event=consumer,
+                             yield_on_timeout=True):
+            if expected.exists() or any(Path(path) == expected for _, path in changes):
+                changed.put("socket")
+                break
+
+
 def event_stream(host, consumer=None, controls=None, changed=None):
     changed = changed or queue.Queue()
     alan = AlanWatcher(changed, consumer)
@@ -251,6 +293,9 @@ def event_stream(host, consumer=None, controls=None, changed=None):
             consumer.wait()
             changed.put("consumer")
         threading.Thread(target=disconnected, daemon=True).start()
+    socket_consumer = consumer or threading.Event()
+    threading.Thread(target=watch_socket, args=(changed, socket_consumer),
+                     daemon=True).start()
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     transcript_roots = [path for path in (Path.home() / ".claude/projects",
                                           Path.home() / ".codex/sessions")
@@ -268,55 +313,95 @@ def event_stream(host, consumer=None, controls=None, changed=None):
                 for event in events - {None}:
                     changed.put(event)
         threading.Thread(target=transcripts, daemon=True).start()
-    probe = subprocess.run(["/usr/bin/tmux", "-N", "list-sessions"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if probe.returncode:
-        raise RuntimeError("tmux server is not running")
-    tmux = server()
-    if not tmux.has_session("fleet@events"):
-        created = subprocess.run(
-            ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "fleet@events", "sleep infinity"],
-            text=True, capture_output=True)
-        if created.returncode:
-            raise RuntimeError(created.stderr.strip())
-    process = subprocess.Popen(["/usr/bin/tmux", "-N", "-C", "attach-session",
-                                "-f", "ignore-size", "-t", "fleet@events"],
-                               stdin=subprocess.PIPE,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, bufsize=1)
-    assert process.stdout and process.stdin
-    control = ControlClient(process, changed)
-    control.command(["refresh-client", "-f", "no-output"])
-    if controls is not None:
-        controls.put(control)
     previous = None
     force = False
     agent_cache = {}
     alan_error = None
+    process = control = None
+    available = None
+    def discard_control():
+        nonlocal process, control
+        if controls is not None and control is not None:
+            controls.clear(control)
+        if process is not None and process.poll() is None:
+            process.terminate()
+        if process is not None:
+            process.wait()
+        process = control = None
     try:
         while True:
+            if control is not None and (control.closed or process.poll() is not None):
+                discard_control()
+                force = True
+            if control is None:
+                probe = subprocess.run(
+                    ["/usr/bin/tmux", "-N", "list-sessions"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if not probe.returncode:
+                    tmux = server()
+                    if not tmux.has_session("fleet@events"):
+                        created = subprocess.run(
+                            ["/usr/bin/tmux", "-N", "new-session", "-d", "-s",
+                             "fleet@events", "sleep infinity"],
+                            text=True, capture_output=True)
+                        if created.returncode:
+                            raise RuntimeError(created.stderr.strip())
+                    process = subprocess.Popen(
+                        ["/usr/bin/tmux", "-N", "-C", "attach-session", "-f",
+                         "ignore-size", "-t", "fleet@events"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True, bufsize=1)
+                    assert process.stdout and process.stdin
+                    control = ControlClient(process, changed)
+                    control.command(["refresh-client", "-f", "no-output"])
+                    if controls is not None:
+                        controls.set(control)
             if alan.error and alan.error != alan_error:
                 print(alan.error, file=sys.stderr, flush=True)
             alan_error = alan.error
             actors, graph = alan.snapshot()
-            current = inventory(host) + alan_inventory(host, actors)
             try:
-                current = observe(current, native_transcripts.catalog())
-                agent_cache = {session.ref: session for session in current}
-            except RuntimeError as error:
-                print(f"agent adapter: {error}", file=sys.stderr, flush=True)
-                current = [replace(session, agent_name=cached.agent_name,
-                                   reported_state=cached.reported_state,
-                                   summary=cached.summary, recency=cached.recency,
-                                   transcript_id=cached.transcript_id,
-                                   transcript_path=cached.transcript_path)
-                           if (cached := agent_cache.get(session.ref)) else session
-                           for session in current]
+                current = ((inventory(host) if control is not None else []) +
+                           alan_inventory(host, actors))
+            except (subprocess.CalledProcessError, LibTmuxException) as error:
+                if control is None:
+                    raise
+                probe = subprocess.run(
+                    ["/usr/bin/tmux", "-N", "list-sessions"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if not probe.returncode:
+                    raise error
+                discard_control()
+                force = True
+                continue
+            if control is not None:
+                try:
+                    current = observe(current, native_transcripts.catalog())
+                    agent_cache = {session.ref: session for session in current}
+                except (subprocess.CalledProcessError, RuntimeError) as error:
+                    if isinstance(error, subprocess.CalledProcessError):
+                        probe = subprocess.run(
+                            ["/usr/bin/tmux", "-N", "list-sessions"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if probe.returncode:
+                            discard_control()
+                            force = True
+                            continue
+                    print(f"agent adapter: {error}", file=sys.stderr, flush=True)
+                    current = [replace(session, agent_name=cached.agent_name,
+                                       reported_state=cached.reported_state,
+                                       summary=cached.summary, recency=cached.recency,
+                                       transcript_id=cached.transcript_id,
+                                       transcript_path=cached.transcript_path)
+                               if (cached := agent_cache.get(session.ref)) else session
+                               for session in current]
             serial = tuple(current)
-            if serial != previous or force:
-                yield current, alan_projection_graph(graph)
+            current_available = control is not None
+            if serial != previous or force or current_available != available:
+                yield current, alan_projection_graph(graph), current_available
                 previous = serial
                 force = False
+                available = current_available
             if consumer and consumer.is_set():
                 return
             events = [changed.get()]
@@ -325,10 +410,14 @@ def event_stream(host, consumer=None, controls=None, changed=None):
             if consumer and consumer.is_set():
                 return
             force = bool({"alan", "quota"} & set(events))
-            if "closed" in events or process.poll() is not None:
-                error = process.stderr.read().strip() if process.stderr else ""
-                raise RuntimeError(error or "tmux control client closed")
+            if control is not None and ("closed" in events or process.poll() is not None):
+                discard_control()
+                force = True
     finally:
-        if process.poll() is None:
+        socket_consumer.set()
+        if controls is not None and control is not None:
+            controls.clear(control)
+        if process is not None and process.poll() is None:
             process.terminate()
-        process.wait()
+        if process is not None:
+            process.wait()

@@ -121,11 +121,12 @@ class IdentityTests(unittest.TestCase):
                 (root / path).mkdir()
             result = subprocess.run(
                 [sys.executable, "-c",
-                 "from agent_fleet.tmux import event_stream; next(event_stream('fixture'))"],
+                 "from agent_fleet.tmux import event_stream; "
+                 "print(next(event_stream('fixture'))[2])"],
                 text=True, capture_output=True, env=environment)
             socket_path = root / "tmux" / f"tmux-{os.getuid()}" / "default"
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("tmux server is not running", result.stderr)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), "False")
             self.assertFalse(socket_path.exists())
 
     def muster_state(self, matches, count=None):
@@ -394,6 +395,11 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(
             str(raised.exception), "lovelace is disconnected; refusing action"
         )
+
+        fleet.unavailable.clear()
+        fleet.tmux_unavailable = {"lovelace"}
+        with self.assertRaisesRegex(RuntimeError, "tmux server is unavailable"):
+            asyncio.run(fleet.preview(self.session("lovelace").ref.key))
 
     def test_preview_fast_path_preserves_argument_errors(self):
         for arguments in [[], ["key", "bad"], ["key", "1", "2", "extra"]]:
@@ -2934,4 +2940,4 @@ class IdentityTests(unittest.TestCase):
     def test_quota_only_events_force_an_inventory_emit(self):
         source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()
         self.assertIn('force = bool({"alan", "quota"} & set(events))', source)
-        self.assertIn("if serial != previous or force:", source)
+        self.assertIn("if serial != previous or force or current_available != available:", source)

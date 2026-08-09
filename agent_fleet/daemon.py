@@ -18,7 +18,7 @@ from .config import HUB, RUNTIME, hosts, ssh_environment
 from .alan import address_identity
 from .protocol import decode_message, decode_observation, encode
 from .model import key_host
-from .tmux import capture, event_stream, split_key
+from .tmux import ControlSlot, capture, event_stream, split_key
 from .quota import read as quota_read
 from . import journal, proc, render
 
@@ -37,7 +37,7 @@ def events(host):
     """Stream one host's session events and answer preview requests."""
     lock = threading.Lock()
     consumer = threading.Event()
-    controls = queue.Queue(maxsize=1)
+    controls = ControlSlot()
     changes = queue.Queue()
 
     def emit(message):
@@ -50,11 +50,15 @@ def events(host):
                 request = json.loads(line)
                 try:
                     if "preview" in request:
+                        key = request["key"]
+                        if (not key.startswith("alan:") or
+                                key.removeprefix("alan:").split("-", 1)[0]
+                                in {"claude", "codex"}):
+                            controls.get()
                         text = capture(request["key"], request["columns"], request["lines"])
                         response = {"preview": request["preview"], "text": text}
                     elif "switch" in request:
                         control = controls.get()
-                        controls.put(control)
                         target = (control.alan_target(request["actor"])
                                   if "actor" in request else tuple(request["target"]))
                         duration = control.switch(target, request["client"])
@@ -75,9 +79,9 @@ def events(host):
             consumer.set()
 
     threading.Thread(target=requests, daemon=True).start()
-    for sessions, graph in event_stream(host, consumer, controls, changes):
+    for sessions, graph, available in event_stream(host, consumer, controls, changes):
         usage = quota_read() if host == hosts()[0] else {}
-        emit(encode(sessions, usage, graph=graph))
+        emit(encode(sessions, usage, [] if available else [host], graph=graph))
 
 
 class Fleet:
@@ -88,6 +92,7 @@ class Fleet:
         self._composed = (None, nx.MultiDiGraph())
         self.usage = {}
         self.unavailable = set(hosts())
+        self.tmux_unavailable = set()
         self.refresh_pending = False
         self.processes = {}
         self.previews = {}
@@ -154,11 +159,15 @@ class Fleet:
             await asyncio.sleep(1)
 
     def update_host(self, host, raw):
-        sessions, usage, _, graph = decode_observation(raw)
+        sessions, usage, unavailable, graph = decode_observation(raw)
         connected = host in self.unavailable
         self.sessions[host] = sessions
         self.graphs[host] = graph
         self.unavailable.discard(host)
+        if host in unavailable:
+            self.tmux_unavailable.add(host)
+        else:
+            self.tmux_unavailable.discard(host)
         if connected:
             journal.record("host_connected", host=host, pid=self.processes[host].pid)
         if host == hosts()[0] and usage:
@@ -166,6 +175,9 @@ class Fleet:
         self.observed += 1
         self.view_revision += 1
         self._view_cache = None
+
+    def presentation_unavailable(self):
+        return self.unavailable | self.tmux_unavailable
 
     def host_reply(self, message):
         if "preview" in message:
@@ -199,6 +211,7 @@ class Fleet:
         self.sessions.pop(host, None)
         self.graphs.pop(host, None)
         self.unavailable.add(host)
+        self.tmux_unavailable.discard(host)
         if connected:
             journal.record("host_disconnected", host=host, pid=pid, status=status)
         self.observed += 1
@@ -275,7 +288,8 @@ class Fleet:
             self.schedule_refresh()
         elif request == "snapshot":
             payload = encode([s for group in self.sessions.values() for s in group], self.usage,
-                             sorted(self.unavailable), self.composed_graph())
+                             sorted(self.presentation_unavailable()),
+                             self.composed_graph())
         elif request.startswith("resolve "):
             key = request.removeprefix("resolve ")
             matches = [session for group in self.sessions.values() for session in group
@@ -284,9 +298,9 @@ class Fleet:
                 value = {"error": f"session disappeared: {key}"}
             else:
                 session = matches[0]
-                if session.ref.server.host in self.unavailable:
-                    value = {"error": (f"{session.ref.server.host} is disconnected; "
-                                       "refusing action")}
+                if session.ref.server.host in self.presentation_unavailable():
+                    value = {"error": (f"{session.ref.server.host} presentation is "
+                                       "unavailable; refusing action")}
                 else:
                     value = {"agent": session.agent, "state": session.state,
                              "cwd": session.cwd}
@@ -379,7 +393,7 @@ class Fleet:
     def projected(self):
         ordered = render.order(
             [s for group in self.sessions.values() for s in group],
-            sorted(self.unavailable), self.composed_graph(),
+            sorted(self.presentation_unavailable()), self.composed_graph(),
             expanded=self.expanded, show_python=self.show_python)
         visible = []
         hidden_depth = None
@@ -406,9 +420,10 @@ class Fleet:
         projected = self.projected()
         value = (
             projected,
-            render.rows_text(projected, sorted(self.unavailable), width,
+            render.rows_text(projected, sorted(self.presentation_unavailable()), width,
                              revision=self.view_revision),
-            render.header_text(projected, self.usage, sorted(self.unavailable)),
+            render.header_text(projected, self.usage,
+                               sorted(self.presentation_unavailable())),
         )
         self._view_cache = (key, value)
         return value
@@ -654,7 +669,8 @@ class Fleet:
         }
         history = self.history_entries(sessions, source_hosts, observations[3:])
         body = {"version": 1, "sessions": sessions, "hosts": source_hosts,
-                "unavailable": sorted(self.unavailable), "history": history,
+                "unavailable": sorted(self.presentation_unavailable()),
+                "history": history,
                 "workstations": workstations}
         canonical = json.dumps(body, sort_keys=True, separators=(",", ":"),
                                ensure_ascii=False).encode()
@@ -1022,6 +1038,8 @@ class Fleet:
         host = key_host(key)
         if host in self.unavailable:
             raise RuntimeError(f"{host} is disconnected; refusing action")
+        if host in self.tmux_unavailable and not key.startswith("alan:"):
+            raise RuntimeError(f"{host} tmux server is unavailable")
         process = self.processes[host]
         assert process.stdin
         self.next_preview += 1
@@ -1041,6 +1059,8 @@ class Fleet:
         host = key_host(key)
         if host in self.unavailable:
             raise RuntimeError(f"{host} is disconnected; refusing action")
+        if host in self.tmux_unavailable:
+            raise RuntimeError(f"{host} tmux server is unavailable")
         self.next_switch += 1
         number = self.next_switch
         future = asyncio.get_running_loop().create_future()
