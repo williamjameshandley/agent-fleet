@@ -2449,6 +2449,342 @@ class IdentityTests(unittest.TestCase):
                 thread.join(1)
             self.assertFalse(thread.is_alive())
 
+    def test_viewer_worker_collapses_pending_projection_to_latest(self):
+        state = mock.Mock()
+        state.source = ""
+        state.check.return_value = ""
+        entered = threading.Event()
+        release = threading.Event()
+
+        def open_source(key, _selected=None):
+            if key == "source-a":
+                entered.set()
+                release.wait(2)
+            state.source = key
+
+        state.open.side_effect = open_source
+        worker = viewer.ViewerWorker(state, "main")
+        try:
+            worker.intent("PROJECT", "source-a")
+            self.assertTrue(entered.wait(1))
+            worker.intent("PROJECT", "source-b")
+            worker.intent("PROJECT", "source-c")
+            release.set()
+            self.assertEqual(worker.barrier("SOURCE"), "source-c")
+        finally:
+            worker.close()
+        self.assertEqual(state.open.call_args_list,
+                         [mock.call("source-a", None), mock.call("source-c", None)])
+
+    def test_viewer_worker_enter_supersedes_pending_projection_then_focuses(self):
+        state = mock.Mock()
+        state.source = ""
+        state.workstation = "boltzmann"
+        state.check.return_value = ""
+        entered = threading.Event()
+        release = threading.Event()
+
+        def open_source(key, _selected=None):
+            if key == "source-a":
+                entered.set()
+                release.wait(2)
+            state.source = key
+
+        state.open.side_effect = open_source
+        worker = viewer.ViewerWorker(state, "main")
+        try:
+            worker.intent("PROJECT", "source-a")
+            self.assertTrue(entered.wait(1))
+            worker.intent("PROJECT", "source-b")
+            with mock.patch.object(viewer, "focus") as focus:
+                worker.intent("FOCUS", "source-d")
+                release.set()
+                self.assertEqual(worker.barrier("SOURCE"), "source-d")
+            focus.assert_called_once_with("main", "boltzmann")
+        finally:
+            worker.close()
+        self.assertEqual(state.open.call_args_list,
+                         [mock.call("source-a", None), mock.call("source-d", None)])
+
+    def test_viewer_worker_exact_clear_cancels_pending_key_before_new_source(self):
+        state = mock.Mock()
+        state.source = ""
+        state.check.return_value = ""
+        entered = threading.Event()
+        release = threading.Event()
+
+        def open_source(key, _selected=None):
+            if key == "source-k":
+                entered.set()
+                release.wait(2)
+            state.source = key
+
+        state.open.side_effect = open_source
+        state.clear.side_effect = lambda: setattr(state, "source", "")
+        worker = viewer.ViewerWorker(state, "main")
+        try:
+            worker.intent("PROJECT", "source-k")
+            self.assertTrue(entered.wait(1))
+            worker.intent("PROJECT", "source-k")
+            cleared = threading.Thread(
+                target=worker.barrier, args=("CLEAR", "source-k"))
+            cleared.start()
+            release.set()
+            cleared.join(1)
+            self.assertFalse(cleared.is_alive())
+            worker.intent("PROJECT", "source-j")
+            self.assertEqual(worker.barrier("SOURCE"), "source-j")
+        finally:
+            worker.close()
+        self.assertEqual(state.open.call_args_list,
+                         [mock.call("source-k", None), mock.call("source-j", None)])
+        state.clear.assert_called_once_with()
+
+    def test_viewer_worker_terminal_failure_rejects_future_work_without_hanging(self):
+        state = mock.Mock()
+        state.source = ""
+        state.check.return_value = ""
+        entered = threading.Event()
+        release = threading.Event()
+
+        def fail(_key, _selected=None):
+            entered.set()
+            release.wait(2)
+            raise AssertionError("planted bug")
+
+        state.open.side_effect = fail
+        pending_error = []
+
+        def record_pending_error():
+            try:
+                worker.barrier("SOURCE")
+            except Exception as error:
+                pending_error.append(error)
+
+        with mock.patch.object(viewer, "viewer_error") as report:
+            worker = viewer.ViewerWorker(state, "main")
+            worker.intent("PROJECT", "source-a")
+            self.assertTrue(entered.wait(1))
+            pending = threading.Thread(target=record_pending_error)
+            pending.start()
+            release.set()
+            worker.thread.join(1)
+            pending.join(1)
+            self.assertFalse(worker.thread.is_alive())
+            self.assertFalse(pending.is_alive())
+            self.assertRegex(str(pending_error[0]), "planted bug")
+            with self.assertRaisesRegex(RuntimeError, "planted bug"):
+                worker.barrier("SOURCE")
+            with self.assertRaisesRegex(RuntimeError, "planted bug"):
+                worker.intent("PROJECT", "source-b")
+        report.assert_called_with("viewer worker failed: planted bug")
+
+    def test_viewer_worker_close_terminates_after_expected_shutdown_failure(self):
+        state = mock.Mock()
+        state.source = ""
+        state.check.return_value = ""
+        state.shutdown.side_effect = RuntimeError("cleanup failed")
+        with mock.patch.object(viewer, "viewer_error") as report:
+            worker = viewer.ViewerWorker(state, "main")
+            closed = threading.Thread(target=worker.close)
+            closed.start()
+            closed.join(1)
+            self.assertFalse(closed.is_alive())
+            self.assertFalse(worker.thread.is_alive())
+        report.assert_called_with("Open failed: cleanup failed")
+
+    def test_viewer_worker_reports_projection_failure_then_applies_newest(self):
+        state = mock.Mock()
+        state.source = ""
+        state.check.return_value = ""
+        failed = threading.Event()
+
+        def open_source(key, _selected=None):
+            if key == "source-a":
+                failed.set()
+                raise RuntimeError("planted projection failure")
+            state.source = key
+
+        state.open.side_effect = open_source
+        with mock.patch.object(viewer, "viewer_error") as report:
+            worker = viewer.ViewerWorker(state, "main")
+            try:
+                worker.intent("PROJECT", "source-a")
+                self.assertTrue(failed.wait(1))
+                worker.intent("PROJECT", "source-b")
+                self.assertEqual(worker.barrier("SOURCE"), "source-b")
+                self.assertTrue(worker.thread.is_alive())
+            finally:
+                worker.close()
+        self.assertIn(mock.call("Open failed: planted projection failure"),
+                      report.call_args_list)
+
+    def test_viewer_worker_open_and_source_are_completion_barriers(self):
+        state = mock.Mock()
+        state.source = ""
+        state.workstation = "boltzmann"
+        state.check.return_value = ""
+        entered = threading.Event()
+        release = threading.Event()
+        result = []
+
+        def open_source(key, _selected=None):
+            entered.set()
+            release.wait(2)
+            state.source = key
+
+        state.open.side_effect = open_source
+        worker = viewer.ViewerWorker(state, "main")
+        with mock.patch.object(viewer, "focus"):
+            opened = threading.Thread(
+                target=worker.barrier, args=("OPEN", "source-a"))
+            opened.start()
+            self.assertTrue(entered.wait(1))
+            sourced = threading.Thread(
+                target=lambda: result.append(worker.barrier("SOURCE")))
+            sourced.start()
+            time.sleep(.02)
+            self.assertTrue(opened.is_alive())
+            self.assertTrue(sourced.is_alive())
+            release.set()
+            opened.join(1)
+            sourced.join(1)
+        worker.close()
+        self.assertEqual(result, ["source-a"])
+
+    def test_project_socket_acknowledges_acceptance_before_switch_completion(self):
+        with tempfile.TemporaryDirectory() as runtime:
+            runtime = Path(runtime)
+            state = mock.Mock()
+            state.source = ""
+            state.workstation = "boltzmann"
+            state.check.return_value = ""
+            entered = threading.Event()
+            release = threading.Event()
+
+            def open_source(key, _selected=None):
+                entered.set()
+                release.wait(2)
+                state.source = key
+
+            state.open.side_effect = open_source
+            with mock.patch.object(viewer, "RUNTIME", runtime), \
+                 mock.patch.object(viewer.os, "ttyname", return_value="/dev/pts/9"), \
+                 mock.patch.object(viewer, "Attachment", return_value=state), \
+                 mock.patch.object(viewer, "viewer_error"), \
+                 mock.patch.object(viewer, "focus") as focus:
+                thread = threading.Thread(target=viewer.serve, args=("test",))
+                thread.start()
+                path = runtime / "viewer-test.sock"
+                for _ in range(100):
+                    if path.exists():
+                        break
+                    time.sleep(.01)
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.connect(str(path))
+                    client.sendall(b"PROJECT source-a\n")
+                    self.assertEqual(client.recv(16), b"OK\n")
+                self.assertTrue(entered.wait(1))
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.connect(str(path))
+                    client.sendall(b"FOCUS source-d\n")
+                    self.assertEqual(client.recv(16), b"OK\n")
+                release.set()
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.connect(str(path))
+                    client.sendall(b"SOURCE\n")
+                    self.assertEqual(client.recv(64), b"source-d\n")
+                focus.assert_called_once_with("test", "boltzmann")
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.connect(str(path))
+                    client.sendall(b"SHUTDOWN\n")
+                    self.assertEqual(client.recv(16), b"OK\n")
+                thread.join(1)
+            self.assertFalse(thread.is_alive())
+
+    def test_stock_fzf_processes_live_keys_while_projection_is_blocked(self):
+        root = Path(__file__).parents[1]
+        for key in ("x", "h", "enter"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as directory:
+                directory = Path(directory)
+                runtime = directory / "runtime" / "agent-fleet"
+                runtime.mkdir(parents=True)
+                tmux_runtime = directory / "tmux"
+                tmux_runtime.mkdir()
+                fzf_socket = runtime / "fzf.sock"
+                state = mock.Mock()
+                state.source = ""
+                state.workstation = "boltzmann"
+                state.check.return_value = ""
+                entered = threading.Event()
+                release = threading.Event()
+
+                def open_source(source, _selected=None):
+                    entered.set()
+                    release.wait(2)
+                    state.source = source
+
+                state.open.side_effect = open_source
+                environment = {**without_tmux_client(),
+                               "XDG_RUNTIME_DIR": str(directory / "runtime"),
+                               "TMUX_TMPDIR": str(tmux_runtime),
+                               "SHELL": "/bin/sh"}
+                focus = shlex.join(
+                    (str(root / "fleet-open"), "project", "test", "{1}"))
+                activate = shlex.join(
+                    (str(root / "fleet-open"), "focus", "test", "{1}"))
+                command = ("printf 'source-a\\t1\\trow\\n' | exec fzf "
+                           f"--listen {shlex.quote(str(fzf_socket))} --disabled "
+                           f"--bind {shlex.quote('focus:execute-silent(' + focus + ')')} "
+                           f"--bind {shlex.quote('enter:execute-silent(' + activate + ')')} "
+                           "--bind 'x:reload-sync(:)' "
+                           "--bind 'h:reload-sync(:)'")
+                with mock.patch.object(viewer, "RUNTIME", runtime), \
+                     mock.patch.object(viewer.os, "ttyname",
+                                       return_value="/dev/pts/9"), \
+                     mock.patch.object(viewer, "Attachment", return_value=state), \
+                     mock.patch.object(viewer, "viewer_error"), \
+                     mock.patch.object(viewer, "focus"):
+                    server = threading.Thread(target=viewer.serve, args=("test",))
+                    server.start()
+                    subprocess.run(["tmux", "new-session", "-d", "-s", "fzf",
+                                    command], check=True, env=environment)
+                    try:
+                        for _ in range(100):
+                            if fzf_socket.exists():
+                                break
+                            time.sleep(.01)
+                        self.assertTrue(entered.wait(1))
+                        if key == "enter":
+                            subprocess.run(["tmux", "send-keys", "-t", "fzf",
+                                            "Enter"], check=True, env=environment)
+                            time.sleep(.02)
+                            sent = "x"
+                        else:
+                            sent = key
+                        started = time.monotonic()
+                        subprocess.run(["tmux", "send-keys", "-t", "fzf", sent],
+                                       check=True, env=environment)
+                        while True:
+                            result = subprocess.run(
+                                ["curl", "-fsS", "--unix-socket", str(fzf_socket),
+                                 "http://localhost?limit=10"], text=True,
+                                capture_output=True, check=True)
+                            if json.loads(result.stdout)["matchCount"] == 0:
+                                break
+                            self.assertLess(time.monotonic() - started, .5)
+                    finally:
+                        release.set()
+                        with socket.socket(socket.AF_UNIX) as client:
+                            client.connect(str(runtime / "viewer-test.sock"))
+                            client.sendall(b"SHUTDOWN\n")
+                            client.recv(16)
+                        server.join(1)
+                        subprocess.run(["tmux", "kill-server"], env=environment,
+                                       stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+                self.assertFalse(server.is_alive())
+
     def test_shutdown_acknowledges_only_after_cleanup_and_socket_removal(self):
         with tempfile.TemporaryDirectory() as runtime:
             runtime = Path(runtime)
@@ -2489,6 +2825,35 @@ class IdentityTests(unittest.TestCase):
                         client.recv(16)
                     release.set()
                     self.assertEqual(client.recv(16), b"OK\n")
+                    self.assertFalse(path.exists())
+                thread.join(1)
+            self.assertFalse(thread.is_alive())
+            self.assertFalse(path.exists())
+            state.shutdown.assert_called_once_with()
+
+    def test_shutdown_cleanup_failure_reports_error_and_retires_socket(self):
+        with tempfile.TemporaryDirectory() as runtime:
+            runtime = Path(runtime)
+            state = mock.Mock()
+            state.shutdown.side_effect = OSError("planted cleanup failure")
+            state.check.return_value = ""
+            with mock.patch.object(viewer, "RUNTIME", runtime), \
+                 mock.patch.object(viewer.os, "ttyname", return_value="/dev/pts/9"), \
+                 mock.patch.object(viewer, "Attachment", return_value=state), \
+                 mock.patch.object(viewer, "viewer_error"):
+                thread = threading.Thread(target=viewer.serve, args=("test",))
+                thread.start()
+                path = runtime / "viewer-test.sock"
+                for _ in range(100):
+                    if path.exists():
+                        break
+                    time.sleep(.01)
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.connect(str(path))
+                    client.sendall(b"SHUTDOWN\n")
+                    self.assertEqual(
+                        client.recv(128), b"ERROR planted cleanup failure\n")
+                    self.assertFalse(path.exists())
                 thread.join(1)
             self.assertFalse(thread.is_alive())
             self.assertFalse(path.exists())
