@@ -308,6 +308,26 @@ Alan's canonical Python `spawn` operation. Fleet records the requested label.
 Ordinary shell sessions remain directly available through tmux rather than
 through Fleet's creator.
 
+## Diagnostics
+
+Fleet reports its authoritative lifecycle transitions directly to the user
+journal. Inspect all structured Fleet events, one viewer slot, or the daemon's
+complete service stream with:
+
+```sh
+journalctl --user -t agent-fleet
+journalctl --user -t agent-fleet FLEET_COMPONENT=viewer FLEET_SLOT=main
+journalctl --user -u fleet.service
+```
+
+Structured events cover daemon and host availability, viewer and presentation
+lifecycle, completed projection paths, and failures at the boundary that owns
+them. The service stream also contains native collector diagnostics on stderr.
+Fleet does not record terminal bytes, pane content, previews, transcripts,
+prompts, user input, or model output. The journal is diagnostic history, not
+authoritative Fleet state: tmux servers and Alan runtimes remain authoritative,
+and Fleet's in-memory projection is rebuilt from them.
+
 ## Development
 
 ```
