@@ -131,15 +131,13 @@ class ResidentControlTests(unittest.TestCase):
         codex = {"addr": "codex-actor@host", "kind": "codex",
                  "cwd": str(Path.cwd())}
         with mock.patch.dict(os.environ, self.environment, clear=True), \
-             mock.patch("agent_fleet.tmux.alan.actors",
-                        return_value=[descriptor, codex]), \
              mock.patch("agent_fleet.presentation.shlex",
                         mock.Mock(join=mock.Mock(return_value="sleep 30"))):
-            self.assertEqual(self.control.alan_target("llm-actor@host"),
+            self.assertEqual(self.control.alan_target("llm-actor@host", descriptor),
                              self.target("fleet@alan-" +
                                          alan.runtime_name("llm-actor@host")))
             with self.assertRaisesRegex(RuntimeError, "unavailable or ambiguous"):
-                self.control.alan_target("codex-actor@host")
+                self.control.alan_target("codex-actor@host", codex)
         self.assertEqual((self.process.pid, self.target("source-one")[:3]), identities)
         names = self.control.command(["list-sessions", "-F", "#{session_name}"])
         self.assertNotIn("fleet@alan-" + alan.runtime_name(codex["addr"]), names)

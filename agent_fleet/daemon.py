@@ -59,7 +59,8 @@ def events(host):
                         response = {"preview": request["preview"], "text": text}
                     elif "switch" in request:
                         control = controls.get()
-                        target = (control.alan_target(request["actor"])
+                        target = (control.alan_target(request["actor"], {
+                            "kind": request["agent"], "cwd": request["cwd"]})
                                   if "actor" in request else tuple(request["target"]))
                         duration = control.switch(target, request["client"])
                         response = {"switch": request["switch"], "duration": duration,
@@ -1068,6 +1069,8 @@ class Fleet:
         payload = {"switch": number, "client": client}
         if key.startswith("alan:"):
             payload["actor"] = key.removeprefix("alan:")
+            payload["agent"] = matches[0].agent
+            payload["cwd"] = matches[0].cwd
         else:
             payload["target"] = split_key(key)[1:]
         process = self.processes[host]

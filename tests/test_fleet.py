@@ -371,6 +371,35 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(json.loads(writer.write.call_args.args[0]),
                          {"error": "identity changed"})
 
+    def test_alan_switch_carries_the_selected_presentation_descriptor(self):
+        host = "lovelace"
+        actor = f"llm-one@{host}"
+        session = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"), actor),
+            "fixture", 1, 0, 0, 1, "alan", "", "/work", "llm")
+        fleet = Fleet()
+        fleet.sessions = {host: [session]}
+        fleet.unavailable.clear()
+        process = mock.Mock()
+        process.stdin.drain = mock.AsyncMock()
+        fleet.processes = {host: process}
+
+        async def exercise():
+            pending = asyncio.create_task(
+                fleet.switch(session.ref.key, "/dev/pts/8"))
+            await asyncio.sleep(0)
+            request = json.loads(process.stdin.write.call_args.args[0])
+            self.assertEqual(request, {
+                "switch": 1, "client": "/dev/pts/8", "actor": actor,
+                "agent": "llm", "cwd": "/work",
+            })
+            fleet.host_reply({"switch": 1, "target": ["/tmp/tmux", 12, 10, "$1"],
+                              "duration": .001})
+            self.assertEqual(await pending,
+                             (("/tmp/tmux", 12, 10, "$1"), .001))
+
+        asyncio.run(exercise())
+
     def test_alan_key_uses_its_host_bound_actor_identity_once(self):
         ref = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
                          "codex-a@newton")

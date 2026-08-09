@@ -188,7 +188,7 @@ class ControlClient:
             raise RuntimeError("source or viewer client identity changed")
         return time.monotonic() - began
 
-    def alan_target(self, actor):
+    def alan_target(self, actor, descriptor=None):
         name = "fleet@alan-" + alan.runtime_name(actor)
         arguments = [
             "list-sessions", "-f", f"#{{==:#{{session_name}},{name}}}", "-F",
@@ -196,12 +196,10 @@ class ControlClient:
         def locate():
             return [shlex.split(line) for line in self.command(arguments) if line]
         matches = locate()
-        if not matches:
-            descriptor = next((item for item in alan.actors()
-                               if item["addr"] == actor), None)
-            if descriptor and descriptor["kind"] in {"python", "llm"}:
-                presentation.target(actor, descriptor)
-                matches = locate()
+        if (not matches and descriptor
+                and descriptor["kind"] in {"python", "llm"}):
+            presentation.target(actor, descriptor)
+            matches = locate()
         if len(matches) != 1 or len(matches[0]) != 4:
             raise RuntimeError(f"Alan evaluator terminal is unavailable or ambiguous: {actor}")
         socket, pid, started, session_id = matches[0]
