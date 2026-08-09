@@ -136,7 +136,7 @@ class Fleet:
                 assert process.stderr
                 async for raw in process.stderr:
                     errors.append(raw.decode().rstrip())
-                    print(f"{host}: {errors[-1]}", flush=True)
+                    print(f"{host}: {errors[-1]}", file=sys.stderr, flush=True)
 
             drain = asyncio.create_task(stderr())
             try:
