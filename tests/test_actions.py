@@ -1,9 +1,11 @@
 import asyncio
 import json
 import os
+import shlex
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -45,10 +47,45 @@ def test_authority_operations_are_finite_and_direct():
                            "name": "new"})
     mutate.assert_called_once_with("source", "rename", ["new"])
 
-    with mock.patch("agent_fleet.authority.alan.retire") as retire:
+    with mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         mock.patch("agent_fleet.authority.presentation.close") as close:
         assert authority.execute({"operation": "archive-alan",
-                                  "actor": "codex-1@lovelace"}) == {}
+                                  "actor": "codex-1@lovelace",
+                                  "agent": "codex"}) == {}
     retire.assert_called_once_with("codex-1@lovelace")
+    close.assert_not_called()
+
+    with mock.patch("agent_fleet.authority.alan.retire"), \
+         mock.patch("agent_fleet.authority.presentation.close") as close:
+        authority.execute({"operation": "archive-alan",
+                           "actor": "llm-1@lovelace", "agent": "llm"})
+    close.assert_called_once_with("llm-1@lovelace")
+
+    calls = []
+    with mock.patch("agent_fleet.authority.presentation.close",
+                    side_effect=lambda actor: calls.append(("close", actor))), \
+         mock.patch("agent_fleet.authority.alan.retire",
+                    side_effect=lambda actor: calls.append(("retire", actor))):
+        authority.execute({"operation": "archive-alan",
+                           "actor": "llm-ordered@lovelace", "agent": "llm"})
+    assert calls == [("close", "llm-ordered@lovelace"),
+                     ("retire", "llm-ordered@lovelace")]
+
+    with mock.patch("agent_fleet.authority.presentation.close",
+                    side_effect=RuntimeError("tmux failed")), \
+         mock.patch("agent_fleet.authority.alan.retire") as retire:
+        with pytest.raises(RuntimeError, match="tmux failed"):
+            authority.execute({"operation": "archive-alan",
+                               "actor": "llm-retry@lovelace", "agent": "llm"})
+    retire.assert_not_called()
+
+    with mock.patch("agent_fleet.authority.presentation.close") as close, \
+         mock.patch("agent_fleet.authority.alan.retire",
+                    side_effect=RuntimeError("retire failed")):
+        with pytest.raises(RuntimeError, match="retire failed"):
+            authority.execute({"operation": "archive-alan",
+                               "actor": "llm-rebuild@lovelace", "agent": "llm"})
+    close.assert_called_once_with("llm-rebuild@lovelace")
 
     with mock.patch("agent_fleet.authority.presentation.refresh") as refresh:
         authority.execute({"operation": "refresh", "actor": "codex-1@lovelace"})
@@ -90,6 +127,9 @@ def test_authority_rejects_generic_or_extra_operations():
                     {"operation": "archive-alan", "actor": "a", "fallback": True}):
         with pytest.raises(ValueError, match="invalid authority action"):
             authority.execute(request)
+    with pytest.raises(ValueError, match="language actor"):
+        authority.execute({"operation": "archive-alan", "actor": "python-a",
+                           "agent": "python"})
 
 
 def test_daemon_rename_and_refresh_revalidate_its_projection():
@@ -165,27 +205,21 @@ def test_daemon_refuses_stale_disconnected_and_unrecoverable_sources():
         asyncio.run(fleet.action({"operation": "archive", "source": item.ref.key}))
 
 
-def test_authority_uses_the_resident_host_channel_without_a_subprocess():
+def test_authority_uses_one_finite_command_on_the_target_host():
     async def exercise():
         fleet = Fleet()
         host = os.uname().nodename.split(".", 1)[0]
-        process = mock.Mock()
-        process.stdin = mock.Mock()
-        process.stdin.drain = mock.AsyncMock()
-        fleet.processes[host] = process
         fleet.unavailable.clear()
-        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec") as execute:
-            pending = asyncio.create_task(fleet.authority(host, {
-                "operation": "rename-alan", "actor": "codex-1@lovelace",
-                "name": "new"}))
-            await asyncio.sleep(0)
-            request = json.loads(process.stdin.write.call_args.args[0])
-            fleet.host_reply({"authority": request["authority"],
-                              "value": {"name": "new"}})
-            value = await pending
+        request = {"operation": "rename-alan", "actor": "codex-1@lovelace",
+                   "name": "new"}
+        with mock.patch.object(fleet, "remote_json",
+                               return_value={"name": "new"}) as execute:
+            value = await fleet.authority(host, request)
         assert value == {"name": "new"}
-        assert request["request"]["operation"] == "rename-alan"
-        execute.assert_not_called()
+        command = execute.await_args.args
+        assert command[0] == host
+        assert "execute_json" in command[3]
+        assert json.loads(command[4]) == request
 
     asyncio.run(exercise())
 
@@ -294,28 +328,181 @@ def test_optimistic_archive_failure_restores_row_and_never_clears_viewers(
     asyncio.run(exercise())
 
 
-def test_authority_error_and_disconnect_complete_the_outstanding_future():
-    async def exercise(disconnect):
+def test_authority_command_error_is_preserved():
+    async def exercise():
         fleet = Fleet()
         host = os.uname().nodename.split(".", 1)[0]
-        process = mock.Mock()
-        process.stdin = mock.Mock()
-        process.stdin.drain = mock.AsyncMock()
-        fleet.processes[host] = process
         fleet.unavailable.clear()
-        pending = asyncio.create_task(fleet.authority(
-            host, {"operation": "archive-alan", "actor": f"codex-1@{host}"}))
-        await asyncio.sleep(0)
-        number = json.loads(process.stdin.write.call_args.args[0])["authority"]
-        if disconnect:
-            await fleet.host_disconnected(host)
-        else:
-            fleet.host_reply({"authority": number, "error": "refused"})
-        with pytest.raises(RuntimeError, match="disconnected" if disconnect else "refused"):
-            await pending
+        with mock.patch.object(fleet, "remote_json",
+                               side_effect=RuntimeError("refused")):
+            with pytest.raises(RuntimeError, match="refused"):
+                await fleet.authority(host, {
+                    "operation": "archive-alan", "actor": f"codex-1@{host}",
+                    "agent": "codex"})
 
-    asyncio.run(exercise(False))
-    asyncio.run(exercise(True))
+    asyncio.run(exercise())
+
+
+def test_authority_json_boundary_round_trips_one_value():
+    request = {"operation": "rename-alan", "actor": "codex-1@lovelace",
+               "name": "new"}
+    with mock.patch("agent_fleet.authority.alan.rename"):
+        assert json.loads(authority.execute_json(json.dumps(request))) == {"name": "new"}
+
+
+def test_finite_host_command_cannot_inherit_an_actor_socket(monkeypatch):
+    async def exercise():
+        fleet = Fleet()
+        process = mock.Mock(returncode=0)
+        process.communicate = mock.AsyncMock(return_value=(b"{}\n", b""))
+        monkeypatch.setenv("LOOP_SOCKET", "/actor/private.sock")
+        monkeypatch.setenv("LOOP_CAPABILITIES", '"full"')
+        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
+                        return_value=process) as execute:
+            assert await fleet.remote_json(os.uname().nodename.split(".", 1)[0],
+                                           "/usr/bin/python", "-c", "pass") == {}
+        assert execute.await_args.args[:5] == (
+            "/usr/bin/env", "-u", "LOOP_SOCKET", "-u", "LOOP_CAPABILITIES")
+        environment = execute.await_args.kwargs["env"]
+        assert "LOOP_SOCKET" not in environment
+        assert "LOOP_CAPABILITIES" not in environment
+
+    asyncio.run(exercise())
+
+
+def test_remote_authority_strips_actor_socket_on_the_target():
+    async def exercise():
+        fleet = Fleet()
+        process = mock.Mock(returncode=0)
+        process.communicate = mock.AsyncMock(return_value=(b"{}\n", b""))
+        envelope = ('{"operation":"archive-alan","actor":"codex-1@newton",'
+                    '"agent":"codex"}')
+        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
+                        return_value=process) as execute:
+            assert await fleet.remote_json("newton", "/usr/bin/python", "-c",
+                                           "print('ok')", envelope) == {}
+        remote = shlex.split(execute.await_args.args[-1])
+        assert remote[:5] == [
+            "/usr/bin/env", "-u", "LOOP_SOCKET", "-u", "LOOP_CAPABILITIES"]
+        assert remote[-1] == envelope
+
+    asyncio.run(exercise())
+
+
+def test_local_and_remote_authority_use_the_target_default_alan_socket(
+        tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    public = state / "alan" / "loop.sock"
+    private = tmp_path / "private.sock"
+    public.parent.mkdir(parents=True)
+    requests = {"public": [], "private": []}
+    stopped = threading.Event()
+
+    def serve(path, name):
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(path))
+            server.listen()
+            server.settimeout(.05)
+            while not stopped.is_set():
+                try:
+                    connection, _ = server.accept()
+                except TimeoutError:
+                    continue
+                with connection:
+                    line = connection.makefile("rb").readline()
+                    requests[name].append(json.loads(line))
+                    connection.sendall(b'{"ok":true}\n')
+
+    servers = [threading.Thread(target=serve, args=(public, "public"), daemon=True),
+               threading.Thread(target=serve, args=(private, "private"), daemon=True)]
+    for server in servers:
+        server.start()
+    for _ in range(100):
+        if public.exists() and private.exists():
+            break
+        time.sleep(.01)
+    assert public.exists() and private.exists()
+
+    ssh = tmp_path / "ssh"
+    ssh.write_text('#!/bin/sh\nexec /bin/sh -c "$5"\n')
+    ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("LOOP_SOCKET", str(private))
+    monkeypatch.setenv("LOOP_CAPABILITIES", '"full"')
+    command = (sys.executable, "-c",
+               "import loop; loop.control('codex-1@target', 'retire'); print('{}')")
+
+    async def exercise():
+        fleet = Fleet()
+        local = os.uname().nodename.split(".", 1)[0]
+        assert await fleet.remote_json(local, *command) == {}
+        assert await fleet.remote_json("remote-fixture", *command) == {}
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        stopped.set()
+        for server in servers:
+            server.join(1)
+    assert requests == {
+        "public": [
+            {"op": "control", "actor": "codex-1@target", "operation": "retire"},
+            {"op": "control", "actor": "codex-1@target", "operation": "retire"},
+        ],
+        "private": [],
+    }
+
+
+def test_blocked_authority_does_not_enter_or_delay_the_host_control_lane():
+    async def exercise():
+        fleet = Fleet()
+        item = session(kind="tmux")
+        host = item.ref.server.host
+        fleet.sessions = {host: [item]}
+        fleet.unavailable.clear()
+        writes = []
+
+        class Input:
+            def write(self, value):
+                writes.append(json.loads(value))
+
+            async def drain(self):
+                pass
+
+        fleet.processes = {host: mock.Mock(stdin=Input())}
+        authority_started = asyncio.Event()
+        release_authority = asyncio.Event()
+
+        async def blocked(*_args):
+            authority_started.set()
+            await release_authority.wait()
+            return {}
+
+        with mock.patch.object(fleet, "remote_json", side_effect=blocked):
+            authority_task = asyncio.create_task(fleet.authority(host, {
+                "operation": "archive-tmux", "source": item.ref.key,
+                "agent": "codex", "transcript": "thread-1"}))
+            await authority_started.wait()
+            switch_task = asyncio.create_task(
+                fleet.switch(item.ref.key, "/dev/pts/9"))
+            preview_task = asyncio.create_task(fleet.preview(item.ref.key, 80, 20))
+            await asyncio.sleep(0)
+            assert {next(iter(request)) for request in writes} == {"switch", "preview"}
+            switch = next(request for request in writes if "switch" in request)
+            preview = next(request for request in writes if "preview" in request)
+            target = daemon.split_key(item.ref.key)[1:]
+            fleet.host_reply({"switch": switch["switch"],
+                              "target": target,
+                              "duration": .001})
+            fleet.host_reply({"preview": preview["preview"], "text": "screen"})
+            assert await asyncio.wait_for(switch_task, 1) == (target, .001)
+            assert await asyncio.wait_for(preview_task, 1) == "screen"
+            assert not authority_task.done()
+            release_authority.set()
+            assert await authority_task == {}
+
+    asyncio.run(exercise())
 
 
 def test_action_client_cannot_transmit_inherited_actor_identity(tmp_path, monkeypatch):

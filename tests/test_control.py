@@ -7,6 +7,7 @@ import queue
 import select
 import shlex
 import subprocess
+import sys
 import tempfile
 import termios
 import threading
@@ -15,9 +16,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_fleet.tmux import ControlClient, event_stream, watched_event
+from libtmux.exc import LibTmuxException
+
+from agent_fleet.tmux import (ControlClient, event_stream, watched_event,
+                              watch_socket)
 from agent_fleet.daemon import Fleet
-from agent_fleet import daemon
+from agent_fleet import alan, daemon
 from agent_fleet.model import ServerRef, SessionRef, Session
 
 
@@ -120,6 +124,24 @@ class ResidentControlTests(unittest.TestCase):
             self.assertEqual(self.control.alan_target("codex-actor@host"),
                              self.target("fleet@alan-actor"))
 
+    def test_resident_control_constructs_exact_bare_target_but_not_codex(self):
+        identities = self.process.pid, self.target("source-one")[:3]
+        descriptor = {"addr": "llm-actor@host", "kind": "llm",
+                      "cwd": str(Path.cwd())}
+        codex = {"addr": "codex-actor@host", "kind": "codex",
+                 "cwd": str(Path.cwd())}
+        with mock.patch.dict(os.environ, self.environment, clear=True), \
+             mock.patch("agent_fleet.presentation.shlex",
+                        mock.Mock(join=mock.Mock(return_value="sleep 30"))):
+            self.assertEqual(self.control.alan_target("llm-actor@host", descriptor),
+                             self.target("fleet@alan-" +
+                                         alan.runtime_name("llm-actor@host")))
+            with self.assertRaisesRegex(RuntimeError, "unavailable or ambiguous"):
+                self.control.alan_target("codex-actor@host", codex)
+        self.assertEqual((self.process.pid, self.target("source-one")[:3]), identities)
+        names = self.control.command(["list-sessions", "-F", "#{session_name}"])
+        self.assertNotIn("fleet@alan-" + alan.runtime_name(codex["addr"]), names)
+
     def test_disconnect_fails_an_outstanding_command(self):
         self.process.terminate()
         self.process.wait()
@@ -139,6 +161,10 @@ class ResidentControlTests(unittest.TestCase):
             env={**self.environment,
                  "PYTHONPATH": str(Path(__file__).parents[1])})
         try:
+            while True:
+                message = json.loads(host.stdout.readline())
+                if message.get("version") == 1:
+                    break
             host.stdin.write(json.dumps({"switch": 7, "target": target,
                                          "client": self.client_name}) + "\n")
             host.stdin.write(json.dumps({"preview": 8,
@@ -161,6 +187,190 @@ class ResidentControlTests(unittest.TestCase):
 
 
 class ProtocolCorrelationTests(unittest.TestCase):
+    def test_socket_watch_closes_directory_to_socket_handoff_race(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            socket = root / "tmux-1000" / "default"
+            changed = queue.Queue()
+            consumer = threading.Event()
+            calls = 0
+
+            def raced_watch(parent, **_arguments):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    socket.parent.mkdir()
+                else:
+                    socket.touch()
+                yield set()
+
+            with mock.patch("agent_fleet.tmux.default_socket", return_value=socket), \
+                 mock.patch("agent_fleet.tmux.watch", side_effect=raced_watch):
+                thread = threading.Thread(
+                    target=watch_socket, args=(changed, consumer), daemon=True)
+                thread.start()
+                self.assertEqual(changed.get(timeout=1), "socket")
+                consumer.set()
+                thread.join(1)
+
+    def test_inventory_loss_returns_same_collector_to_unavailable(self):
+        consumer = threading.Event()
+        changed = queue.Queue()
+        alan = mock.Mock(error=None)
+        alan.snapshot.return_value = ([], None)
+        process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
+        process.poll.return_value = None
+        control = mock.Mock(closed=False)
+        tmux = mock.Mock()
+        tmux.has_session.return_value = True
+        probes = [mock.Mock(returncode=0), mock.Mock(returncode=1),
+                  mock.Mock(returncode=1)]
+        with mock.patch("agent_fleet.tmux.AlanWatcher", return_value=alan), \
+             mock.patch("agent_fleet.tmux.subprocess.run", side_effect=probes), \
+             mock.patch("agent_fleet.tmux.subprocess.Popen", return_value=process), \
+             mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
+             mock.patch("agent_fleet.tmux.server", return_value=tmux), \
+             mock.patch("agent_fleet.tmux.inventory",
+                        side_effect=LibTmuxException("server disappeared")):
+            stream = event_stream("fixture", consumer, changed=changed)
+            self.assertEqual(next(stream), ([], None, False))
+            consumer.set()
+            changed.put("consumer")
+            with self.assertRaises(StopIteration):
+                next(stream)
+
+    def test_non_tmux_adapter_failure_keeps_control_available(self):
+        consumer = threading.Event()
+        changed = queue.Queue()
+        alan = mock.Mock(error=None)
+        alan.snapshot.return_value = ([], None)
+        process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
+        process.poll.return_value = None
+        control = mock.Mock(closed=False)
+        tmux = mock.Mock()
+        tmux.has_session.return_value = True
+        item = mock.Mock(ref="tmux session")
+        failure = subprocess.CalledProcessError(1, ["claude", "agents", "--json"])
+        with mock.patch("agent_fleet.tmux.AlanWatcher", return_value=alan), \
+             mock.patch("agent_fleet.tmux.subprocess.run",
+                        side_effect=[mock.Mock(returncode=0), mock.Mock(returncode=0)]), \
+             mock.patch("agent_fleet.tmux.subprocess.Popen", return_value=process), \
+             mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
+             mock.patch("agent_fleet.tmux.server", return_value=tmux), \
+             mock.patch("agent_fleet.tmux.inventory", return_value=[item]), \
+             mock.patch("agent_fleet.tmux.alan_inventory", return_value=[]), \
+             mock.patch("agent_fleet.tmux.observe", side_effect=failure):
+            stream = event_stream("fixture", consumer, changed=changed)
+            sessions, _, available = next(stream)
+            self.assertEqual(sessions, [item])
+            self.assertTrue(available)
+            process.terminate.assert_not_called()
+            consumer.set()
+            changed.put("consumer")
+            with self.assertRaises(StopIteration):
+                next(stream)
+
+    def test_one_collector_survives_tmux_absence_loss_and_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tmux_root = root / "tmux"
+            runtime = root / "runtime"
+            home = root / "home"
+            for path in (tmux_root, runtime, home):
+                path.mkdir()
+            environment = {
+                **os.environ, "TMUX_TMPDIR": str(tmux_root),
+                "XDG_RUNTIME_DIR": str(runtime), "HOME": str(home),
+                "FLEET_TMUX": str(Path(__file__).parents[1] / "fleet-tmux"),
+            }
+            environment.pop("TMUX", None)
+            consumer = threading.Event()
+            changed = queue.Queue()
+            alan = mock.Mock(error=None)
+            alan.snapshot.return_value = ([], None)
+
+            def advance(stream):
+                result = queue.Queue()
+                thread = threading.Thread(
+                    target=lambda: result.put(next(stream)), daemon=True)
+                thread.start()
+                value = result.get(timeout=3)
+                thread.join(1)
+                return value
+
+            with mock.patch.dict(os.environ, environment, clear=True), \
+                 mock.patch("agent_fleet.tmux.AlanWatcher", return_value=alan), \
+                 mock.patch("agent_fleet.tmux.RUNTIME", runtime / "agent-fleet"):
+                stream = event_stream("fixture", consumer, changed=changed)
+                self.assertEqual(next(stream), ([], None, False))
+                subprocess.run(["tmux", "new-session", "-d", "-s", "source",
+                                "sleep 30"], check=True, env=environment)
+                sessions, _, available = advance(stream)
+                self.assertTrue(available)
+                self.assertEqual([item.name for item in sessions], ["source"])
+                subprocess.run(["tmux", "kill-server"], check=True, env=environment)
+                self.assertEqual(advance(stream), ([], None, False))
+                subprocess.run(["tmux", "new-session", "-d", "-s", "again",
+                                "sleep 30"], check=True, env=environment)
+                sessions, _, available = advance(stream)
+                self.assertTrue(available)
+                self.assertEqual([item.name for item in sessions], ["again"])
+                consumer.set()
+                changed.put("consumer")
+                with self.assertRaises(StopIteration):
+                    next(stream)
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_absent_tmux_refuses_switch_and_preview_but_allows_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = {
+                **os.environ, "TMUX_TMPDIR": str(root / "tmux"),
+                "XDG_RUNTIME_DIR": str(root / "runtime"),
+                "HOME": str(root / "home"),
+                "PYTHONPATH": str(Path(__file__).parents[1]),
+            }
+            environment.pop("TMUX", None)
+            for name in ("tmux", "runtime", "home"):
+                (root / name).mkdir()
+            config = root / "home" / ".config" / "agent-fleet"
+            config.mkdir(parents=True)
+            (config / "hosts").write_text("fixture\n")
+            host = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import sys; from agent_fleet.daemon import events; events(sys.argv[1])",
+                 "fixture"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, env=environment)
+            try:
+                observation = json.loads(host.stdout.readline())
+                self.assertEqual(observation["unavailable"], ["fixture"])
+                requests = [
+                    {"switch": 1, "target": ["/tmp/socket", 1, 1, "$1"],
+                     "client": "/dev/pts/9"},
+                    {"preview": 2, "key": "fixture:/tmp/socket:1:1:$1",
+                     "columns": 80, "lines": 20},
+                    {"cleanup": 3, "owner": "lovelace", "slot": "main"},
+                ]
+                for request in requests:
+                    host.stdin.write(json.dumps(request) + "\n")
+                host.stdin.flush()
+                replies = {}
+                deadline = time.monotonic() + 3
+                while len(replies) < 3 and time.monotonic() < deadline:
+                    ready, _, _ = select.select([host.stdout], [], [], .2)
+                    if ready:
+                        message = json.loads(host.stdout.readline())
+                        for tag in ("switch", "preview", "cleanup"):
+                            if tag in message:
+                                replies[tag] = message
+                self.assertIn("unavailable", replies["switch"]["error"])
+                self.assertIn("unavailable", replies["preview"]["error"])
+                self.assertEqual(replies["cleanup"], {"cleanup": 3})
+            finally:
+                host.terminate()
+                host.wait()
+
     def test_event_stream_keeps_tmux_inventory_when_alan_is_unavailable(self):
         changed = queue.Queue()
         consumer = threading.Event()
@@ -186,37 +396,29 @@ class ProtocolCorrelationTests(unittest.TestCase):
              mock.patch("agent_fleet.tmux.native_transcripts.catalog",
                         return_value={}):
             stream = event_stream("fixture", consumer, changed=changed)
-            self.assertEqual(next(stream), ([item], None))
+            self.assertEqual(next(stream), ([item], None, True))
             consumer.set()
             changed.put("consumer")
             with self.assertRaises(StopIteration):
                 next(stream)
 
-    def test_authority_barrier_acknowledges_only_after_forced_observation(self):
+    def test_alan_watcher_change_publishes_without_an_authority_barrier(self):
         changed = queue.Queue()
         consumer = threading.Event()
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
         alan = mock.Mock(error=None, actors=["stale"], graph="stale graph")
         alan.snapshot.side_effect = lambda: (alan.actors, alan.graph)
-        def refresh():
-            alan.actors = ["fresh"]
-            alan.graph = "fresh graph"
-            return alan.actors, alan.graph
-        alan.refresh.side_effect = refresh
         control = mock.Mock()
         tmux = mock.Mock()
         tmux.has_session.return_value = True
-        tmux_change = mock.Mock(ref="tmux change")
         with mock.patch("agent_fleet.tmux.AlanWatcher", return_value=alan), \
              mock.patch("agent_fleet.tmux.subprocess.run",
                         return_value=mock.Mock(returncode=0)), \
              mock.patch("agent_fleet.tmux.subprocess.Popen", return_value=process), \
              mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
              mock.patch("agent_fleet.tmux.server", return_value=tmux), \
-             mock.patch("agent_fleet.tmux.inventory",
-                        side_effect=[[], [], [tmux_change]]), \
-             mock.patch("agent_fleet.tmux.alan_inventory", return_value=[]) as inventory, \
+             mock.patch("agent_fleet.tmux.inventory", return_value=[]) as inventory, \
              mock.patch("agent_fleet.tmux.observe",
                         side_effect=lambda current, _catalog: current), \
              mock.patch("agent_fleet.tmux.alan_projection_graph",
@@ -224,16 +426,12 @@ class ProtocolCorrelationTests(unittest.TestCase):
              mock.patch("agent_fleet.tmux.native_transcripts.catalog",
                         return_value={}):
             stream = event_stream("fixture", consumer, changed=changed)
-            self.assertEqual(next(stream), ([], "stale graph"))
-            observed = threading.Event()
-            changed.put(("authority", observed, True))
-            self.assertEqual(next(stream), ([], "fresh graph"))
-            alan.refresh.assert_called_once_with()
+            self.assertEqual(next(stream), ([], "stale graph", True))
+            alan.actors = ["fresh"]
+            alan.graph = "fresh graph"
+            changed.put("alan")
+            self.assertEqual(next(stream), ([], "fresh graph", True))
             self.assertEqual(inventory.call_args.args, ("fixture", ["fresh"]))
-            self.assertFalse(observed.is_set())
-            changed.put("tmux")
-            self.assertEqual(next(stream), ([tmux_change], "fresh graph"))
-            self.assertTrue(observed.is_set())
             finished = threading.Event()
 
             def resume():
@@ -244,7 +442,6 @@ class ProtocolCorrelationTests(unittest.TestCase):
 
             thread = threading.Thread(target=resume)
             thread.start()
-            self.assertTrue(observed.wait(1))
             consumer.set()
             changed.put("consumer")
             thread.join(1)
@@ -371,7 +568,7 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet.previews[1] = ("fixture", preview)
             fleet.switches[2] = ("fixture", switch)
             fleet.cleanups[3] = ("fixture", cleanup)
-            await fleet.host_disconnected("fixture")
+            await fleet.host_disconnected("fixture", 42, 1)
             self.assertNotIn("fixture", fleet.sessions)
             self.assertNotIn("fixture", fleet.graphs)
             self.assertFalse(fleet.previews); self.assertFalse(fleet.switches)

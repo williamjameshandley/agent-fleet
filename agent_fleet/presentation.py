@@ -1,11 +1,27 @@
 import os
 import shlex
 import subprocess
+from pathlib import Path
 
 import loop
 from jupyter_console.app import ZMQTerminalIPythonApp
 
 from . import alan
+
+
+def available(actor, descriptor, session_names):
+    if descriptor["kind"] not in {"claude", "codex", "python", "llm"}:
+        return False
+    name = "fleet@alan-" + alan.runtime_name(actor)
+    matches = session_names.count(name)
+    if matches:
+        return matches == 1
+    cwd = descriptor.get("cwd")
+    if not cwd or not Path(cwd).is_dir():
+        return False
+    if descriptor["kind"] == "python":
+        return (alan.native_dir(actor) / "kernel.json").is_file()
+    return descriptor["kind"] == "llm"
 
 
 class PythonConsole(ZMQTerminalIPythonApp):

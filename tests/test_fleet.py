@@ -49,6 +49,12 @@ def without_tmux_client():
 
 
 class IdentityTests(unittest.TestCase):
+    SOURCE_A = "lovelace:/tmp/tmux/default:1:1:$1"
+    SOURCE_B = "lovelace:/tmp/tmux/default:1:1:$2"
+    SOURCE_C = "lovelace:/tmp/tmux/default:1:1:$3"
+    SOURCE_D = "lovelace:/tmp/tmux/default:1:1:$4"
+    SOURCE_J = "lovelace:/tmp/tmux/default:1:1:$10"
+    SOURCE_K = "lovelace:/tmp/tmux/default:1:1:$11"
     def session(self, host, sid="$1"):
         return Session(SessionRef(ServerRef(host, "/tmp/tmux/default", 12, 10), sid),
                        "work", 1, 2, 0, 1, "codex", "waiting", "/work")
@@ -115,11 +121,12 @@ class IdentityTests(unittest.TestCase):
                 (root / path).mkdir()
             result = subprocess.run(
                 [sys.executable, "-c",
-                 "from agent_fleet.tmux import event_stream; next(event_stream('fixture'))"],
+                 "from agent_fleet.tmux import event_stream; "
+                 "print(next(event_stream('fixture'))[2])"],
                 text=True, capture_output=True, env=environment)
             socket_path = root / "tmux" / f"tmux-{os.getuid()}" / "default"
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("tmux server is not running", result.stderr)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.strip(), "False")
             self.assertFalse(socket_path.exists())
 
     def muster_state(self, matches, count=None):
@@ -364,6 +371,35 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(json.loads(writer.write.call_args.args[0]),
                          {"error": "identity changed"})
 
+    def test_alan_switch_carries_the_selected_presentation_descriptor(self):
+        host = "lovelace"
+        actor = f"llm-one@{host}"
+        session = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"), actor),
+            "fixture", 1, 0, 0, 1, "alan", "", "/work", "llm")
+        fleet = Fleet()
+        fleet.sessions = {host: [session]}
+        fleet.unavailable.clear()
+        process = mock.Mock()
+        process.stdin.drain = mock.AsyncMock()
+        fleet.processes = {host: process}
+
+        async def exercise():
+            pending = asyncio.create_task(
+                fleet.switch(session.ref.key, "/dev/pts/8"))
+            await asyncio.sleep(0)
+            request = json.loads(process.stdin.write.call_args.args[0])
+            self.assertEqual(request, {
+                "switch": 1, "client": "/dev/pts/8", "actor": actor,
+                "agent": "llm", "cwd": "/work",
+            })
+            fleet.host_reply({"switch": 1, "target": ["/tmp/tmux", 12, 10, "$1"],
+                              "duration": .001})
+            self.assertEqual(await pending,
+                             (("/tmp/tmux", 12, 10, "$1"), .001))
+
+        asyncio.run(exercise())
+
     def test_alan_key_uses_its_host_bound_actor_identity_once(self):
         ref = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
                          "codex-a@newton")
@@ -388,6 +424,11 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(
             str(raised.exception), "lovelace is disconnected; refusing action"
         )
+
+        fleet.unavailable.clear()
+        fleet.tmux_unavailable = {"lovelace"}
+        with self.assertRaisesRegex(RuntimeError, "tmux server is unavailable"):
+            asyncio.run(fleet.preview(self.session("lovelace").ref.key))
 
     def test_preview_fast_path_preserves_argument_errors(self):
         for arguments in [[], ["key", "bad"], ["key", "1", "2", "extra"]]:
@@ -550,6 +591,10 @@ class IdentityTests(unittest.TestCase):
             subprocess.run([
                 "tmux", "new-session", "-d", "-s", "fleet@muster", command,
             ], check=True, env=environment)
+            subprocess.run([
+                "tmux", "new-session", "-d", "-s",
+                "fleet@alan-" + alan.runtime_name(addr), "sleep", "30",
+            ], check=True, env=environment)
             master = slave = None
             client = None
             try:
@@ -693,6 +738,116 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(projected[1].transcript_id, "")
         self.assertEqual(projected[1].transcript_path, "")
 
+    def test_host_inventory_projects_only_actors_with_current_presentations(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            actors = []
+            for addr, kind in [
+                ("codex-full@newton", "codex"),
+                ("claude-full@newton", "claude"),
+                ("codex-read-reviewer@newton", "codex"),
+                ("python-one@newton", "python"),
+                ("llm-one@newton", "llm"),
+            ]:
+                actors.append({
+                    "addr": addr, "kind": kind, "state": "waiting",
+                    "cwd": cwd, "created": 1, "human_activity": 0,
+                    "label": "same human label", "active_evaluation": None,
+                    "evaluation_started": 0,
+                })
+            native = ["codex-full@newton", "claude-full@newton"]
+            items = [mock.Mock(
+                session_name="fleet@alan-" + alan.runtime_name(actor),
+                session_id=f"${number}",
+            ) for number, actor in enumerate(native, 1)]
+            server = mock.Mock(sessions=items)
+            server.cmd.return_value.stdout = []
+            native = Path(cwd) / "native"
+            native.mkdir()
+            (native / "kernel.json").touch()
+            with mock.patch("agent_fleet.tmux.server", return_value=server), \
+                 mock.patch("agent_fleet.presentation.alan.native_dir",
+                            return_value=native):
+                projected = tmux.inventory("newton", actors)
+        self.assertEqual(
+            [session.ref.session_id for session in projected],
+            ["codex-full@newton", "claude-full@newton",
+             "python-one@newton", "llm-one@newton"],
+        )
+        self.assertNotIn("codex-read-reviewer@newton",
+                         [session.ref.session_id for session in projected])
+
+    def test_every_rendered_actor_resolves_from_the_same_host_generation(self):
+        host = os.uname().nodename
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = {**without_tmux_client(), "TMUX_TMPDIR": str(root),
+                           "TERM": "xterm-256color"}
+            cwd = root / "work"
+            cwd.mkdir()
+            specifications = [
+                (f"codex-full@{host}", "codex"),
+                (f"claude-full@{host}", "claude"),
+                (f"codex-read-reviewer@{host}", "codex"),
+                (f"claude-disappeared@{host}", "claude"),
+                (f"python-one@{host}", "python"),
+                (f"llm-one@{host}", "llm"),
+            ]
+            descriptors = [{
+                "addr": addr, "kind": kind, "state": "waiting",
+                "cwd": str(cwd), "created": 1, "human_activity": 0,
+                "label": "colliding label", "active_evaluation": None,
+                "evaluation_started": 0,
+            } for addr, kind in specifications]
+            native = [specifications[0][0], specifications[1][0],
+                      specifications[4][0]]
+            try:
+                for actor in native:
+                    subprocess.run([
+                        "tmux", "new-session", "-d", "-s",
+                        "fleet@alan-" + alan.runtime_name(actor), "sleep", "30",
+                    ], check=True, env=environment)
+
+                graph = nx.MultiDiGraph()
+                principal = f"will@{host}"
+                graph.graph["actors"] = [
+                    {"addr": principal, "kind": "principal"}, *descriptors]
+                for number, descriptor in enumerate(descriptors):
+                    source = f"{principal}#{number}"
+                    target = f'{descriptor["addr"]}#0'
+                    graph.add_node(source, stream=principal)
+                    graph.add_node(target, stream=descriptor["addr"])
+                    graph.add_edge(source, target, key="spawn")
+
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    sessions = tmux.inventory(host, descriptors)
+                    projected_graph = alan.projection_graph(graph)
+                    projected = render.order(
+                        sessions, [], projected_graph, show_python=True)
+                    rows = render.rows_text(projected, [], 120)
+                    emitted = [item.session for item in projected]
+                    emitted_by_key = {session.ref.key: session for session in emitted}
+                    self.assertTrue(all(session.ref.key in rows for session in emitted))
+                    excluded = {specifications[2][0], specifications[3][0]}
+                    self.assertTrue(excluded.isdisjoint(
+                        session.ref.session_id for session in emitted))
+                    graph_actors = {
+                        actor["addr"] for actor in projected_graph.graph["actors"]}
+                    self.assertTrue(excluded <= graph_actors)
+
+                    attachment = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+                    with mock.patch.object(
+                            attachment, "find",
+                            side_effect=lambda key: emitted_by_key[key]):
+                        targets = [attachment.resolve(session.ref.key)
+                                   for session in emitted]
+                self.assertEqual(len(targets), 4)
+                self.assertEqual(len({target[1:3] for target in targets}), 1)
+                self.assertTrue(all(target[0] == targets[0][0] for target in targets))
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+
     def test_fleet_uses_loop_client_instead_of_reimplementing_its_wire(self):
         source = (Path(__file__).parents[1] / "agent_fleet/alan.py").read_text()
         self.assertNotIn("AF_UNIX", source)
@@ -806,12 +961,58 @@ class IdentityTests(unittest.TestCase):
         entry = mock.Mock(client="/dev/pts/8", source="old")
         state.attachments[state.host] = entry
         with mock.patch.object(state, "resident_switch") as switch, \
+             mock.patch.object(state, "ui_windows", return_value={entry.window}), \
              mock.patch.object(state, "select_host") as select, \
              mock.patch.object(state, "create_host") as create:
             state.open(session.ref.key)
         switch.assert_called_once_with(session.ref.key, "/dev/pts/8")
         select.assert_not_called(); create.assert_not_called()
         self.assertEqual(entry.source, session.ref.key)
+
+    def test_missing_cached_window_is_evicted_and_rebuilt_before_switch(self):
+        session = self.session(os.uname().nodename)
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        host = os.uname().nodename.split(".", 1)[0]
+        stale = mock.Mock(window="@2", client="/dev/pts/8", source="old")
+        fresh = mock.Mock(window="@3", client="/dev/pts/10", source=session.ref.key)
+        state.source = "old"; state.host = host
+        state.attachments[host] = stale
+
+        def remove(removed, _reason):
+            state.attachments.pop(removed)
+
+        with mock.patch.object(state, "ui_windows", return_value={"@1"}), \
+             mock.patch.object(state, "remove_host", side_effect=remove) as removed, \
+             mock.patch.object(state, "create_host", return_value=fresh) as create, \
+             mock.patch.object(state, "resident_switch") as switch, \
+             mock.patch.object(state, "select_host") as select:
+            state.open(session.ref.key)
+        removed.assert_called_once_with(host, "missing")
+        create.assert_called_once_with(host, session.ref.key)
+        switch.assert_not_called()
+        select.assert_called_once_with(fresh)
+        self.assertIs(state.attachments[host], fresh)
+        self.assertEqual(state.source, session.ref.key)
+
+    def test_failed_rebuild_does_not_advertise_the_missing_attachment(self):
+        session = self.session(os.uname().nodename)
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        host = os.uname().nodename.split(".", 1)[0]
+        stale = mock.Mock(window="@2", client="/dev/pts/8", source="old")
+        state.source = "old"; state.host = host
+        state.attachments[host] = stale
+
+        def remove(removed, _reason):
+            state.attachments.pop(removed)
+
+        with mock.patch.object(state, "ui_windows", return_value=set()), \
+             mock.patch.object(state, "remove_host", side_effect=remove), \
+             mock.patch.object(state, "create_host",
+                               side_effect=RuntimeError("unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                state.open(session.ref.key)
+        self.assertEqual((state.source, state.host), ("", ""))
+        self.assertNotIn(host, state.attachments)
 
     def test_initial_local_attachment_does_not_request_nested_tmux(self):
         ui = mock.Mock()
@@ -911,7 +1112,10 @@ class IdentityTests(unittest.TestCase):
         state.attachments = {
             "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
             "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
-        with mock.patch.object(state, "resident_switch") as switch, \
+        with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
+             mock.patch.object(state, "ui_windows",
+                               return_value={state.attachments["new-host"].window}), \
+             mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "select_host", side_effect=RuntimeError("UI failed")):
             with self.assertRaisesRegex(RuntimeError, "UI failed"):
                 state.open("new-host:/tmp/tmux/default:12:10:$1")
@@ -927,14 +1131,17 @@ class IdentityTests(unittest.TestCase):
         state.attachments = {
             "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
             "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
-        with mock.patch.object(
+        with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
+             mock.patch.object(state, "ui_windows",
+                               return_value={state.attachments["new-host"].window}), \
+             mock.patch.object(
                 state, "resident_switch",
                 side_effect=[None, RuntimeError("rollback failed")]), \
              mock.patch.object(state, "select_host", side_effect=RuntimeError("UI failed")), \
              mock.patch.object(state, "remove_host") as remove:
             with self.assertRaisesRegex(RuntimeError, "UI failed"):
                 state.open("new-host:/tmp/tmux/default:12:10:$1")
-        remove.assert_called_once_with("new-host")
+        remove.assert_called_once_with("new-host", "rollback_failed")
         self.assertEqual((state.source, state.host), ("old-source", "old-host"))
 
     def test_cross_host_open_retains_both_host_windows(self):
@@ -943,7 +1150,9 @@ class IdentityTests(unittest.TestCase):
         new = mock.Mock(source="prior-new", client="/dev/pts/2", window="@2")
         state.attachments = {"old-host": old, "new-host": new}
         state.source = "old-source"; state.host = "old-host"
-        with mock.patch.object(state, "resident_switch"), \
+        with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
+             mock.patch.object(state, "ui_windows", return_value={new.window}), \
+             mock.patch.object(state, "resident_switch"), \
              mock.patch.object(state, "select_host"):
             state.open("new-host:/tmp/tmux/default:12:10:$1")
         self.assertEqual(set(state.attachments), {"old-host", "new-host"})
@@ -1019,6 +1228,11 @@ class IdentityTests(unittest.TestCase):
                 self.assertIsNone(control_process.poll())
                 self.assertEqual(set(state.attachments), {"lovelace", "newton"})
                 self.assertEqual(state.source, entries["lovelace"].source)
+                control.command(["kill-window", "-t", entries["lovelace"].window])
+                self.assertEqual(state.check(),
+                                 "Viewer attachment exited unexpectedly")
+                self.assertEqual(set(state.attachments), {"newton"})
+                self.assertEqual(state.source, "")
             finally:
                 if display and display.poll() is None:
                     display.terminate(); display.wait()
@@ -1035,7 +1249,8 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(viewer, "viewer_error") as report:
             error = viewer.activate(state, "side", "source", 12.0)
         state.open.assert_called_once_with("source", 12.0)
-        self.assertEqual(error, "Focus failed: no display")
+        self.assertEqual(str(error), "no display")
+        self.assertEqual((error.stage, error.cause), ("focus", "workstation"))
         report.assert_not_called()
 
     def test_focus_requires_the_selected_source_to_be_projected(self):
@@ -1062,6 +1277,7 @@ class IdentityTests(unittest.TestCase):
             window="@2", remote_file="/run/user/1000/agent-fleet/viewer.tty",
             owner="lovelace", master=None)
         with mock.patch.object(state, "ui_value", return_value="1"), \
+             mock.patch.object(state, "ui_windows", return_value={"@2"}), \
              mock.patch.object(state, "reclaim_marker") as reclaim, \
              mock.patch.object(state, "ssh") as ssh:
             error = state.check()
@@ -1080,6 +1296,7 @@ class IdentityTests(unittest.TestCase):
             "newton": mock.Mock(window="@2", remote_file="marker",
                                  owner="lovelace", master=(82, 10))}
         with mock.patch.object(viewer, "process_alive", return_value=False), \
+             mock.patch.object(state, "ui_windows", return_value={"@1", "@2"}), \
              mock.patch.object(state, "ui_value", return_value="0"), \
              mock.patch.object(state, "reclaim_marker",
                                side_effect=RuntimeError(
@@ -1096,7 +1313,9 @@ class IdentityTests(unittest.TestCase):
         state.host = "remote"
         entry = mock.Mock(source=state.source, client="/dev/pts/8", window="@2")
         state.attachments["remote"] = entry
-        with mock.patch.object(state, "resident_switch") as switch, \
+        with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"remote"})), \
+             mock.patch.object(state, "ui_windows", return_value={entry.window}), \
+             mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "create_host") as create, \
              mock.patch.object(state, "select_host") as select:
             state.open("remote:/tmp/tmux/default:12:10:$2")
@@ -1335,7 +1554,8 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(asyncio.run(fleet.action(
                 {"operation": "archive", "source": session.ref.key})), {})
         execute.assert_awaited_once_with(
-            host, {"operation": "archive-alan", "actor": f"claude-1@{host}"})
+            host, {"operation": "archive-alan", "actor": f"claude-1@{host}",
+                   "agent": "claude"})
         absent.assert_awaited_once_with(session.ref.key)
 
     def test_archive_retires_bare_alan_language_actor_by_address(self):
@@ -1352,7 +1572,8 @@ class IdentityTests(unittest.TestCase):
             asyncio.run(fleet.action(
                 {"operation": "archive", "source": session.ref.key}))
         execute.assert_awaited_once_with(
-            host, {"operation": "archive-alan", "actor": f"llm-1@{host}"})
+            host, {"operation": "archive-alan", "actor": f"llm-1@{host}",
+                   "agent": "llm"})
 
     def test_archive_verifies_transcript_then_closes_exact_tmux_identity(self):
         session = self.session("lovelace")
@@ -1532,7 +1753,7 @@ class IdentityTests(unittest.TestCase):
         source = "\n".join(path.read_text() for path in paths)
         self.assertEqual(source.count('"kill-session"'), 2)
         self.assertNotIn("unlink-window", source)
-        self.assertEqual(source.count('"kill-window"'), 2)
+        self.assertEqual(source.count('"kill-window"'), 1)
         self.assertIn('self.ui.command(["kill-window"',
                       (root / "agent_fleet/viewer.py").read_text())
 
@@ -1702,6 +1923,7 @@ class IdentityTests(unittest.TestCase):
         fleet._view_cache = ("stale",)
         usage = {"claude": {"five_hour": {"utilization": 37}}}
         raw = encode([self.session(host)], usage)
+        fleet.processes[host] = mock.Mock(pid=42)
         with mock.patch("agent_fleet.daemon.hosts", return_value=[host]):
             fleet.update_host(host, raw)
         self.assertNotIn(host, fleet.unavailable)
@@ -2312,8 +2534,11 @@ class IdentityTests(unittest.TestCase):
         with mock.patch.object(state, "find", return_value=session), \
              mock.patch.object(viewer.subprocess, "run", side_effect=failed), \
              mock.patch.object(viewer.subprocess, "Popen") as popen:
-            with self.assertRaises(subprocess.CalledProcessError):
+            with self.assertRaises(viewer.ViewerFailure) as raised:
                 state.resolve(f"alan:{actor}")
+        self.assertEqual((raised.exception.stage, raised.exception.cause,
+                          raised.exception.error_type),
+                         ("resolve", "unavailable", "CalledProcessError"))
         popen.assert_not_called()
 
     def test_python_open_retains_the_fleet_owned_presentation(self):
@@ -2456,8 +2681,8 @@ class IdentityTests(unittest.TestCase):
         entered = threading.Event()
         release = threading.Event()
 
-        def open_source(key, _selected=None):
-            if key == "source-a":
+        def open_source(key, _selected=None, _host=None):
+            if key == self.SOURCE_A:
                 entered.set()
                 release.wait(2)
             state.source = key
@@ -2465,16 +2690,17 @@ class IdentityTests(unittest.TestCase):
         state.open.side_effect = open_source
         worker = viewer.ViewerWorker(state, "main")
         try:
-            worker.intent("PROJECT", "source-a")
+            worker.intent("PROJECT", self.SOURCE_A)
             self.assertTrue(entered.wait(1))
-            worker.intent("PROJECT", "source-b")
-            worker.intent("PROJECT", "source-c")
+            worker.intent("PROJECT", self.SOURCE_B)
+            worker.intent("PROJECT", self.SOURCE_C)
             release.set()
-            self.assertEqual(worker.barrier("SOURCE"), "source-c")
+            self.assertEqual(worker.barrier("SOURCE"), self.SOURCE_C)
         finally:
             worker.close()
         self.assertEqual(state.open.call_args_list,
-                         [mock.call("source-a", None), mock.call("source-c", None)])
+                         [mock.call(self.SOURCE_A, None, "lovelace"),
+                          mock.call(self.SOURCE_C, None, "lovelace")])
 
     def test_viewer_worker_enter_supersedes_pending_projection_then_focuses(self):
         state = mock.Mock()
@@ -2484,8 +2710,8 @@ class IdentityTests(unittest.TestCase):
         entered = threading.Event()
         release = threading.Event()
 
-        def open_source(key, _selected=None):
-            if key == "source-a":
+        def open_source(key, _selected=None, _host=None):
+            if key == self.SOURCE_A:
                 entered.set()
                 release.wait(2)
             state.source = key
@@ -2493,18 +2719,19 @@ class IdentityTests(unittest.TestCase):
         state.open.side_effect = open_source
         worker = viewer.ViewerWorker(state, "main")
         try:
-            worker.intent("PROJECT", "source-a")
+            worker.intent("PROJECT", self.SOURCE_A)
             self.assertTrue(entered.wait(1))
-            worker.intent("PROJECT", "source-b")
+            worker.intent("PROJECT", self.SOURCE_B)
             with mock.patch.object(viewer, "focus") as focus:
-                worker.intent("FOCUS", "source-d")
+                worker.intent("FOCUS", self.SOURCE_D)
                 release.set()
-                self.assertEqual(worker.barrier("SOURCE"), "source-d")
+                self.assertEqual(worker.barrier("SOURCE"), self.SOURCE_D)
             focus.assert_called_once_with("main", "boltzmann")
         finally:
             worker.close()
         self.assertEqual(state.open.call_args_list,
-                         [mock.call("source-a", None), mock.call("source-d", None)])
+                         [mock.call(self.SOURCE_A, None, "lovelace"),
+                          mock.call(self.SOURCE_D, None, "lovelace")])
 
     def test_viewer_worker_exact_clear_cancels_pending_key_before_new_source(self):
         state = mock.Mock()
@@ -2513,8 +2740,8 @@ class IdentityTests(unittest.TestCase):
         entered = threading.Event()
         release = threading.Event()
 
-        def open_source(key, _selected=None):
-            if key == "source-k":
+        def open_source(key, _selected=None, _host=None):
+            if key == self.SOURCE_K:
                 entered.set()
                 release.wait(2)
             state.source = key
@@ -2523,31 +2750,33 @@ class IdentityTests(unittest.TestCase):
         state.clear.side_effect = lambda: setattr(state, "source", "")
         worker = viewer.ViewerWorker(state, "main")
         try:
-            worker.intent("PROJECT", "source-k")
+            worker.intent("PROJECT", self.SOURCE_K)
             self.assertTrue(entered.wait(1))
-            worker.intent("PROJECT", "source-k")
+            worker.intent("PROJECT", self.SOURCE_K)
             cleared = threading.Thread(
-                target=worker.barrier, args=("CLEAR", "source-k"))
+                target=worker.barrier, args=("CLEAR", self.SOURCE_K))
             cleared.start()
             release.set()
             cleared.join(1)
             self.assertFalse(cleared.is_alive())
-            worker.intent("PROJECT", "source-j")
-            self.assertEqual(worker.barrier("SOURCE"), "source-j")
+            worker.intent("PROJECT", self.SOURCE_J)
+            self.assertEqual(worker.barrier("SOURCE"), self.SOURCE_J)
         finally:
             worker.close()
         self.assertEqual(state.open.call_args_list,
-                         [mock.call("source-k", None), mock.call("source-j", None)])
+                         [mock.call(self.SOURCE_K, None, "lovelace"),
+                          mock.call(self.SOURCE_J, None, "lovelace")])
         state.clear.assert_called_once_with()
 
     def test_viewer_worker_terminal_failure_rejects_future_work_without_hanging(self):
         state = mock.Mock()
         state.source = ""
+        state.host = ""
         state.check.return_value = ""
         entered = threading.Event()
         release = threading.Event()
 
-        def fail(_key, _selected=None):
+        def fail(_key, _selected=None, _host=None):
             entered.set()
             release.wait(2)
             raise AssertionError("planted bug")
@@ -2563,7 +2792,7 @@ class IdentityTests(unittest.TestCase):
 
         with mock.patch.object(viewer, "viewer_error") as report:
             worker = viewer.ViewerWorker(state, "main")
-            worker.intent("PROJECT", "source-a")
+            worker.intent("PROJECT", self.SOURCE_A)
             self.assertTrue(entered.wait(1))
             pending = threading.Thread(target=record_pending_error)
             pending.start()
@@ -2576,12 +2805,13 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "planted bug"):
                 worker.barrier("SOURCE")
             with self.assertRaisesRegex(RuntimeError, "planted bug"):
-                worker.intent("PROJECT", "source-b")
+                worker.intent("PROJECT", self.SOURCE_B)
         report.assert_called_with("viewer worker failed: planted bug")
 
     def test_viewer_worker_close_terminates_after_expected_shutdown_failure(self):
         state = mock.Mock()
         state.source = ""
+        state.host = ""
         state.check.return_value = ""
         state.shutdown.side_effect = RuntimeError("cleanup failed")
         with mock.patch.object(viewer, "viewer_error") as report:
@@ -2596,11 +2826,12 @@ class IdentityTests(unittest.TestCase):
     def test_viewer_worker_reports_projection_failure_then_applies_newest(self):
         state = mock.Mock()
         state.source = ""
+        state.host = ""
         state.check.return_value = ""
         failed = threading.Event()
 
-        def open_source(key, _selected=None):
-            if key == "source-a":
+        def open_source(key, _selected=None, _host=None):
+            if key == self.SOURCE_A:
                 failed.set()
                 raise RuntimeError("planted projection failure")
             state.source = key
@@ -2609,10 +2840,10 @@ class IdentityTests(unittest.TestCase):
         with mock.patch.object(viewer, "viewer_error") as report:
             worker = viewer.ViewerWorker(state, "main")
             try:
-                worker.intent("PROJECT", "source-a")
+                worker.intent("PROJECT", self.SOURCE_A)
                 self.assertTrue(failed.wait(1))
-                worker.intent("PROJECT", "source-b")
-                self.assertEqual(worker.barrier("SOURCE"), "source-b")
+                worker.intent("PROJECT", self.SOURCE_B)
+                self.assertEqual(worker.barrier("SOURCE"), self.SOURCE_B)
                 self.assertTrue(worker.thread.is_alive())
             finally:
                 worker.close()
@@ -2628,7 +2859,7 @@ class IdentityTests(unittest.TestCase):
         release = threading.Event()
         result = []
 
-        def open_source(key, _selected=None):
+        def open_source(key, _selected=None, _host=None):
             entered.set()
             release.wait(2)
             state.source = key
@@ -2637,7 +2868,7 @@ class IdentityTests(unittest.TestCase):
         worker = viewer.ViewerWorker(state, "main")
         with mock.patch.object(viewer, "focus"):
             opened = threading.Thread(
-                target=worker.barrier, args=("OPEN", "source-a"))
+                target=worker.barrier, args=("OPEN", self.SOURCE_A))
             opened.start()
             self.assertTrue(entered.wait(1))
             sourced = threading.Thread(
@@ -2650,7 +2881,7 @@ class IdentityTests(unittest.TestCase):
             opened.join(1)
             sourced.join(1)
         worker.close()
-        self.assertEqual(result, ["source-a"])
+        self.assertEqual(result, [self.SOURCE_A])
 
     def test_project_socket_acknowledges_acceptance_before_switch_completion(self):
         with tempfile.TemporaryDirectory() as runtime:
@@ -2662,7 +2893,7 @@ class IdentityTests(unittest.TestCase):
             entered = threading.Event()
             release = threading.Event()
 
-            def open_source(key, _selected=None):
+            def open_source(key, _selected=None, _host=None):
                 entered.set()
                 release.wait(2)
                 state.source = key
@@ -2682,18 +2913,18 @@ class IdentityTests(unittest.TestCase):
                     time.sleep(.01)
                 with socket.socket(socket.AF_UNIX) as client:
                     client.connect(str(path))
-                    client.sendall(b"PROJECT source-a\n")
+                    client.sendall(f"PROJECT {self.SOURCE_A}\n".encode())
                     self.assertEqual(client.recv(16), b"OK\n")
                 self.assertTrue(entered.wait(1))
                 with socket.socket(socket.AF_UNIX) as client:
                     client.connect(str(path))
-                    client.sendall(b"FOCUS source-d\n")
+                    client.sendall(f"FOCUS {self.SOURCE_D}\n".encode())
                     self.assertEqual(client.recv(16), b"OK\n")
                 release.set()
                 with socket.socket(socket.AF_UNIX) as client:
                     client.connect(str(path))
                     client.sendall(b"SOURCE\n")
-                    self.assertEqual(client.recv(64), b"source-d\n")
+                    self.assertEqual(client.recv(128), (self.SOURCE_D + "\n").encode())
                 focus.assert_called_once_with("test", "boltzmann")
                 with socket.socket(socket.AF_UNIX) as client:
                     client.connect(str(path))
@@ -2714,12 +2945,13 @@ class IdentityTests(unittest.TestCase):
                 fzf_socket = runtime / "fzf.sock"
                 state = mock.Mock()
                 state.source = ""
+                state.host = ""
                 state.workstation = "boltzmann"
                 state.check.return_value = ""
                 entered = threading.Event()
                 release = threading.Event()
 
-                def open_source(source, _selected=None):
+                def open_source(source, _selected=None, _host=None):
                     entered.set()
                     release.wait(2)
                     state.source = source
@@ -2733,7 +2965,7 @@ class IdentityTests(unittest.TestCase):
                     (str(root / "fleet-open"), "project", "test", "{1}"))
                 activate = shlex.join(
                     (str(root / "fleet-open"), "focus", "test", "{1}"))
-                command = ("printf 'source-a\\t1\\trow\\n' | exec fzf "
+                command = (f"printf '{self.SOURCE_A}\\t1\\trow\\n' | exec fzf "
                            f"--listen {shlex.quote(str(fzf_socket))} --disabled "
                            f"--bind {shlex.quote('focus:execute-silent(' + focus + ')')} "
                            f"--bind {shlex.quote('enter:execute-silent(' + activate + ')')} "
@@ -2742,6 +2974,7 @@ class IdentityTests(unittest.TestCase):
                 with mock.patch.object(viewer, "RUNTIME", runtime), \
                      mock.patch.object(viewer.os, "ttyname",
                                        return_value="/dev/pts/9"), \
+                     mock.patch.object(viewer, "source_host", return_value="lovelace"), \
                      mock.patch.object(viewer, "Attachment", return_value=state), \
                      mock.patch.object(viewer, "viewer_error"), \
                      mock.patch.object(viewer, "focus"):
@@ -2831,11 +3064,12 @@ class IdentityTests(unittest.TestCase):
             self.assertFalse(path.exists())
             state.shutdown.assert_called_once_with()
 
-    def test_shutdown_cleanup_failure_reports_error_and_retires_socket(self):
+    def test_shutdown_cleanup_failure_keeps_controller_available(self):
         with tempfile.TemporaryDirectory() as runtime:
             runtime = Path(runtime)
             state = mock.Mock()
-            state.shutdown.side_effect = OSError("planted cleanup failure")
+            state.host = state.source = ""
+            state.shutdown.side_effect = [OSError("planted cleanup failure"), None]
             state.check.return_value = ""
             with mock.patch.object(viewer, "RUNTIME", runtime), \
                  mock.patch.object(viewer.os, "ttyname", return_value="/dev/pts/9"), \
@@ -2853,11 +3087,16 @@ class IdentityTests(unittest.TestCase):
                     client.sendall(b"SHUTDOWN\n")
                     self.assertEqual(
                         client.recv(128), b"ERROR planted cleanup failure\n")
-                    self.assertFalse(path.exists())
+                    self.assertTrue(path.exists())
+                self.assertTrue(thread.is_alive())
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.connect(str(path))
+                    client.sendall(b"SHUTDOWN\n")
+                    self.assertEqual(client.recv(16), b"OK\n")
                 thread.join(1)
             self.assertFalse(thread.is_alive())
             self.assertFalse(path.exists())
-            state.shutdown.assert_called_once_with()
+            self.assertEqual(state.shutdown.call_count, 2)
 
     @unittest.skipUnless(os.uname().nodename.split(".", 1)[0] == "lovelace",
                          "launcher ownership boundary is on lovelace")
@@ -2904,5 +3143,5 @@ class IdentityTests(unittest.TestCase):
 
     def test_quota_only_events_force_an_inventory_emit(self):
         source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()
-        self.assertIn('force = "quota" in events', source)
-        self.assertIn("if serial != previous or force:", source)
+        self.assertIn('force = bool({"alan", "quota"} & set(events))', source)
+        self.assertIn("if serial != previous or force or current_available != available:", source)

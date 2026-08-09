@@ -42,11 +42,133 @@ socket and reports its current closed/open/paused mode.
 
 ## Architecture
 
+Fleet is three mechanisms composed together. A workstation is only a display and
+input endpoint; the persistent Fleet machinery lives on Lovelace.
+
+```
+Boltzmann terminal
+   │
+   │ ordinary SSH terminal connections
+   ▼
+Lovelace
+ ├─ source tmux server            /tmp/tmux-1000/default
+ │    ├─ fleet@muster
+ │    ├─ fleet@events
+ │    └─ native Lovelace sessions
+ │
+ ├─ Fleet daemon                  fleet.service
+ │    ├─ observes Lovelace locally
+ │    ├─ observes Newton over SSH
+ │    ├─ observes Turing over SSH
+ │    └─ observes Noether and Boltzmann over SSH
+ │
+ └─ presentation tmux server      /tmp/tmux-1000/agent-fleet-ui
+      └─ fleet@main
+           ├─ controller window
+           ├─ warm Lovelace presentation
+           ├─ warm Newton presentation
+           └─ one warm presentation for each other visited host
+```
+
+### Workstation attachment
+
+On Boltzmann, `mod+v` executes `fleet-view`. The launcher creates or focuses two
+Ghostty windows: Muster runs `fleet-muster`, and Main runs `fleet-viewer main`.
+Both commands SSH to Lovelace; neither runs the Fleet state machine on
+Boltzmann.
+
+Muster attaches an ordinary terminal client to `fleet@muster` on Lovelace's
+source tmux server. Main attaches another ordinary terminal client to
+`fleet@main` on the separate `agent-fleet-ui` tmux server. The source server owns
+valuable native sessions and Muster. The UI server owns disposable presentation
+windows, so rebuilding `fleet@main` need not terminate a native session. UI
+windows contain nested tmux clients attached to the authoritative source
+servers; they are not copies or mirrors of source windows.
+
+### Observation and authority
+
 Lovelace alone runs `fleet.service`. It maintains one long-lived,
 non-interactive SSH event stream per configured host. The host helper combines
 tmux control-mode lifecycle notifications, polling of Alan's observation graph and
 transcript filesystem events, then publishes disposable snapshots. Cursor
 motion, sorting and preview never run SSH.
+
+Lovelace is observed locally; Newton, Turing, Noether and Boltzmann are observed
+through persistent SSH processes initiated by Lovelace. Each host collector owns
+a tmux control-mode connection to that host's `fleet@events` and observes tmux
+sessions, windows and panes, foreground processes, Alan actors,
+transcript/activity state and usage information. The collectors publish complete
+host observations to the daemon, which is the sole authority for the current
+global projection.
+
+Native tmux servers and Alan runtimes remain authoritative. The daemon's global
+model is an in-memory projection that can be rebuilt from them; Fleet has no
+persistent JSON topology database.
+
+Host observation and projection are implemented primarily in
+`agent_fleet/daemon.py`.
+
+### Muster and fzf
+
+Fzf renders and navigates Muster rows. It is not authoritative and does not
+perform remote attachment. Each row carries hidden fields containing the
+canonical source or actor key and the view revision in addition to its visible
+columns.
+
+Cursor movement invokes `fleet-open project main KEY`; Enter invokes
+`fleet-open focus main KEY`. `PROJECT` asks the resident Main controller to show
+the exact source. `FOCUS` first ensures Main shows that source, then asks the
+workstation to focus its Main window. The controller acknowledges cursor movement
+immediately and collapses queued cursor intents to the newest one, so navigation
+does not wait for every intermediate row to open.
+
+Muster rendering and bindings live in `agent_fleet/ui.py`.
+
+### Main presentation
+
+`fleet@main` has a resident Python controller. It owns one `Attachment` and one
+control-mode client to the UI tmux server. A Lovelace presentation runs the
+equivalent of:
+
+```
+tmux attach-session -t <exact native session>
+```
+
+A Newton presentation runs the equivalent of:
+
+```
+ssh -tt newton tmux attach-session -t <exact native session>
+```
+
+The target is not a human-readable name. Fleet resolves and verifies the host,
+tmux socket, server PID, server start time and session ID. Alan actors additionally
+resolve to their native `fleet@alan-…` session.
+
+The first open of a host creates one presentation window and nested native tmux
+client. Moving between sources on that host uses `switch-client` on the existing
+native client.
+Moving to another already-warm host selects that host's retained UI window. The
+steady-state path is therefore:
+
+```
+cursor movement
+  → PROJECT intent
+  → switch existing native tmux client
+  → select existing UI window
+```
+
+It must not start Python, establish SSH, allocate a PTY, create a tmux client or
+create a presentation process on every cursor movement. A single native tmux
+client cannot move between independent tmux servers, which is why `fleet@main`
+retains one presentation per host:
+
+```
+fleet@main
+ ├─ presentation A → nested client on Lovelace
+ ├─ presentation B → SSH → nested client on Newton
+ └─ presentation C → SSH → nested client on Turing
+```
+
 The first open of a remote host in a viewer slot creates one long-lived
 interactive SSH attachment with `BatchMode=yes`. The slot retains that attachment
 in its dedicated `agent-fleet-ui` tmux session. Warm source and host changes use
@@ -54,6 +176,62 @@ the existing daemon, host and UI control streams. Fzf invokes finite POSIX-shell
 socket adapters for interactive operations; it does not start Python on cursor
 motion, fold changes, resizing or selection. A warm switch creates no SSH
 channel, PTY, tmux client, Python interpreter or presentation process.
+
+Presentation lifecycle and switching are implemented in
+`agent_fleet/viewer.py`.
+
+### Workstation focus
+
+Projection and workstation focus are separate. Scrolling changes what Main
+presents. Enter must additionally focus the physical workstation's Main window.
+Muster therefore establishes a reverse Unix socket while the workstation is
+attached:
+
+```
+Lovelace workstation socket
+       │ reverse SSH Unix socket
+       ▼
+workstation helper
+       │
+       └─ i3-msg ... focus
+```
+
+The helper only focuses a local Fleet window or displays a local rofi prompt. It
+does not carry session data and is not involved in projecting a remote host. Enter
+resolves the selected key, ensures Main has reached it, sends `focus` through the
+workstation socket, and finally runs `i3-msg` on the workstation. Projection can
+continue if the workstation socket disappears, but the final focus operation must
+fail visibly.
+
+The workstation helper is implemented in `agent_fleet/workstation.py`.
+
+### Persistence and network boundaries
+
+Closing a workstation removes its ordinary Muster and Main clients and its
+reverse workstation-control socket. It must not remove either Lovelace tmux
+server, `fleet@muster`, `fleet@main`, the Main controller, warm remote
+presentations, the daemon, its host observers, or any native source session. A
+later `mod+v`, including from another network, attaches new ordinary display
+clients to the resident Muster and Main. A new display for a slot detaches the
+previous ordinary display client, but must not replace the resident controller or
+its warm source presentations.
+
+There are two independent SSH directions:
+
+```
+workstation → Lovelace
+    displays Muster/Main and supplies the reverse workstation-control socket
+
+Lovelace → Newton/Turing/…
+    observes source state and carries warm remote presentations
+```
+
+Losing the workstation connection must not break a Lovelace-to-source-host
+attachment. Losing Lovelace-to-Newton connectivity can mark Newton unavailable,
+terminate its presentation channel and invalidate its warm presentation; Fleet
+must reconstruct that presentation after the source-host connection returns. If
+Lovelace itself restarts, its global tmux servers and daemon are lost unless
+restored separately, while native sessions on the source hosts remain.
 
 Tmux previews use `capture-pane -eN`, reconstruct the terminal grid with
 libvterm, and apply tmux's `screen_write_preview` cursor-centred crop. Live Alan
@@ -129,6 +307,26 @@ Muster collects the creation fields and asks that host's Fleet process to call
 Alan's canonical Python `spawn` operation. Fleet records the requested label.
 Ordinary shell sessions remain directly available through tmux rather than
 through Fleet's creator.
+
+## Diagnostics
+
+Fleet reports its authoritative lifecycle transitions directly to the user
+journal. Inspect all structured Fleet events, one viewer slot, or the daemon's
+complete service stream with:
+
+```sh
+journalctl --user -t agent-fleet
+journalctl --user -t agent-fleet FLEET_COMPONENT=viewer FLEET_SLOT=main
+journalctl --user -u fleet.service
+```
+
+Structured events cover daemon and host availability, viewer and presentation
+lifecycle, completed projection paths, and failures at the boundary that owns
+them. The service stream also contains native collector diagnostics on stderr.
+Fleet does not record terminal bytes, pane content, previews, transcripts,
+prompts, user input, or model output. The journal is diagnostic history, not
+authoritative Fleet state: tmux servers and Alan runtimes remain authoritative,
+and Fleet's in-memory projection is rebuilt from them.
 
 ## Development
 

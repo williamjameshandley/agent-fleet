@@ -1,5 +1,7 @@
 """Finite source-authority mutations for the Fleet action boundary."""
 
+import json
+
 from . import alan, presentation, tmux, transcripts
 
 
@@ -7,17 +9,12 @@ FIELDS = {
     "create": {"operation", "agent", "name", "cwd"},
     "rename-alan": {"operation", "actor", "name"},
     "rename-tmux": {"operation", "source", "name"},
-    "archive-alan": {"operation", "actor"},
+    "archive-alan": {"operation", "actor", "agent"},
     "archive-tmux": {"operation", "source", "agent", "transcript"},
     "refresh": {"operation", "actor"},
     "restore-alan": {"operation", "actor"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
 }
-
-ALAN_OPERATIONS = {
-    "create", "rename-alan", "archive-alan", "refresh", "restore-alan",
-}
-
 
 def execute(request):
     operation = request.get("operation")
@@ -38,6 +35,10 @@ def execute(request):
         tmux.mutate(request["source"], "rename", [request["name"]])
         return {"name": request["name"]}
     if operation == "archive-alan":
+        if request["agent"] not in {"llm", "claude", "codex"}:
+            raise ValueError("archive requires a language actor")
+        if request["agent"] == "llm":
+            presentation.close(request["actor"])
         alan.retire(request["actor"])
         return {}
     if operation == "archive-tmux":
@@ -53,3 +54,7 @@ def execute(request):
         request["agent"], request["transcript"], request["name"]
     )
     return {"agent": request["agent"], "transcript": request["transcript"]}
+
+
+def execute_json(raw):
+    return json.dumps(execute(json.loads(raw)), separators=(",", ":"))

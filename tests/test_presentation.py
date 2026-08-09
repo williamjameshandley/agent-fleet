@@ -14,6 +14,50 @@ def descriptor(state="waiting"):
     }
 
 
+def test_presentation_availability_is_derived_from_exact_native_evidence(tmp_path):
+    codex = "codex-a@newton"
+    claude = "claude-a@newton"
+    python = "python-a@newton"
+    llm = "llm-a@newton"
+    names = [
+        "fleet@alan-" + presentation.alan.runtime_name(codex),
+        "fleet@alan-" + presentation.alan.runtime_name(claude),
+    ]
+    native = tmp_path / "native"
+    native.mkdir()
+    (native / "kernel.json").touch()
+    with mock.patch.object(presentation.alan, "native_dir", return_value=native):
+        assert presentation.available(codex, {"kind": "codex"}, names)
+        assert presentation.available(claude, {"kind": "claude"}, names)
+        assert not presentation.available(
+            "codex-read-reviewer@newton", {"kind": "codex"}, names)
+        assert presentation.available(
+            python, {"kind": "python", "cwd": str(tmp_path)}, names)
+        (native / "kernel.json").unlink()
+        assert not presentation.available(
+            python, {"kind": "python", "cwd": str(tmp_path)}, names)
+        (native / "kernel.json").touch()
+        assert presentation.available(
+            llm, {"kind": "llm", "cwd": str(tmp_path)}, names)
+        assert not presentation.available(
+            "python-gone@newton",
+            {"kind": "python", "cwd": str(tmp_path / "gone")}, names)
+        assert not presentation.available(
+            "llm-no-cwd@newton", {"kind": "llm", "cwd": ""}, names)
+        assert not presentation.available(codex, {"kind": "codex"}, names * 2)
+        assert not presentation.available("principal@newton", {
+            "kind": "principal", "cwd": str(tmp_path),
+        }, names)
+
+
+def test_disappeared_native_presentation_immediately_removes_language_eligibility():
+    actor = "codex-a@newton"
+    descriptor = {"kind": "codex"}
+    name = "fleet@alan-" + presentation.alan.runtime_name(actor)
+    assert presentation.available(actor, descriptor, [name])
+    assert not presentation.available(actor, descriptor, [])
+
+
 def test_presentation_sends_input_and_renders_its_output(capsys):
     with mock.patch.object(presentation.alan, "actors",
                            return_value=[descriptor()]), \
