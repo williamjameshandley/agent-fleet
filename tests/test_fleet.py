@@ -353,6 +353,25 @@ class IdentityTests(unittest.TestCase):
                          {"agent": session.agent, "state": session.state,
                           "cwd": session.cwd})
 
+    def test_daemon_refuses_to_resolve_a_pending_archive(self):
+        fleet = Fleet()
+        session = self.session("lovelace")
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable = set()
+        fleet.pending_archives.add(session.ref.key)
+        writer = mock.Mock()
+        writer.drain = mock.AsyncMock()
+
+        async def exercise():
+            reader = asyncio.StreamReader()
+            reader.feed_data(f"resolve {session.ref.key}\n".encode())
+            reader.feed_eof()
+            await fleet.reply(reader, writer)
+
+        asyncio.run(exercise())
+        self.assertEqual(json.loads(writer.write.call_args.args[0]),
+                         {"error": f"session is being archived: {session.ref.key}"})
+
     def test_daemon_switch_reply_preserves_the_host_control_error(self):
         fleet = Fleet()
         writer = mock.Mock()
@@ -2633,15 +2652,40 @@ class IdentityTests(unittest.TestCase):
                     client.sendall(b"SOURCE\n")
                     self.assertEqual(client.recv(64), b"source-new\n")
                 asyncio.run(send("CLEAR source-old"))
-                state.clear.assert_not_called()
+                state.release.assert_called_once_with("source-old")
                 asyncio.run(send("CLEAR source-new"))
-                state.clear.assert_called_once_with()
+                self.assertEqual(state.release.call_args_list, [
+                    mock.call("source-old"), mock.call("source-new")])
+                state.clear.assert_not_called()
                 with socket.socket(socket.AF_UNIX) as client:
                     client.connect(str(path))
                     client.sendall(b"SHUTDOWN\n")
                     self.assertEqual(client.recv(16), b"OK\n")
                 thread.join(1)
             self.assertFalse(thread.is_alive())
+
+    def test_viewer_release_removes_only_the_source_host(self):
+        state = object.__new__(viewer.Attachment)
+        state.source = "source-a"
+        state.host = "lovelace"
+        state.attachments = {"lovelace": object(), "newton": object()}
+        with mock.patch.object(state, "remove_host") as remove:
+            state.release("source-b")
+            remove.assert_not_called()
+            state.release("source-a")
+        remove.assert_called_once_with("lovelace", "clear")
+        self.assertEqual((state.source, state.host), ("", ""))
+
+    def test_viewer_bare_clear_removes_every_host(self):
+        state = object.__new__(viewer.Attachment)
+        state.source = "source-a"
+        state.host = "lovelace"
+        state.attachments = {"lovelace": object(), "newton": object()}
+        with mock.patch.object(state, "remove_host") as remove:
+            state.clear()
+        self.assertEqual(remove.call_args_list, [
+            mock.call("lovelace", "clear"), mock.call("newton", "clear")])
+        self.assertEqual((state.source, state.host), ("", ""))
 
     def test_viewer_worker_collapses_pending_projection_to_latest(self):
         state = mock.Mock()
@@ -2780,7 +2824,8 @@ class IdentityTests(unittest.TestCase):
             state.source = key
 
         state.open.side_effect = open_source
-        state.clear.side_effect = lambda: setattr(state, "source", "")
+        state.release.side_effect = lambda key: setattr(state, "source", "") \
+            if state.source == key else None
         worker = viewer.ViewerWorker(state, "main")
         try:
             worker.intent("PROJECT", self.SOURCE_K)
@@ -2799,7 +2844,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(state.open.call_args_list,
                          [mock.call(self.SOURCE_K, None, "lovelace"),
                           mock.call(self.SOURCE_J, None, "lovelace")])
-        state.clear.assert_called_once_with()
+        state.release.assert_called_once_with(self.SOURCE_K)
 
     def test_viewer_worker_terminal_failure_rejects_future_work_without_hanging(self):
         state = mock.Mock()

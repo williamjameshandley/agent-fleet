@@ -489,6 +489,12 @@ class Attachment:
             self.remove_host(host, reason)
         self.source = self.host = ""
 
+    def release(self, key):
+        if self.source != key:
+            return
+        self.remove_host(self.host, "clear")
+        self.source = self.host = ""
+
     def remove_window(self, window):
         try:
             self.ui.command(["kill-window", "-t", window])
@@ -650,7 +656,9 @@ class ViewerWorker:
                 viewer_error(f"Focus failed: {error}")
                 self.reported = True
         elif job.kind == "CLEAR":
-            if not job.key or self.state.source == job.key:
+            if job.key:
+                self.state.release(job.key)
+            else:
                 self.state.clear()
         elif job.kind == "SOURCE":
             job.value = self.state.source

@@ -298,12 +298,11 @@ class Fleet:
                              self.composed_graph())
         elif request.startswith("resolve "):
             key = request.removeprefix("resolve ")
-            matches = [session for group in self.sessions.values() for session in group
-                       if session.ref.key == key]
-            if len(matches) != 1:
-                value = {"error": f"session disappeared: {key}"}
+            try:
+                session = self.source(key)
+            except (LookupError, RuntimeError) as error:
+                value = {"error": str(error)}
             else:
-                session = matches[0]
                 if session.ref.server.host in self.presentation_unavailable():
                     value = {"error": (f"{session.ref.server.host} presentation is "
                                        "unavailable; refusing action")}
@@ -694,6 +693,8 @@ class Fleet:
                                     [result for _, result in observed])
 
     def source(self, key):
+        if key in self.pending_archives:
+            raise LookupError(f"session is being archived: {key}")
         matches = [session for group in self.sessions.values()
                    for session in group if session.ref.key == key]
         if len(matches) != 1:
@@ -903,9 +904,13 @@ class Fleet:
             await self.update_viewers(viewers, f"OPEN {key}")
             return value
         _, host, authority = self.archive_authority(key)
-        await self.update_viewers(viewers, f"CLEAR {key}")
-        await self.authority(host, authority)
-        await self.wait_for_absence(key)
+        self.pending_archives.add(key)
+        try:
+            await self.update_viewers(viewers, f"CLEAR {key}")
+            await self.authority(host, authority)
+            await self.wait_for_absence(key)
+        finally:
+            self.pending_archives.discard(key)
         return {}
 
     async def remote_json(self, host, *command):
@@ -1062,13 +1067,8 @@ class Fleet:
         return await future
 
     async def switch(self, key, client):
-        matches = [session for group in self.sessions.values() for session in group
-                   if session.ref.key == key]
-        if len(matches) != 1:
-            raise RuntimeError(f"session disappeared: {key}")
+        session = self.source(key)
         host = key_host(key)
-        if host in self.unavailable:
-            raise RuntimeError(f"{host} is disconnected; refusing action")
         if host in self.tmux_unavailable:
             raise RuntimeError(f"{host} tmux server is unavailable")
         self.next_switch += 1
@@ -1078,8 +1078,8 @@ class Fleet:
         payload = {"switch": number, "client": client}
         if key.startswith("alan:"):
             payload["actor"] = key.removeprefix("alan:")
-            payload["agent"] = matches[0].agent
-            payload["cwd"] = matches[0].cwd
+            payload["agent"] = session.agent
+            payload["cwd"] = session.cwd
         else:
             payload["target"] = split_key(key)[1:]
         process = self.processes[host]

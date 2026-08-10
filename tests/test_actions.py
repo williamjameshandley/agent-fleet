@@ -280,6 +280,77 @@ def test_background_archive_releases_viewers_before_source_authority(tmp_path,
     asyncio.run(exercise())
 
 
+def test_background_archive_refuses_reattachment_after_viewer_release(tmp_path,
+                                                                      monkeypatch):
+    async def exercise():
+        fleet = Fleet()
+        item = session(kind="tmux")
+        host = item.ref.server.host
+        key = item.ref.key
+        fleet.sessions = {host: [item]}
+        fleet.unavailable.clear()
+        fleet.pending_archives.add(key)
+        released = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def update(_viewers, _message):
+            released.set()
+
+        async def authority(_host, _request):
+            await finish.wait()
+            return {}
+
+        with mock.patch.object(fleet, "viewers", return_value=[]), \
+             mock.patch.object(fleet, "update_viewers", side_effect=update), \
+             mock.patch.object(fleet, "authority", side_effect=authority), \
+             mock.patch.object(fleet, "wait_for_absence"):
+            archive = asyncio.create_task(fleet.complete_archive(
+                key, host, {"operation": "archive"}, []))
+            await released.wait()
+            with pytest.raises(LookupError, match="being archived"):
+                await fleet.switch(key, "/dev/pts/9")
+            finish.set()
+            await archive
+
+    monkeypatch.setattr(daemon, "RUNTIME", tmp_path)
+    asyncio.run(exercise())
+
+
+def test_direct_archive_refuses_reattachment_until_authority_finishes():
+    async def exercise():
+        fleet = Fleet()
+        item = session(kind="tmux")
+        host = item.ref.server.host
+        key = item.ref.key
+        fleet.sessions = {host: [item]}
+        fleet.unavailable.clear()
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def authority(_host, _request):
+            started.set()
+            await finish.wait()
+            return {}
+
+        with mock.patch.object(fleet, "viewers", return_value=[]), \
+             mock.patch.object(fleet, "update_viewers"), \
+             mock.patch.object(fleet, "authority", side_effect=authority), \
+             mock.patch.object(fleet, "wait_for_absence"):
+            archive = asyncio.create_task(fleet.action({
+                "operation": "archive", "source": key}))
+            await started.wait()
+            assert key in fleet.pending_archives
+            with pytest.raises(LookupError, match="being archived"):
+                await fleet.switch(key, "/dev/pts/9")
+            with pytest.raises(LookupError, match="being archived"):
+                fleet.source(key)
+            finish.set()
+            assert await archive == {}
+            assert key not in fleet.pending_archives
+
+    asyncio.run(exercise())
+
+
 def test_viewer_updates_attempt_every_recorded_slot_before_reporting_failure():
     async def exercise():
         fleet = Fleet()
