@@ -417,12 +417,15 @@ class Attachment:
                 raise ViewerFailure("resolve", "invalid_identity", error) from error
             return socket_path, pid, started, sid
         session = self.find(key)
-        if session.attachment:
-            return split_key(session.attachment)[1:]
         actor = key.removeprefix("alan:")
         if session.state in {"retired", "unavailable"}:
             error = RuntimeError(f"Alan actor is {session.state}: {actor}")
             raise ViewerFailure("resolve", "unavailable", error) from error
+        if session.attachment:
+            try:
+                return split_key(session.attachment)[1:]
+            except (AttributeError, TypeError, ValueError) as error:
+                raise ViewerFailure("resolve", "invalid_identity", error) from error
         name = "fleet@alan-" + alan.runtime_name(actor)
         fmt = "#{q:socket_path} #{pid} #{start_time} #{q:session_id}"
         command = ["/usr/bin/tmux", "-N", "list-sessions", "-f",

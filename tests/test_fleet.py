@@ -280,15 +280,42 @@ class IdentityTests(unittest.TestCase):
         state.open(actor.ref.key)
         state.clear()
 
-        [restarted] = decode(encode([composite]))
+        [restarted] = fold_adopted([provider, actor])
         current = restarted
         state.open(actor.ref.key)
         self.assertEqual(restarted.ref, actor.ref)
         self.assertEqual(restarted.attachment, provider.ref)
-        self.assertEqual(sum(request.startswith("resolve ") for request in requests), 2)
-        self.assertEqual(sum(request.startswith("switch ") for request in requests), 2)
+        self.assertEqual([request for request in requests if request.startswith("resolve ")],
+                         [f"resolve {actor.ref.key}", f"resolve {actor.ref.key}"])
+        switches = [json.loads(request.removeprefix("switch "))
+                    for request in requests if request.startswith("switch ")]
+        self.assertEqual(switches,
+                         [{"key": actor.ref.key, "client": "/dev/pts/10"}] * 2)
         self.assertEqual(sum(call.args[0][0] == "kill-window"
                              for call in ui.command.call_args_list), 1)
+
+    def test_adopted_attachment_does_not_revive_an_unavailable_actor(self):
+        actor = "codex-1@newton"
+        session = mock.Mock(
+            agent="codex", state="unavailable", cwd="/work",
+            attachment="tmux:newton:/tmp/tmux/native:44:12:$9",
+        )
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        with mock.patch.object(state, "find", return_value=session), \
+             self.assertRaises(viewer.ViewerFailure) as raised:
+            state.resolve(f"alan:{actor}")
+        self.assertEqual((raised.exception.stage, raised.exception.cause),
+                         ("resolve", "unavailable"))
+
+    def test_invalid_adopted_attachment_crosses_the_viewer_boundary(self):
+        session = mock.Mock(agent="codex", state="waiting", cwd="/work", attachment=1)
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        with mock.patch.object(state, "find", return_value=session), \
+             self.assertRaises(viewer.ViewerFailure) as raised:
+            state.resolve("alan:codex-1@newton")
+        self.assertEqual((raised.exception.stage, raised.exception.cause,
+                          raised.exception.error_type),
+                         ("resolve", "invalid_identity", "AttributeError"))
 
     def test_protocol_round_trip_preserves_the_alan_graph(self):
         graph = nx.MultiDiGraph()
