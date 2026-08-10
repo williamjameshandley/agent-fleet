@@ -404,7 +404,7 @@ class Attachment:
         if set(value) == {"error"}:
             error = RuntimeError(value["error"])
             raise ViewerFailure("resolve", "refused", error) from error
-        if set(value) != {"agent", "state", "cwd"}:
+        if set(value) != {"agent", "state", "cwd", "attachment"}:
             error = RuntimeError("invalid Fleet resolver response")
             raise ViewerFailure("daemon", "invalid_reply", error) from error
         return SimpleNamespace(**value)
@@ -421,6 +421,11 @@ class Attachment:
         if session.state in {"retired", "unavailable"}:
             error = RuntimeError(f"Alan actor is {session.state}: {actor}")
             raise ViewerFailure("resolve", "unavailable", error) from error
+        if session.attachment:
+            try:
+                return split_key(session.attachment)[1:]
+            except (AttributeError, TypeError, ValueError) as error:
+                raise ViewerFailure("resolve", "invalid_identity", error) from error
         name = "fleet@alan-" + alan.runtime_name(actor)
         fmt = "#{q:socket_path} #{pid} #{start_time} #{q:session_id}"
         command = ["/usr/bin/tmux", "-N", "list-sessions", "-f",

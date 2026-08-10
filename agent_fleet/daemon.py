@@ -308,7 +308,9 @@ class Fleet:
                                        "unavailable; refusing action")}
                 else:
                     value = {"agent": session.agent, "state": session.state,
-                             "cwd": session.cwd}
+                             "cwd": session.cwd,
+                             "attachment": session.attachment.key
+                             if session.attachment else ""}
             payload = json.dumps(value, separators=(",", ":"))
         elif request.startswith("switch "):
             try:
@@ -1048,7 +1050,9 @@ class Fleet:
             await asyncio.gather(*tuple(self.background_tasks), return_exceptions=True)
 
     async def preview(self, key, columns=0, lines=0):
-        if not any(session.ref.key == key for group in self.sessions.values() for session in group):
+        session = next((session for group in self.sessions.values() for session in group
+                        if session.ref.key == key), None)
+        if session is None:
             raise RuntimeError(f"session disappeared: {key}")
         host = key_host(key)
         if host in self.unavailable:
@@ -1061,7 +1065,8 @@ class Fleet:
         number = self.next_preview
         future = asyncio.get_running_loop().create_future()
         self.previews[number] = (host, future)
-        process.stdin.write((json.dumps({"preview": number, "key": key,
+        source = session.attachment.key if session.attachment else key
+        process.stdin.write((json.dumps({"preview": number, "key": source,
                                          "columns": columns, "lines": lines}) + "\n").encode())
         await process.stdin.drain()
         return await future
@@ -1076,7 +1081,10 @@ class Fleet:
         future = asyncio.get_running_loop().create_future()
         self.switches[number] = (host, future)
         payload = {"switch": number, "client": client}
-        if key.startswith("alan:"):
+        session = matches[0]
+        if session.attachment:
+            payload["target"] = split_key(session.attachment.key)[1:]
+        elif key.startswith("alan:"):
             payload["actor"] = key.removeprefix("alan:")
             payload["agent"] = session.agent
             payload["cwd"] = session.cwd
