@@ -1081,7 +1081,6 @@ class Fleet:
         future = asyncio.get_running_loop().create_future()
         self.switches[number] = (host, future)
         payload = {"switch": number, "client": client}
-        session = matches[0]
         if session.attachment:
             payload["target"] = split_key(session.attachment.key)[1:]
         elif key.startswith("alan:"):
