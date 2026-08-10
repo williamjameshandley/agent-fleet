@@ -242,6 +242,34 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
     ]
 
 
+def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
+    identity = "00000000-0000-0000-0000-000000000001"
+    session = Session(
+        SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$7"),
+        "fleet@native-test", 1, 2, 1, 1, "python3", "", "/work",
+    )
+    item = type("Transcript", (), {"session_id": identity})()
+
+    def run(arguments, **_kwargs):
+        output = ("[]" if arguments[:2] == ["claude", "agents"] else
+                  "name=fleet@native-test session=$7 pid=100 command=python3 title=''\n")
+        return type("Result", (), {"stdout": output})()
+
+    monkeypatch.setattr(transcripts.subprocess, "run", run)
+    monkeypatch.setattr(transcripts, "process_tree", lambda: {100: [101]})
+    monkeypatch.setattr(transcripts.os, "readlink", lambda path: (
+        "/usr/bin/codex" if path == "/proc/101/exe" else "/usr/bin/python3"))
+    monkeypatch.setattr(transcripts, "codex_transcript", lambda _tree: item)
+    monkeypatch.setattr(transcripts, "codex_state",
+                        lambda _item: ("waiting", "native reply", 3))
+    monkeypatch.setattr(transcripts, "last_human_time", lambda _item: 2)
+
+    [projected] = transcripts.observe([session], {})
+
+    assert projected.agent == "codex"
+    assert projected.transcript_id == identity
+
+
 def test_adoption_join_is_host_local():
     identity = "00000000-0000-0000-0000-000000000001"
     actor = Session(

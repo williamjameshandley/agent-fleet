@@ -343,9 +343,21 @@ def observe(sessions, transcripts=None):
         name, session_id, pid, command, title = (
             field.split("=", 1)[1] for field in shlex.split(line))
         agent = Path(command).name
-        if agent not in AGENTS or "@" in name:
-            continue
         tree = [int(pid), *descendants(int(pid), children)]
+        if name.startswith("fleet@native-"):
+            agents = set()
+            for item in tree:
+                try:
+                    executable = os.readlink(f"/proc/{item}/exe")
+                except OSError:
+                    continue
+                if (candidate := Path(executable).name) in AGENTS:
+                    agents.add(candidate)
+            if len(agents) != 1:
+                continue
+            [agent] = agents
+        elif agent not in AGENTS or "@" in name:
+            continue
         if agent == "claude":
             entry = next((claude[item] for item in tree if item in claude), None)
             if entry is None:
