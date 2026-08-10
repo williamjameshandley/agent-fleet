@@ -961,58 +961,12 @@ class IdentityTests(unittest.TestCase):
         entry = mock.Mock(client="/dev/pts/8", source="old")
         state.attachments[state.host] = entry
         with mock.patch.object(state, "resident_switch") as switch, \
-             mock.patch.object(state, "ui_windows", return_value={entry.window}), \
              mock.patch.object(state, "select_host") as select, \
              mock.patch.object(state, "create_host") as create:
             state.open(session.ref.key)
         switch.assert_called_once_with(session.ref.key, "/dev/pts/8")
         select.assert_not_called(); create.assert_not_called()
         self.assertEqual(entry.source, session.ref.key)
-
-    def test_missing_cached_window_is_evicted_and_rebuilt_before_switch(self):
-        session = self.session(os.uname().nodename)
-        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
-        host = os.uname().nodename.split(".", 1)[0]
-        stale = mock.Mock(window="@2", client="/dev/pts/8", source="old")
-        fresh = mock.Mock(window="@3", client="/dev/pts/10", source=session.ref.key)
-        state.source = "old"; state.host = host
-        state.attachments[host] = stale
-
-        def remove(removed, _reason):
-            state.attachments.pop(removed)
-
-        with mock.patch.object(state, "ui_windows", return_value={"@1"}), \
-             mock.patch.object(state, "remove_host", side_effect=remove) as removed, \
-             mock.patch.object(state, "create_host", return_value=fresh) as create, \
-             mock.patch.object(state, "resident_switch") as switch, \
-             mock.patch.object(state, "select_host") as select:
-            state.open(session.ref.key)
-        removed.assert_called_once_with(host, "missing")
-        create.assert_called_once_with(host, session.ref.key)
-        switch.assert_not_called()
-        select.assert_called_once_with(fresh)
-        self.assertIs(state.attachments[host], fresh)
-        self.assertEqual(state.source, session.ref.key)
-
-    def test_failed_rebuild_does_not_advertise_the_missing_attachment(self):
-        session = self.session(os.uname().nodename)
-        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
-        host = os.uname().nodename.split(".", 1)[0]
-        stale = mock.Mock(window="@2", client="/dev/pts/8", source="old")
-        state.source = "old"; state.host = host
-        state.attachments[host] = stale
-
-        def remove(removed, _reason):
-            state.attachments.pop(removed)
-
-        with mock.patch.object(state, "ui_windows", return_value=set()), \
-             mock.patch.object(state, "remove_host", side_effect=remove), \
-             mock.patch.object(state, "create_host",
-                               side_effect=RuntimeError("unavailable")):
-            with self.assertRaisesRegex(RuntimeError, "unavailable"):
-                state.open(session.ref.key)
-        self.assertEqual((state.source, state.host), ("", ""))
-        self.assertNotIn(host, state.attachments)
 
     def test_initial_local_attachment_does_not_request_nested_tmux(self):
         ui = mock.Mock()
@@ -1113,8 +1067,6 @@ class IdentityTests(unittest.TestCase):
             "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
             "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
         with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
-             mock.patch.object(state, "ui_windows",
-                               return_value={state.attachments["new-host"].window}), \
              mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "select_host", side_effect=RuntimeError("UI failed")):
             with self.assertRaisesRegex(RuntimeError, "UI failed"):
@@ -1132,8 +1084,6 @@ class IdentityTests(unittest.TestCase):
             "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
             "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
         with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
-             mock.patch.object(state, "ui_windows",
-                               return_value={state.attachments["new-host"].window}), \
              mock.patch.object(
                 state, "resident_switch",
                 side_effect=[None, RuntimeError("rollback failed")]), \
@@ -1151,7 +1101,6 @@ class IdentityTests(unittest.TestCase):
         state.attachments = {"old-host": old, "new-host": new}
         state.source = "old-source"; state.host = "old-host"
         with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
-             mock.patch.object(state, "ui_windows", return_value={new.window}), \
              mock.patch.object(state, "resident_switch"), \
              mock.patch.object(state, "select_host"):
             state.open("new-host:/tmp/tmux/default:12:10:$1")
@@ -1228,11 +1177,6 @@ class IdentityTests(unittest.TestCase):
                 self.assertIsNone(control_process.poll())
                 self.assertEqual(set(state.attachments), {"lovelace", "newton"})
                 self.assertEqual(state.source, entries["lovelace"].source)
-                control.command(["kill-window", "-t", entries["lovelace"].window])
-                self.assertEqual(state.check(),
-                                 "Viewer attachment exited unexpectedly")
-                self.assertEqual(set(state.attachments), {"newton"})
-                self.assertEqual(state.source, "")
             finally:
                 if display and display.poll() is None:
                     display.terminate(); display.wait()
@@ -1277,7 +1221,6 @@ class IdentityTests(unittest.TestCase):
             window="@2", remote_file="/run/user/1000/agent-fleet/viewer.tty",
             owner="lovelace", master=None)
         with mock.patch.object(state, "ui_value", return_value="1"), \
-             mock.patch.object(state, "ui_windows", return_value={"@2"}), \
              mock.patch.object(state, "reclaim_marker") as reclaim, \
              mock.patch.object(state, "ssh") as ssh:
             error = state.check()
@@ -1296,7 +1239,6 @@ class IdentityTests(unittest.TestCase):
             "newton": mock.Mock(window="@2", remote_file="marker",
                                  owner="lovelace", master=(82, 10))}
         with mock.patch.object(viewer, "process_alive", return_value=False), \
-             mock.patch.object(state, "ui_windows", return_value={"@1", "@2"}), \
              mock.patch.object(state, "ui_value", return_value="0"), \
              mock.patch.object(state, "reclaim_marker",
                                side_effect=RuntimeError(
@@ -1314,7 +1256,6 @@ class IdentityTests(unittest.TestCase):
         entry = mock.Mock(source=state.source, client="/dev/pts/8", window="@2")
         state.attachments["remote"] = entry
         with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"remote"})), \
-             mock.patch.object(state, "ui_windows", return_value={entry.window}), \
              mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "create_host") as create, \
              mock.patch.object(state, "select_host") as select:

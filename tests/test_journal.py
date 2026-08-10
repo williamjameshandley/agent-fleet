@@ -205,7 +205,6 @@ def test_projection_events_distinguish_cold_same_host_and_cross_host(monkeypatch
     monkeypatch.setattr(state, "create_host", lambda host, key: entries[host])
     monkeypatch.setattr(state, "resident_switch", lambda key, client: None)
     monkeypatch.setattr(state, "select_host", lambda entry: None)
-    monkeypatch.setattr(state, "ui_windows", lambda: {"@1", "@2"})
 
     state.open("lovelace:/tmp/tmux/default:12:10:$1")
     state.open("lovelace:/tmp/tmux/default:12:10:$2")
@@ -225,7 +224,6 @@ def test_dead_presentation_records_tmux_exit_metadata_without_capture(monkeypatc
     records = []
     values = {"#{pane_dead}": "1", "#{pane_dead_status}\t#{pane_dead_signal}": "7\t9"}
     monkeypatch.setattr(state, "ui_value", lambda window, value: values[value])
-    monkeypatch.setattr(state, "ui_windows", lambda: {"@2"})
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
 

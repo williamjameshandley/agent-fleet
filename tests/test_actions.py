@@ -5,7 +5,6 @@ import shlex
 import socket
 import sys
 import threading
-import time
 from pathlib import Path
 from unittest import mock
 
