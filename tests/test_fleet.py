@@ -49,6 +49,18 @@ def without_tmux_client():
     return environment
 
 
+def tmux_session_row(session_id, name, human_activity="", **changes):
+    values = {
+        "socket": "/tmp/tmux", "pid": "1", "started": "2",
+        "id": session_id, "name": name, "created": "3", "activity": "4",
+        "attached": "1", "windows": "1", "command": "python3",
+        "title": "", "path": "/work", "human": human_activity,
+        **{key: str(value) for key, value in changes.items()},
+    }
+    return " ".join(
+        f"{key}={shlex.quote('x' + value)}" for key, value in values.items())
+
+
 class IdentityTests(unittest.TestCase):
     SOURCE_A = "lovelace:/tmp/tmux/default:1:1:$1"
     SOURCE_B = "lovelace:/tmp/tmux/default:1:1:$2"
@@ -911,12 +923,12 @@ class IdentityTests(unittest.TestCase):
                     "evaluation_started": 0,
                 })
             native = ["codex-full@newton", "claude-full@newton"]
-            items = [mock.Mock(
-                session_name="fleet@alan-" + alan.runtime_name(actor),
-                session_id=f"${number}",
-            ) for number, actor in enumerate(native, 1)]
-            server = mock.Mock(sessions=items)
-            server.cmd.return_value.stdout = []
+            server = mock.Mock()
+            server.cmd.return_value.stdout = [
+                tmux_session_row(f"${number}",
+                                 "fleet@alan-" + alan.runtime_name(actor))
+                for number, actor in enumerate(native, 1)
+            ]
             native = Path(cwd) / "native"
             native.mkdir()
             (native / "kernel.json").touch()
@@ -940,21 +952,42 @@ class IdentityTests(unittest.TestCase):
             "human_activity": 0, "active_evaluation": None,
             "evaluation_started": 0,
         }
-        item = mock.Mock(
-            session_name="fleet@native-test", session_id="$7",
-            socket_path="/tmp/tmux", pid=1, start_time=2,
-            session_created=3, session_activity=4, session_attached=1,
-            session_windows=1, pane_current_command="python3",
-            pane_title="", pane_current_path="/work",
-        )
-        server = mock.Mock(sessions=[item])
-        server.cmd.return_value.stdout = ["$7\t0"]
+        server = mock.Mock()
+        server.cmd.return_value.stdout = [
+            tmux_session_row("$7", "fleet@native-test")]
 
         with mock.patch("agent_fleet.tmux.server", return_value=server):
             projected = tmux.inventory("newton", [descriptor])
 
         self.assertEqual([session.ref.session_id for session in projected],
                          ["$7", actor])
+
+    def test_host_inventory_is_one_coherent_tmux_snapshot(self):
+        server = mock.Mock()
+        type(server).sessions = mock.PropertyMock(
+            side_effect=AssertionError("second session snapshot"))
+        server.cmd.return_value.stdout = [tmux_session_row(
+            "$1681", "appeared", title="title with spaces",
+            path="/work with spaces")]
+
+        with mock.patch("agent_fleet.tmux.server", return_value=server):
+            [projected] = tmux.inventory("newton", [])
+
+        server.cmd.assert_called_once_with(
+            "list-sessions", "-F", tmux.SESSION_FORMAT)
+        self.assertEqual(projected.ref.session_id, "$1681")
+        self.assertEqual(projected.title, "title with spaces")
+        self.assertEqual(projected.cwd, "/work with spaces")
+        self.assertEqual(projected.human_activity, 0)
+
+    def test_host_inventory_rejects_malformed_tmux_row(self):
+        server = mock.Mock()
+        server.cmd.return_value.stdout = [
+            " ".join(tmux_session_row("$7", "broken").split()[:-1])]
+
+        with mock.patch("agent_fleet.tmux.server", return_value=server), \
+             self.assertRaises(ValueError):
+            tmux.inventory("newton", [])
 
     def test_every_rendered_actor_resolves_from_the_same_host_generation(self):
         host = os.uname().nodename

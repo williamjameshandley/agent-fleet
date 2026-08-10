@@ -21,6 +21,14 @@ from . import alan, presentation, transcripts as native_transcripts
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
 UNSET = object()
+SESSION_FORMAT = (
+    "socket=x#{q:socket_path} pid=x#{q:pid} started=x#{q:start_time} "
+    "id=x#{q:session_id} name=x#{q:session_name} "
+    "created=x#{q:session_created} activity=x#{q:session_activity} "
+    "attached=x#{q:session_attached} windows=x#{q:session_windows} "
+    "command=x#{q:pane_current_command} title=x#{q:pane_title} "
+    "path=x#{q:pane_current_path} human=x#{q:@fleet_human_activity}"
+)
 
 
 def server():
@@ -248,24 +256,21 @@ def capture_pane(session, columns=0, lines=0):
 
 def inventory(host, actor_descriptors):
     tmux = server()
-    metadata = {sid: int(activity or 0)
-                for sid, activity in (line.split("\t") for line in tmux.cmd(
-                    "list-sessions", "-F",
-                    "#{session_id}\t#{@fleet_human_activity}").stdout)}
-    items = list(tmux.sessions)
     sessions = []
-    for item in items:
-        if (item.session_name.startswith("fleet@")
-                and not item.session_name.startswith("fleet@native-")):
+    names = []
+    for line in tmux.cmd("list-sessions", "-F", SESSION_FORMAT).stdout:
+        (socket, pid, started, session_id, name, created, activity,
+         attached, windows, command, title, path, human_activity) = (
+            field.split("=", 1)[1][1:] for field in shlex.split(line))
+        names.append(name)
+        if (name.startswith("fleet@")
+                and not name.startswith("fleet@native-")):
             continue
-        source = ServerRef(host, item.socket_path, int(item.pid), int(item.start_time))
+        source = ServerRef(host, socket, int(pid), int(started))
         sessions.append(Session(
-            SessionRef(source, item.session_id), item.session_name,
-            int(item.session_created), int(item.session_activity),
-            int(item.session_attached), int(item.session_windows),
-            item.pane_current_command, item.pane_title, item.pane_current_path,
-            human_activity=metadata[item.session_id]))
-    names = [item.session_name for item in items]
+            SessionRef(source, session_id), name, int(created), int(activity),
+            int(attached), int(windows), command, title, path,
+            human_activity=int(human_activity or 0)))
     actors = [actor for actor in actor_descriptors
               if actor.get("evaluator") == "native"
               or presentation.available(actor["addr"], actor, names)]
