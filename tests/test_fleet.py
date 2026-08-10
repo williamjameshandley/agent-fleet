@@ -2671,6 +2671,70 @@ class IdentityTests(unittest.TestCase):
                          [mock.call(self.SOURCE_A, None, "lovelace"),
                           mock.call(self.SOURCE_C, None, "lovelace")])
 
+    def test_viewer_worker_checks_attachments_under_continuous_projection(self):
+        state = mock.Mock()
+        state.source = ""
+        state.check.return_value = ""
+        checked = threading.Event()
+        calls = 0
+
+        def check():
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                checked.set()
+            return ""
+
+        def open_source(key, _selected=None, _host=None):
+            time.sleep(.005)
+            state.source = key
+
+        state.check.side_effect = check
+        state.open.side_effect = open_source
+        with mock.patch.object(viewer.ViewerWorker, "CHECK_INTERVAL", .02):
+            worker = viewer.ViewerWorker(state, "main")
+            stop = threading.Event()
+
+            def project_continuously():
+                while not stop.is_set():
+                    worker.intent("PROJECT", self.SOURCE_A)
+                    time.sleep(.001)
+
+            producer = threading.Thread(target=project_continuously)
+            producer.start()
+            try:
+                self.assertTrue(checked.wait(1))
+            finally:
+                stop.set()
+                producer.join(1)
+                worker.close()
+
+        self.assertFalse(producer.is_alive())
+
+    def test_slow_attachment_check_does_not_starve_queued_barrier(self):
+        state = mock.Mock()
+        state.source = self.SOURCE_A
+        checking = threading.Event()
+
+        def check():
+            checking.set()
+            time.sleep(.03)
+            return ""
+
+        state.check.side_effect = check
+        with mock.patch.object(viewer.ViewerWorker, "CHECK_INTERVAL", .01):
+            worker = viewer.ViewerWorker(state, "main")
+            self.assertTrue(checking.wait(1))
+            result = []
+            barrier = threading.Thread(
+                target=lambda: result.append(worker.barrier("SOURCE")))
+            barrier.start()
+            barrier.join(1)
+            worker.close()
+
+        self.assertFalse(barrier.is_alive())
+        self.assertEqual(result, [self.SOURCE_A])
+
     def test_viewer_worker_enter_supersedes_pending_projection_then_focuses(self):
         state = mock.Mock()
         state.source = ""

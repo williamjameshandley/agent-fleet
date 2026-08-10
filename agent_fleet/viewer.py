@@ -580,6 +580,7 @@ class ViewerWorker:
     """Own one Attachment and collapse cursor movement to its latest intent."""
 
     INTENTS = {"PROJECT", "FOCUS"}
+    CHECK_INTERVAL = .25
 
     def __init__(self, state, slot):
         self.state = state
@@ -701,13 +702,22 @@ class ViewerWorker:
 
     def run(self):
         job = self.job("CHECK")
+        next_check = time.monotonic()
         try:
             while not self.stopped:
                 with self.condition:
-                    if not self.jobs:
-                        self.condition.wait(.25)
-                    job = self.jobs.pop(0) if self.jobs else self.job("CHECK")
+                    remaining = next_check - time.monotonic()
+                    if not self.jobs and remaining > 0:
+                        self.condition.wait(remaining)
+                    if time.monotonic() >= next_check:
+                        job = self.job("CHECK")
+                    elif self.jobs:
+                        job = self.jobs.pop(0)
+                    else:
+                        continue
                 self.execute(job)
+                if job.kind == "CHECK":
+                    next_check = time.monotonic() + self.CHECK_INTERVAL
         except BaseException as error:
             self.record_failure("viewer_controller_failed", job, error)
             failure = RuntimeError(f"viewer worker failed: {error}")
