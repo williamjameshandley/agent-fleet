@@ -932,6 +932,30 @@ class IdentityTests(unittest.TestCase):
         self.assertNotIn("codex-read-reviewer@newton",
                          [session.ref.session_id for session in projected])
 
+    def test_host_inventory_retains_native_provider_and_adopted_actor(self):
+        actor = "codex-00000000-0000-4000-8000-000000000001@newton"
+        descriptor = {
+            "addr": actor, "kind": "codex", "evaluator": "native",
+            "state": "waiting", "cwd": "/work", "created": 1,
+            "human_activity": 0, "active_evaluation": None,
+            "evaluation_started": 0,
+        }
+        item = mock.Mock(
+            session_name="fleet@native-test", session_id="$7",
+            socket_path="/tmp/tmux", pid=1, start_time=2,
+            session_created=3, session_activity=4, session_attached=1,
+            session_windows=1, pane_current_command="python3",
+            pane_title="", pane_current_path="/work",
+        )
+        server = mock.Mock(sessions=[item])
+        server.cmd.return_value.stdout = ["$7\t0"]
+
+        with mock.patch("agent_fleet.tmux.server", return_value=server):
+            projected = tmux.inventory("newton", [descriptor])
+
+        self.assertEqual([session.ref.session_id for session in projected],
+                         ["$7", actor])
+
     def test_every_rendered_actor_resolves_from_the_same_host_generation(self):
         host = os.uname().nodename
         with tempfile.TemporaryDirectory() as directory:

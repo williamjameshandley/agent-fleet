@@ -255,7 +255,8 @@ def inventory(host, actor_descriptors):
     items = list(tmux.sessions)
     sessions = []
     for item in items:
-        if item.session_name.startswith("fleet@"):
+        if (item.session_name.startswith("fleet@")
+                and not item.session_name.startswith("fleet@native-")):
             continue
         source = ServerRef(host, item.socket_path, int(item.pid), int(item.start_time))
         sessions.append(Session(
@@ -266,7 +267,8 @@ def inventory(host, actor_descriptors):
             human_activity=metadata[item.session_id]))
     names = [item.session_name for item in items]
     actors = [actor for actor in actor_descriptors
-              if presentation.available(actor["addr"], actor, names)]
+              if actor.get("evaluator") == "native"
+              or presentation.available(actor["addr"], actor, names)]
     return sessions + alan_inventory(host, actors)
 
 
