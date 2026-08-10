@@ -5,6 +5,7 @@ import shlex
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -230,19 +231,53 @@ def test_archive_clears_and_refresh_reopens_every_shown_viewer():
         fleet.sessions = {"lovelace": [item]}
         fleet.unavailable.clear()
         paths = [Path("/run/viewer-main.sock"), Path("/run/viewer-right.sock")]
-        with mock.patch.object(fleet, "viewers_showing",
+        with mock.patch.object(fleet, "viewers",
                                return_value=paths) as showing, \
              mock.patch.object(fleet, "authority", return_value={}), \
              mock.patch.object(fleet, "wait_for_absence"), \
              mock.patch.object(fleet, "update_viewers") as update:
             await fleet.action({"operation": operation, "source": item.ref.key})
-        showing.assert_awaited_once_with(item.ref.key)
+        if operation == "archive":
+            showing.assert_awaited_once_with()
+        else:
+            showing.assert_awaited_once_with(item.ref.key)
         message = (f"CLEAR {item.ref.key}" if operation == "archive" else
                    f"OPEN {item.ref.key}")
         update.assert_awaited_once_with(paths, message)
 
     asyncio.run(exercise("archive"))
     asyncio.run(exercise("refresh"))
+
+
+def test_background_archive_releases_viewers_before_source_authority(tmp_path,
+                                                                      monkeypatch):
+    async def exercise():
+        fleet = Fleet()
+        key = "lovelace:/tmp/tmux/default:12:10:$1"
+        paths = [Path("/run/viewer-main.sock")]
+        order = []
+
+        async def update(viewers, message):
+            order.append(("viewers", viewers, message))
+
+        async def authority(host, request):
+            order.append(("authority", host, request))
+            return {}
+
+        with mock.patch.object(fleet, "viewers", return_value=paths), \
+             mock.patch.object(fleet, "update_viewers", side_effect=update), \
+             mock.patch.object(fleet, "authority", side_effect=authority), \
+             mock.patch.object(fleet, "wait_for_absence"):
+            await fleet.complete_archive(
+                key, "lovelace", {"operation": "archive"}, [])
+
+        assert order == [
+            ("viewers", paths, f"CLEAR {key}"),
+            ("authority", "lovelace", {"operation": "archive"}),
+        ]
+
+    monkeypatch.setattr(daemon, "RUNTIME", tmp_path)
+    asyncio.run(exercise())
 
 
 def test_viewer_updates_attempt_every_recorded_slot_before_reporting_failure():
@@ -259,7 +294,7 @@ def test_viewer_updates_attempt_every_recorded_slot_before_reporting_failure():
     asyncio.run(exercise())
 
 
-def test_optimistic_archive_commits_absence_despite_viewer_cleanup_failure(
+def test_optimistic_archive_refuses_to_destroy_source_before_viewer_cleanup(
         tmp_path, monkeypatch):
     async def exercise():
         fleet = Fleet()
@@ -272,9 +307,9 @@ def test_optimistic_archive_commits_absence_despite_viewer_cleanup_failure(
         async def absent(_key):
             fleet.sessions = {}
 
-        with mock.patch.object(fleet, "viewers_showing",
+        with mock.patch.object(fleet, "viewers",
                                return_value=paths) as showing, \
-             mock.patch.object(fleet, "authority", return_value={}), \
+             mock.patch.object(fleet, "authority", return_value={}) as authority, \
              mock.patch.object(fleet, "wait_for_absence", side_effect=absent), \
              mock.patch.object(fleet, "update_viewers",
                                side_effect=RuntimeError("viewer-left.sock: gone")) as update, \
@@ -292,16 +327,17 @@ def test_optimistic_archive_commits_absence_despite_viewer_cleanup_failure(
 
         assert "reload-sync" in result
         assert item.ref.key not in fleet.pending_archives
-        assert fleet.projected() == []
+        assert [value.session.ref.key for value in fleet.projected()] == [item.ref.key]
+        authority.assert_not_awaited()
         update.assert_awaited_once_with(paths, f"CLEAR {item.ref.key}")
         publish.assert_awaited_once()
-        assert "viewer cleanup failed" in publish.await_args.args[0]
+        assert "viewer-left.sock: gone" in publish.await_args.args[0]
 
     monkeypatch.setattr(daemon, "RUNTIME", tmp_path)
     asyncio.run(exercise())
 
 
-def test_optimistic_archive_failure_restores_row_and_never_clears_viewers(
+def test_optimistic_archive_clears_viewers_before_authority_failure(
         tmp_path, monkeypatch):
     async def exercise():
         fleet = Fleet()
@@ -309,7 +345,7 @@ def test_optimistic_archive_failure_restores_row_and_never_clears_viewers(
         fleet.sessions = {"lovelace": [item]}
         fleet.unavailable.clear()
         fleet.muster_generation = ("registered",)
-        with mock.patch.object(fleet, "viewers_showing", return_value=[]), \
+        with mock.patch.object(fleet, "viewers", return_value=[]), \
              mock.patch.object(fleet, "authority", side_effect=RuntimeError("refused")), \
              mock.patch.object(fleet, "update_viewers") as update, \
              mock.patch.object(fleet, "publish_current_view") as publish:
@@ -320,7 +356,7 @@ def test_optimistic_archive_failure_restores_row_and_never_clears_viewers(
                 artifact.unlink()
             await asyncio.gather(*fleet.background_tasks)
         assert [value.session.ref.key for value in fleet.projected()] == [item.ref.key]
-        update.assert_not_awaited()
+        update.assert_awaited_once_with([], f"CLEAR {item.ref.key}")
         publish.assert_awaited_once_with("refused")
 
     monkeypatch.setattr(daemon, "RUNTIME", tmp_path)

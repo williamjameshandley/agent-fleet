@@ -565,16 +565,12 @@ class Fleet:
     async def complete_archive(self, key, host, authority, artifacts):
         error = ""
         try:
+            viewers = await self.viewers()
+            await self.update_viewers(viewers, f"CLEAR {key}")
             await self.authority(host, authority)
             await self.wait_for_absence(key)
         except (LookupError, OSError, RuntimeError, ValueError) as caught:
             error = str(caught)
-        else:
-            try:
-                viewers = await self.viewers_showing(key)
-                await self.update_viewers(viewers, f"CLEAR {key}")
-            except (OSError, RuntimeError) as caught:
-                error = f"Archived, but viewer cleanup failed: {caught}"
         await self.wait_for_publication(artifacts)
         async with self.view_lock:
             self.pending_archives.discard(key)
@@ -751,19 +747,19 @@ class Fleet:
             "print(execute_json(sys.argv[1]))",
             json.dumps(request, separators=(",", ":")))
 
-    async def viewers_showing(self, key):
+    async def viewers(self, source=None):
         found = []
         for path in sorted(RUNTIME.glob("viewer-*.sock")):
             try:
                 reader, writer = await asyncio.open_unix_connection(path)
                 writer.write(b"SOURCE\n")
                 await writer.drain()
-                source = (await reader.readline()).decode().rstrip("\n")
+                current = (await reader.readline()).decode().rstrip("\n")
                 writer.close()
                 await writer.wait_closed()
             except OSError:
                 continue
-            if source == key:
+            if source is None or current == source:
                 found.append(path)
         return found
 
@@ -874,8 +870,12 @@ class Fleet:
         key = request["source"]
         session = self.source(key)
         host = session.ref.server.host
-        viewers = (await self.viewers_showing(key)
-                   if operation in {"archive", "refresh"} else [])
+        if operation == "refresh":
+            viewers = await self.viewers(key)
+        elif operation == "archive":
+            viewers = await self.viewers()
+        else:
+            viewers = []
         if operation == "rename":
             name = self.action_name(request["name"])
             authority = ({"operation": "rename-alan",
@@ -894,9 +894,9 @@ class Fleet:
             await self.update_viewers(viewers, f"OPEN {key}")
             return value
         _, host, authority = self.archive_authority(key)
+        await self.update_viewers(viewers, f"CLEAR {key}")
         await self.authority(host, authority)
         await self.wait_for_absence(key)
-        await self.update_viewers(viewers, f"CLEAR {key}")
         return {}
 
     async def remote_json(self, host, *command):

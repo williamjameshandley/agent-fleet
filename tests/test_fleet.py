@@ -2008,7 +2008,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
              mock.patch.object(fleet, "archive_authority", return_value=(
                  fleet.sessions["lovelace"][0], "lovelace", {"operation": "archive"})), \
-             mock.patch.object(fleet, "viewers_showing", return_value=[]), \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
              mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
             result = asyncio.run(fleet.mutate_action(
                 f"archive\t{key}\t{fleet.view_revision}\t100"))
@@ -2028,7 +2028,7 @@ class IdentityTests(unittest.TestCase):
         fleet.update_host("lovelace", raw)
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
-             mock.patch.object(fleet, "viewers_showing", return_value=[]), \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
              mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
             result = asyncio.run(fleet.mutate_action(
                 f"archive\talan:{root}\t{displayed}\t100"))
