@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import os
 import pty
@@ -217,7 +218,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
         consumer = threading.Event()
         changed = queue.Queue()
         alan = mock.Mock(error=None)
-        alan.snapshot.return_value = ([], None)
+        alan.snapshot.return_value = contextlib.nullcontext(([], None))
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
         control = mock.Mock(closed=False)
@@ -243,7 +244,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
         consumer = threading.Event()
         changed = queue.Queue()
         alan = mock.Mock(error=None)
-        alan.snapshot.return_value = ([], None)
+        alan.snapshot.return_value = contextlib.nullcontext(([], None))
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
         control = mock.Mock(closed=False)
@@ -287,7 +288,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
             consumer = threading.Event()
             changed = queue.Queue()
             alan = mock.Mock(error=None)
-            alan.snapshot.return_value = ([], None)
+            alan.snapshot.return_value = contextlib.nullcontext(([], None))
 
             def advance(stream):
                 result = queue.Queue()
@@ -375,7 +376,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
         changed = queue.Queue()
         consumer = threading.Event()
         alan = mock.Mock(error="Alan unavailable", actors=[], graph=None)
-        alan.snapshot.return_value = ([], None)
+        alan.snapshot.return_value = contextlib.nullcontext(([], None))
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(),
                             stderr=mock.Mock())
         process.poll.return_value = None
@@ -408,7 +409,8 @@ class ProtocolCorrelationTests(unittest.TestCase):
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
         alan = mock.Mock(error=None, actors=["stale"], graph="stale graph")
-        alan.snapshot.side_effect = lambda: (alan.actors, alan.graph)
+        alan.snapshot.side_effect = lambda: contextlib.nullcontext(
+            (alan.actors, alan.graph))
         control = mock.Mock()
         tmux = mock.Mock()
         tmux.has_session.return_value = True
@@ -421,8 +423,6 @@ class ProtocolCorrelationTests(unittest.TestCase):
              mock.patch("agent_fleet.tmux.inventory", return_value=[]) as inventory, \
              mock.patch("agent_fleet.tmux.observe",
                         side_effect=lambda current, _catalog: current), \
-             mock.patch("agent_fleet.tmux.alan_projection_graph",
-                        side_effect=lambda graph: graph), \
              mock.patch("agent_fleet.tmux.native_transcripts.catalog",
                         return_value={}):
             stream = event_stream("fixture", consumer, changed=changed)

@@ -557,11 +557,33 @@ class IdentityTests(unittest.TestCase):
                         except TimeoutError:
                             continue
                         with connection:
-                            connection.makefile("rb").readline()
-                            connection.sendall((json.dumps({
-                                "ok": True,
-                                "graph": observed(emit_update.is_set()),
-                            }) + "\n").encode())
+                            reader = connection.makefile("rb")
+                            request = json.loads(reader.readline())
+                            if request.get("stream"):
+                                initial = observed(False)
+                                initial.update({"generation": 1, "revision": 0})
+                                connection.sendall((json.dumps({
+                                    "ok": True, "observation": {
+                                        "kind": "replace", "graph": initial,
+                                    },
+                                }) + "\n").encode())
+                                reader.readline()
+                                emit_update.wait()
+                                active = observed(True)
+                                connection.sendall((json.dumps({
+                                    "ok": True, "observation": {
+                                        "kind": "delta", "generation": 1,
+                                        "revision": 1,
+                                        "actors": active["graph"]["actors"],
+                                        "nodes": active["nodes"][3:], "edges": [],
+                                    },
+                                }) + "\n").encode())
+                                reader.readline()
+                            else:
+                                connection.sendall((json.dumps({
+                                    "ok": True,
+                                    "graph": observed(emit_update.is_set()),
+                                }) + "\n").encode())
 
             watch_server = threading.Thread(target=serve_watch, daemon=True)
             watch_server.start()
@@ -2547,6 +2569,12 @@ class IdentityTests(unittest.TestCase):
                         return_value=mock.Mock(sessions=[])):
             with self.assertRaisesRegex(RuntimeError, "terminal is unavailable"):
                 tmux.capture("alan:codex-1@newton", 80, 20)
+
+    def test_collector_preview_fails_when_retained_alan_graph_is_unavailable(self):
+        with mock.patch.object(tmux.alan, "preview") as preview:
+            with self.assertRaisesRegex(RuntimeError, "observation is unavailable"):
+                tmux.capture("alan:llm-1@newton", 80, 20, None)
+        preview.assert_not_called()
 
     def test_viewer_clear_remains_an_internal_primitive(self):
         root = Path(__file__).parents[1]

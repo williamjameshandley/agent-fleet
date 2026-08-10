@@ -312,8 +312,29 @@ class CommanderActorTests(unittest.TestCase):
         graph.graph["actors"] = list(actors)
         return graph
 
+    class Stream:
+        def __init__(self, graph):
+            self.graph = graph
+
+        def __iter__(self):
+            return iter((self.graph,))
+
+        def __next__(self):
+            graph, self.graph = self.graph, None
+            if graph is None:
+                raise StopIteration
+            return graph
+
+        def close(self):
+            pass
+
+    @classmethod
+    def stream(cls, graph):
+        return cls.Stream(graph)
+
     def test_first_request_creates_and_reuses_an_ordinary_actor(self):
-        with mock.patch.object(alan.loop, "observe", return_value=self.graph()), \
+        with mock.patch.object(alan.loop, "observe",
+                               return_value=self.stream(self.graph())), \
              mock.patch.object(alan.loop, "spawn",
                                return_value="llm-commander@newton") as spawn:
             self.assertEqual(alan.commander_actor(), "llm-commander@newton")
@@ -321,7 +342,7 @@ class CommanderActorTests(unittest.TestCase):
 
         existing = {"addr": "llm-commander@newton", "preset": "commander"}
         with mock.patch.object(alan.loop, "observe",
-                               return_value=self.graph(existing)), \
+                               return_value=self.stream(self.graph(existing))), \
              mock.patch.object(alan.loop, "spawn") as spawn:
             self.assertEqual(alan.commander_actor(), "llm-commander@newton")
         spawn.assert_not_called()
@@ -332,7 +353,8 @@ class CommanderActorTests(unittest.TestCase):
             {"addr": "llm-second@newton", "preset": "commander"},
         )
 
-        with mock.patch.object(alan.loop, "observe", return_value=current):
+        with mock.patch.object(alan.loop, "observe",
+                               return_value=self.stream(current)):
             with self.assertRaisesRegex(RuntimeError, "multiple Commander actors"):
                 alan.commander_actor()
 
@@ -348,10 +370,11 @@ class CommanderActorTests(unittest.TestCase):
             created.append(True)
             return "llm-commander@newton"
 
-        def observe():
+        def observe(**kwargs):
+            self.assertEqual(kwargs, {"stream": True, "actors": True})
             actors = ([{"addr": "llm-commander@newton", "preset": "commander"}]
                       if created else [])
-            return self.graph(*actors)
+            return self.stream(self.graph(*actors))
 
         def resolve():
             results.append(alan.commander_actor())

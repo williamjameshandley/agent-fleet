@@ -5,12 +5,14 @@ import os
 import threading
 import time
 import textwrap
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
 import loop
 import networkx as nx
+from watchfiles import watch
 
 from .model import ServerRef, Session, SessionRef
 
@@ -27,44 +29,71 @@ class Watcher:
     def __init__(self, changed, consumer=None):
         self.actors = []
         self.graph = None
+        self.projected = None
+        self._descriptors = {}
         self.available = False
         self.error = None
         self.initialized = threading.Event()
         self._changed = changed
         self._consumer = consumer
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        self._labels = threading.Thread(target=self._watch_labels, daemon=True)
+        self._labels.start()
         self.initialized.wait(2)
 
     def _run(self):
-        previous = None
         while not (self._consumer and self._consumer.is_set()):
+            stream = None
             try:
-                current, graph = self.refresh()
-                snapshot = (
-                    graph.graph,
-                    tuple(graph.nodes(data=True)),
-                    tuple(graph.edges(keys=True, data=True)),
-                )
-                if snapshot != previous:
+                stream = loop.observe(stream=True)
+                while True:
+                    stream.next(self.refresh, self._lock)
                     self._changed.put("alan")
-                    previous = snapshot
+                    if self._consumer and self._consumer.is_set():
+                        return
+            except StopIteration:
+                return
             except (loop.LoopError, OSError, ValueError) as error:
-                previous = None
-            if self._consumer:
-                self._consumer.wait(0.5)
-            else:
-                time.sleep(0.5)
+                with self._lock:
+                    self._unavailable(f"Alan unavailable: {error}")
+                if self._consumer:
+                    self._consumer.wait(0.5)
+                else:
+                    time.sleep(0.5)
+            finally:
+                if stream is not None:
+                    stream.close()
 
-    def refresh(self):
+    def refresh(self, graph, change):
         with self._lock:
-            try:
-                graph = loop.observe()
-                current = actors(graph)
-            except (loop.LoopError, OSError, ValueError) as error:
-                self._unavailable(f"Alan unavailable: {error}")
-                raise
+            if change["kind"] == "replace":
+                self._descriptors = {
+                    actor["addr"]: actor for actor in actors(graph)}
+                self.projected = projection_graph(graph)
+            else:
+                raw = {actor["addr"]: actor
+                       for actor in graph.graph.get("actors", [])}
+                nodes = {}
+                for node in change["nodes"]:
+                    nodes.setdefault(node["stream"], []).append(node)
+                changed = {actor["addr"] for actor in change["actors"]}
+                changed.update(nodes)
+                for addr in changed:
+                    descriptor = raw.get(addr)
+                    if descriptor is None or descriptor["kind"] == "principal":
+                        self._descriptors.pop(addr, None)
+                    else:
+                        self._descriptors[addr] = update_actor_descriptor(
+                            graph, raw, self._descriptors.get(addr), descriptor,
+                            nodes.get(addr, ()))
+                apply_projection_delta(self.projected, graph, change)
+            current = list(self._descriptors.values())
+            self.projected.graph["actors"] = [
+                actor for actor in graph.graph.get("actors", [])
+                if actor["kind"] == "principal"
+            ] + current
             self.actors = current
             self.graph = graph
             self.available = True
@@ -72,9 +101,38 @@ class Watcher:
             self.initialized.set()
             return current, graph
 
+    def _watch_labels(self):
+        directory = _state_dir() / "labels"
+        directory.mkdir(parents=True, exist_ok=True)
+        for changes in watch(directory, stop_event=self._consumer):
+            addresses = {Path(path).name for _event, path in changes}
+            with self._lock:
+                changed = False
+                for addr in addresses:
+                    if addr not in self._descriptors:
+                        continue
+                    value = label(addr)
+                    if self._descriptors[addr].get("label") != value:
+                        self._descriptors[addr]["label"] = value
+                        changed = True
+                if changed:
+                    self.actors = list(self._descriptors.values())
+                    if self.projected is not None:
+                        principals = [actor for actor in self.projected.graph.get("actors", [])
+                                      if actor["kind"] == "principal"]
+                        self.projected.graph["actors"] = principals + self.actors
+            if changed:
+                self._changed.put("alan")
+
+    @contextmanager
     def snapshot(self):
         with self._lock:
-            return self.actors, self.graph
+            yield self.actors, self.projected
+
+    @contextmanager
+    def full_graph(self):
+        with self._lock:
+            yield self.graph
 
     def _unavailable(self, error):
         self.error = error
@@ -83,6 +141,7 @@ class Watcher:
             self.available = False
             self.actors = []
             self.graph = None
+            self.projected = None
             self._changed.put("alan")
 
 
@@ -100,55 +159,99 @@ def address_identity(addr, kind):
     return addr.split("-", 1)[1].rsplit("@", 1)[0]
 
 
-def actors(graph=None):
+def actors(graph=None, operations=None):
     if graph is None:
         graph = loop.observe()
     all_descriptors = {actor["addr"]: dict(actor)
                        for actor in graph.graph.get("actors", [])}
     descriptors = {addr: actor for addr, actor in all_descriptors.items()
                    if actor["kind"] != "principal"}
-    operations = {actor: [] for actor in descriptors}
+    operations = operation_index(graph) if operations is None else operations
+    return [actor_descriptor(graph, all_descriptors, descriptor,
+                             operations.get(addr, ()))
+            for addr, descriptor in descriptors.items()]
+
+
+def operation_index(graph):
+    operations = {}
     for reference, operation in graph.nodes(data=True):
         if "stream" in operation:
             operations.setdefault(operation["stream"], []).append((reference, operation))
+    return operations
 
-    for addr, descriptor in descriptors.items():
-        stream = sorted(operations.get(addr, ()), key=lambda item: _position(item[0]))
-        active = None
-        active_started = 0
-        native = None
-        human_activity = 0
-        last_output = None
-        for reference, operation in stream:
-            if operation["op"] == "evaluation":
-                active = reference
-                active_started = _timestamp(operation["time"])
-            elif operation["op"] == "output":
-                active = None
-                active_started = 0
-                last_output = operation
-                if evidence := operation.get("native"):
-                    native = evidence
-            elif operation["op"] == "input" and "send" in operation:
-                source = graph.nodes.get(operation["send"], {})
-                source_actor = all_descriptors.get(source.get("stream"), {})
-                if source_actor.get("kind") == "principal":
-                    human_activity = _timestamp(operation["time"])
 
-        descriptor["created"] = _timestamp(stream[0][1]["time"]) if stream else 0
-        descriptor["label"] = label(addr)
-        descriptor["native_id"] = address_identity(addr, descriptor["kind"])
-        working = descriptor["state"] == "working"
-        descriptor["active_evaluation"] = active if working else None
-        descriptor["evaluation_started"] = active_started if working else 0
-        descriptor["human_activity"] = human_activity
-        if native:
-            descriptor["native"] = native
-        if last_output and last_output.get("status") == "error":
-            descriptor["last_error"] = last_output.get("error", "")
-        elif last_output and isinstance(last_output.get("value"), str):
-            descriptor["summary"] = " ".join(last_output["value"].split())
-    return list(descriptors.values())
+def actor_descriptor(graph, all_descriptors, descriptor, operations):
+    descriptor = dict(descriptor)
+    addr = descriptor["addr"]
+    stream = sorted(operations, key=lambda item: _position(item[0]))
+    active = None
+    active_started = 0
+    native = None
+    human_activity = 0
+    last_output = None
+    for reference, operation in stream:
+        if operation["op"] == "evaluation":
+            active = reference
+            active_started = _timestamp(operation["time"])
+        elif operation["op"] == "output":
+            active = None
+            active_started = 0
+            last_output = operation
+            if evidence := operation.get("native"):
+                native = evidence
+        elif operation["op"] == "input" and "send" in operation:
+            source = graph.nodes.get(operation["send"], {})
+            source_actor = all_descriptors.get(source.get("stream"), {})
+            if source_actor.get("kind") == "principal":
+                human_activity = _timestamp(operation["time"])
+
+    descriptor["created"] = _timestamp(stream[0][1]["time"]) if stream else 0
+    descriptor["label"] = label(addr)
+    descriptor["native_id"] = address_identity(addr, descriptor["kind"])
+    working = descriptor["state"] == "working"
+    descriptor["active_evaluation"] = active if working else None
+    descriptor["evaluation_started"] = active_started if working else 0
+    descriptor["human_activity"] = human_activity
+    if native:
+        descriptor["native"] = native
+    if last_output and last_output.get("status") == "error":
+        descriptor["last_error"] = last_output.get("error", "")
+    elif last_output and isinstance(last_output.get("value"), str):
+        descriptor["summary"] = " ".join(last_output["value"].split())
+    return descriptor
+
+
+def update_actor_descriptor(graph, all_descriptors, current, raw, nodes):
+    if current is None:
+        operations = [(node["id"], {key: value for key, value in node.items()
+                                     if key != "id"}) for node in nodes]
+        return actor_descriptor(graph, all_descriptors, raw, operations)
+    descriptor = {**current, **raw}
+    for node in sorted(nodes, key=lambda item: _position(item["id"])):
+        operation = node["op"]
+        if operation == "evaluation":
+            descriptor["active_evaluation"] = node["id"]
+            descriptor["evaluation_started"] = _timestamp(node["time"])
+        elif operation == "output":
+            descriptor["active_evaluation"] = None
+            descriptor["evaluation_started"] = 0
+            descriptor.pop("summary", None)
+            descriptor.pop("last_error", None)
+            if evidence := node.get("native"):
+                descriptor["native"] = evidence
+            if node.get("status") == "error":
+                descriptor["last_error"] = node.get("error", "")
+            elif isinstance(node.get("value"), str):
+                descriptor["summary"] = " ".join(node["value"].split())
+        elif operation == "input" and "send" in node:
+            source = graph.nodes.get(node["send"], {})
+            source_actor = all_descriptors.get(source.get("stream"), {})
+            if source_actor.get("kind") == "principal":
+                descriptor["human_activity"] = _timestamp(node["time"])
+    if descriptor["state"] != "working":
+        descriptor["active_evaluation"] = None
+        descriptor["evaluation_started"] = 0
+    return descriptor
 
 
 def inventory(host, actor_descriptors):
@@ -192,6 +295,25 @@ def projection_graph(graph):
             projected.add_node(reference, **{
                 key: operation[key] for key in fields if key in operation})
     return projected
+
+
+def apply_projection_delta(projected, graph, change):
+    projected.graph["actors"] = graph.graph.get("actors", [])
+    fields = {"op", "to", "reply", "stream", "time", "payload"}
+    for node in change["nodes"]:
+        if node.get("op") == "send":
+            projected.add_node(node["id"], **{
+                key: node[key] for key in fields if key in node})
+    for edge in change["edges"]:
+        relation = edge["key"]
+        if relation not in {"spawn", "send", "reply"}:
+            continue
+        for reference in (edge["source"], edge["target"]):
+            operation = graph.nodes.get(reference, {})
+            stream = operation.get("stream")
+            projected.add_node(reference, **({"stream": stream}
+                                              if stream is not None else {}))
+        projected.add_edge(edge["source"], edge["target"], key=relation)
 
 
 def project(sessions, graph, expanded=(), show_python=False):
@@ -360,28 +482,34 @@ def label(addr):
     return path.read_text().rstrip("\n") if path.exists() else addr
 
 
-def wait_output(input_reference):
+def wait_output(input_reference, observations=None):
     actor = input_reference.rsplit("#", 1)[0]
-    while True:
+    owned = observations is None
+    if owned:
+        observations = loop.observe(stream=True, actor=actor)
+    try:
+        for graph in observations:
+            stream = sorted(
+                ((reference, operation)
+                 for reference, operation in graph.nodes(data=True)
+                 if operation.get("stream") == actor),
+                key=lambda item: _position(item[0]),
+            )
+            inputs = [reference for reference, operation in stream
+                      if operation["op"] == "input"]
+            ordinal = inputs.index(input_reference)
+            outputs = [operation for _, operation in stream
+                       if operation["op"] == "output"]
+            if len(outputs) > ordinal:
+                return outputs[ordinal]
+    finally:
+        if owned:
+            observations.close()
+
+
+def preview(addr, columns=0, lines=0, graph=None):
+    if graph is None:
         graph = loop.observe()
-        stream = sorted(
-            ((reference, operation)
-             for reference, operation in graph.nodes(data=True)
-             if operation.get("stream") == actor),
-            key=lambda item: _position(item[0]),
-        )
-        inputs = [reference for reference, operation in stream
-                  if operation["op"] == "input"]
-        ordinal = inputs.index(input_reference)
-        outputs = [operation for _, operation in stream
-                   if operation["op"] == "output"]
-        if len(outputs) > ordinal:
-            return outputs[ordinal]
-        time.sleep(0.1)
-
-
-def preview(addr, columns=0, lines=0):
-    graph = loop.observe()
     operations = sorted(
         ((reference, operation)
          for reference, operation in graph.nodes(data=True)
@@ -417,11 +545,13 @@ def commander_actor():
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        commanders = [
-            actor["addr"]
-            for actor in loop.observe().graph.get("actors", [])
-            if actor.get("preset") == "commander"
-        ]
+        observation = loop.observe(stream=True, actors=True)
+        try:
+            graph = next(observation)
+        finally:
+            observation.close()
+        commanders = [actor["addr"] for actor in graph.graph.get("actors", [])
+                      if actor.get("preset") == "commander"]
         if len(commanders) > 1:
             raise RuntimeError("multiple Commander actors")
         if commanders:

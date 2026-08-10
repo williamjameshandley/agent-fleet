@@ -16,11 +16,11 @@ from watchfiles import watch
 from .model import ServerRef, Session, SessionRef
 from .agent import observe
 from .config import RUNTIME
-from .alan import (Watcher as AlanWatcher, inventory as alan_inventory,
-                   projection_graph as alan_projection_graph)
+from .alan import Watcher as AlanWatcher, inventory as alan_inventory
 from . import alan, presentation, transcripts as native_transcripts
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
+UNSET = object()
 
 
 def server():
@@ -206,7 +206,7 @@ class ControlClient:
         return socket, int(pid), int(started), session_id
 
 
-def capture(key, columns=0, lines=0):
+def capture(key, columns=0, lines=0, alan_graph=UNSET):
     if key.startswith("alan:"):
         addr = key.removeprefix("alan:")
         kind = addr.split("-", 1)[0]
@@ -219,7 +219,10 @@ def capture(key, columns=0, lines=0):
                     f"{kind.capitalize()} evaluator terminal is unavailable: {addr}"
                 )
             return capture_pane(session, columns, lines)
-        return alan.preview(addr, columns, lines)
+        if alan_graph is None:
+            raise RuntimeError("Alan observation is unavailable")
+        return alan.preview(addr, columns, lines,
+                            None if alan_graph is UNSET else alan_graph)
     host, socket, pid, started, session_id = split_key(key)
     if host != os.uname().nodename:
         raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
@@ -295,9 +298,9 @@ def watch_socket(changed, consumer):
                 break
 
 
-def event_stream(host, consumer=None, controls=None, changed=None):
+def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=None):
     changed = changed or queue.Queue()
-    alan = AlanWatcher(changed, consumer)
+    alan = alan_watcher or AlanWatcher(changed, consumer)
     if consumer:
         def disconnected():
             consumer.wait()
@@ -369,48 +372,48 @@ def event_stream(host, consumer=None, controls=None, changed=None):
             if alan.error and alan.error != alan_error:
                 print(alan.error, file=sys.stderr, flush=True)
             alan_error = alan.error
-            actors, graph = alan.snapshot()
-            try:
-                current = inventory(host, actors) if control is not None else []
-            except (subprocess.CalledProcessError, LibTmuxException) as error:
-                if control is None:
-                    raise
-                probe = subprocess.run(
-                    ["/usr/bin/tmux", "-N", "list-sessions"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if not probe.returncode:
-                    raise error
-                discard_control()
-                force = True
-                continue
-            if control is not None:
+            with alan.snapshot() as (actors, graph):
                 try:
-                    current = observe(current, native_transcripts.catalog())
-                    agent_cache = {session.ref: session for session in current}
-                except (subprocess.CalledProcessError, RuntimeError) as error:
-                    if isinstance(error, subprocess.CalledProcessError):
-                        probe = subprocess.run(
-                            ["/usr/bin/tmux", "-N", "list-sessions"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        if probe.returncode:
-                            discard_control()
-                            force = True
-                            continue
-                    print(f"agent adapter: {error}", file=sys.stderr, flush=True)
-                    current = [replace(session, agent_name=cached.agent_name,
-                                       reported_state=cached.reported_state,
-                                       summary=cached.summary, recency=cached.recency,
-                                       transcript_id=cached.transcript_id,
-                                       transcript_path=cached.transcript_path)
-                               if (cached := agent_cache.get(session.ref)) else session
-                               for session in current]
-            serial = tuple(current)
-            current_available = control is not None
-            if serial != previous or force or current_available != available:
-                yield current, alan_projection_graph(graph), current_available
-                previous = serial
-                force = False
-                available = current_available
+                    current = inventory(host, actors) if control is not None else []
+                except (subprocess.CalledProcessError, LibTmuxException) as error:
+                    if control is None:
+                        raise
+                    probe = subprocess.run(
+                        ["/usr/bin/tmux", "-N", "list-sessions"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if not probe.returncode:
+                        raise error
+                    discard_control()
+                    force = True
+                    continue
+                if control is not None:
+                    try:
+                        current = observe(current, native_transcripts.catalog())
+                        agent_cache = {session.ref: session for session in current}
+                    except (subprocess.CalledProcessError, RuntimeError) as error:
+                        if isinstance(error, subprocess.CalledProcessError):
+                            probe = subprocess.run(
+                                ["/usr/bin/tmux", "-N", "list-sessions"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            if probe.returncode:
+                                discard_control()
+                                force = True
+                                continue
+                        print(f"agent adapter: {error}", file=sys.stderr, flush=True)
+                        current = [replace(session, agent_name=cached.agent_name,
+                                           reported_state=cached.reported_state,
+                                           summary=cached.summary, recency=cached.recency,
+                                           transcript_id=cached.transcript_id,
+                                           transcript_path=cached.transcript_path)
+                                   if (cached := agent_cache.get(session.ref)) else session
+                                   for session in current]
+                serial = tuple(current)
+                current_available = control is not None
+                if serial != previous or force or current_available != available:
+                    yield current, graph, current_available
+                    previous = serial
+                    force = False
+                    available = current_available
             if consumer and consumer.is_set():
                 return
             events = [changed.get()]
