@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from unittest import mock
 from types import SimpleNamespace
+import networkx as nx
 
 from agent_fleet import presentation
 
@@ -12,6 +13,24 @@ def descriptor(state="waiting"):
         "kind": "llm",
         "state": state,
     }
+
+
+class Observation:
+    def __init__(self, details):
+        self.graph = nx.MultiDiGraph()
+        self.graph.graph["actors"] = [details]
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        graph, self.graph = self.graph, None
+        if graph is None:
+            raise StopIteration
+        return graph
+
+    def close(self):
+        pass
 
 
 def test_presentation_availability_is_derived_from_exact_native_evidence(tmp_path):
@@ -59,34 +78,44 @@ def test_disappeared_native_presentation_immediately_removes_language_eligibilit
 
 
 def test_presentation_sends_input_and_renders_its_output(capsys):
-    with mock.patch.object(presentation.alan, "actors",
-                           return_value=[descriptor()]), \
+    observations = mock.Mock()
+    with mock.patch.object(presentation.loop, "observe",
+                           return_value=observations) as observe, \
          mock.patch("builtins.input", side_effect=["inspect", EOFError]), \
          mock.patch.object(presentation.loop, "send",
                            return_value={"input": "codex-a@newton#1"}) as send, \
          mock.patch.object(presentation.alan, "wait_output",
-                           return_value={"status": "ok", "value": "done"}):
-        presentation.run("codex-a@newton")
+                           return_value={"status": "ok", "value": "done"}) as wait:
+        presentation.run("codex-a@newton", descriptor())
 
+    observe.assert_called_once_with(stream=True, actor="codex-a@newton")
+    wait.assert_called_once_with("codex-a@newton#1", observations)
+    observations.close.assert_called_once_with()
     send.assert_called_once_with(
         "codex-a@newton", {"kind": "message", "text": "inspect"})
     assert capsys.readouterr().out == "done\n\n"
 
 
 def test_interrupt_controls_the_active_actor_then_observes_its_output(capsys):
-    with mock.patch.object(presentation.alan, "actors",
-                           return_value=[descriptor()]), \
+    observations = mock.Mock()
+    with mock.patch.object(presentation.loop, "observe",
+                           return_value=observations), \
          mock.patch("builtins.input", side_effect=["inspect", EOFError]), \
          mock.patch.object(presentation.loop, "send",
                            return_value={"input": "codex-a@newton#1"}), \
          mock.patch.object(presentation.alan, "wait_output",
                            side_effect=[KeyboardInterrupt, {
                                "status": "interrupted", "error": "interrupted",
-                           }]), \
+                           }]) as wait, \
          mock.patch.object(presentation.loop, "control") as control:
-        presentation.run("codex-a@newton")
+        presentation.run("codex-a@newton", descriptor())
 
     control.assert_called_once_with("codex-a@newton", "interrupt")
+    assert wait.call_args_list == [
+        mock.call("codex-a@newton#1", observations),
+        mock.call("codex-a@newton#1", observations),
+    ]
+    observations.close.assert_called_once_with()
     assert capsys.readouterr().out == "interrupted\n\n"
 
 
@@ -134,7 +163,7 @@ def test_actor_presentation_is_a_nested_tmux_session():
                   stderr=presentation.subprocess.DEVNULL),
         mock.call(["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "fleet@alan-hash",
                    "-c", "/work",
-                   "/usr/bin/python -c 'import sys; from agent_fleet.presentation import run; run(sys.argv[1])' llm-a@newton"],
+                   "/usr/bin/python -c 'import json,sys; from agent_fleet.presentation import run; run(sys.argv[1], json.loads(sys.argv[2]))' llm-a@newton '{\"kind\":\"llm\",\"cwd\":\"/work\"}'"],
                   check=True),
         mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "fleet@alan-hash", "mouse", "on"],
                   check=True),
@@ -261,7 +290,8 @@ def test_refresh_leaves_codex_terminal_lifecycle_to_alan():
     details = {"addr": actor, "kind": "codex", "state": "waiting",
                "native": {"path": "/native/rollout-a.jsonl"}}
     calls = []
-    with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
+    with mock.patch.object(presentation.loop, "observe",
+                           return_value=Observation(details)), \
          mock.patch.object(presentation.alan, "retire",
                            side_effect=lambda value: calls.append(("retire", value))), \
          mock.patch.object(presentation.alan, "resume",
@@ -275,7 +305,8 @@ def test_refresh_leaves_claude_terminal_lifecycle_to_alan():
     details = {"addr": actor, "kind": "claude", "state": "waiting",
                "native": {"path": "/native/a.jsonl"}}
     calls = []
-    with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
+    with mock.patch.object(presentation.loop, "observe",
+                           return_value=Observation(details)), \
          mock.patch.object(presentation.alan, "retire",
                            side_effect=lambda value: calls.append(("retire", value))), \
          mock.patch.object(presentation, "close",
@@ -288,16 +319,12 @@ def test_refresh_leaves_claude_terminal_lifecycle_to_alan():
 
 def test_refresh_rejects_a_working_actor_before_lifecycle_changes():
     actor = "codex-a@newton"
-    details = {"addr": actor, "kind": "codex", "state": "working",
-               "native": {"path": "/native/rollout-a.jsonl"}}
-    with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
+    details = {"addr": actor, "kind": "codex", "state": "working"}
+    with mock.patch.object(presentation.loop, "observe",
+                           return_value=Observation(details)), \
          mock.patch.object(presentation.alan, "retire") as retire:
-        try:
+        with __import__("pytest").raises(RuntimeError, match="waiting actor"):
             presentation.refresh(actor)
-        except RuntimeError as error:
-            assert "waiting actor" in str(error)
-        else:
-            raise AssertionError("refresh accepted a working actor")
     retire.assert_not_called()
 
 
@@ -309,5 +336,5 @@ def test_actor_view_dispatches_python_to_jupyter_console():
          mock.patch.object(presentation.alan, "native_dir",
                            return_value=connection.parent), \
          mock.patch.object(presentation, "python_console") as console:
-        presentation.run(actor)
+        presentation.run(actor, details)
     console.assert_called_once_with(actor, connection)

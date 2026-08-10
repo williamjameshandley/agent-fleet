@@ -19,6 +19,7 @@ from .alan import address_identity
 from .protocol import decode_message, decode_observation, encode
 from .model import key_host
 from .tmux import ControlSlot, capture, event_stream, split_key
+from .alan import Watcher as AlanWatcher
 from .quota import read as quota_read
 from . import journal, proc, render
 
@@ -39,6 +40,7 @@ def events(host):
     consumer = threading.Event()
     controls = ControlSlot()
     changes = queue.Queue()
+    alan = AlanWatcher(changes, consumer)
 
     def emit(message):
         with lock:
@@ -55,7 +57,9 @@ def events(host):
                                 key.removeprefix("alan:").split("-", 1)[0]
                                 in {"claude", "codex"}):
                             controls.get()
-                        text = capture(request["key"], request["columns"], request["lines"])
+                        with alan.full_graph() as graph:
+                            text = capture(request["key"], request["columns"],
+                                           request["lines"], graph)
                         response = {"preview": request["preview"], "text": text}
                     elif "switch" in request:
                         control = controls.get()
@@ -80,7 +84,8 @@ def events(host):
             consumer.set()
 
     threading.Thread(target=requests, daemon=True).start()
-    for sessions, graph, available in event_stream(host, consumer, controls, changes):
+    for sessions, graph, available in event_stream(
+            host, consumer, controls, changes, alan_watcher=alan):
         usage = quota_read() if host == hosts()[0] else {}
         emit(encode(sessions, usage, [] if available else [host], graph=graph))
 
@@ -887,6 +892,10 @@ class Fleet:
         if operation == "refresh":
             if session.ref.server.kind != "alan":
                 raise ValueError("refresh requires an Alan actor")
+            if session.agent not in {"claude", "codex"}:
+                raise ValueError("refresh requires a Claude or Codex actor")
+            if session.state != "waiting":
+                raise ValueError(f"refresh requires a waiting actor: {session.ref.session_id}")
             value = await self.authority(host, {
                 "operation": "refresh", "actor": session.ref.session_id,
             })
@@ -917,10 +926,7 @@ class Fleet:
 
     async def history_observation(self, host):
         graph = self.graphs.get(host)
-        actors = [] if graph is None else await self.remote_json(
-                host, sys.executable, "-c",
-                "import json; from agent_fleet.alan import actors; print(json.dumps(actors()))",
-            )
+        actors = [] if graph is None else graph.graph.get("actors", [])
         transcripts = await self.remote_json(
             host, sys.executable, "-c",
             "import json; from agent_fleet.transcripts import history; "
@@ -929,13 +935,15 @@ class Fleet:
         return {"host": host, "actors": actors, "transcripts": transcripts}
 
     async def search_observation(self, host, query):
-        return await self.remote_json(
+        graph = self.graphs.get(host)
+        hits = await self.remote_json(
             host, sys.executable, "-c",
-            "import json,sys; from agent_fleet.alan import actors; "
-            "from agent_fleet.transcripts import search; "
-            "print(json.dumps({'actors': actors(), 'hits': search(sys.argv[1])}))",
+            "import json,sys; from agent_fleet.transcripts import search; "
+            "print(json.dumps(search(sys.argv[1])))",
             query,
         )
+        return {"actors": [] if graph is None else graph.graph.get("actors", []),
+                "hits": hits}
 
     async def search_history(self, query):
         if not isinstance(query, str) or not query:

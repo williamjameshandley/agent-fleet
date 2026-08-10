@@ -1,5 +1,7 @@
 import queue
+import ast
 import threading
+from pathlib import Path
 from unittest import mock
 
 import networkx as nx
@@ -142,7 +144,8 @@ def test_output_is_selected_by_fifo_input_ordinal():
         {"op": "evaluation"},
         {"op": "output", "status": "ok", "value": "second"},
     )
-    with mock.patch.object(alan.loop, "observe", return_value=current):
+    with mock.patch.object(
+            alan.loop, "observe", return_value=ObservationStream((current,))):
         assert alan.wait_output("codex-a@newton#4")["value"] == "second"
 
 
@@ -157,22 +160,57 @@ def test_preview_is_a_projection_of_input_and_output_operations():
         assert alan.preview("codex-a@newton") == "Input\n1 + 1\n\nOk\n2\n"
 
 
-def test_watcher_polls_observe_and_emits_only_changed_snapshots():
+class ObservationStream:
+    def __init__(self, values, stopped=None):
+        self.values = iter(values)
+        self.stopped = stopped
+        self.change = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            value = next(self.values)
+        except StopIteration:
+            if self.stopped:
+                self.stopped.set()
+            raise
+        if isinstance(value, Exception):
+            if self.stopped:
+                self.stopped.set()
+            raise value
+        self.change = {"kind": "replace", "graph": {}}
+        return value
+
+    def next(self, update=None, lock=None):
+        if lock is None:
+            graph = next(self)
+            if update:
+                update(graph, self.change)
+            return graph
+        with lock:
+            graph = next(self)
+            if update:
+                update(graph, self.change)
+            return graph
+
+    def close(self):
+        pass
+
+
+def test_watcher_consumes_streamed_observations_without_polling():
     stopped = threading.Event()
     changed = queue.Queue()
     first = graph({"op": "create"})
     second = graph({"op": "create"}, {"op": "input"})
-    observations = iter((first, first, second))
+    observations = ObservationStream((first, second), stopped)
 
-    def observe():
-        try:
-            return next(observations)
-        except StopIteration:
-            stopped.set()
-            return second
+    def observe(*, stream):
+        assert stream
+        return observations
 
     with mock.patch.object(alan.loop, "observe", side_effect=observe), \
-         mock.patch.object(stopped, "wait", side_effect=lambda _delay: False), \
          mock.patch.object(alan.time, "sleep"):
         watcher = alan.Watcher(changed, stopped)
         watcher._thread.join(1)
@@ -187,17 +225,13 @@ def test_watcher_emits_actor_metadata_only_changes():
     changed = queue.Queue()
     live = graph({"op": "create"})
     unavailable = graph({"op": "create"}, state="unavailable")
-    observations = iter((live, unavailable))
+    observations = ObservationStream((live, unavailable), stopped)
 
-    def observe():
-        try:
-            return next(observations)
-        except StopIteration:
-            stopped.set()
-            return unavailable
+    def observe(*, stream):
+        assert stream
+        return observations
 
     with mock.patch.object(alan.loop, "observe", side_effect=observe), \
-         mock.patch.object(stopped, "wait", side_effect=lambda _delay: False), \
          mock.patch.object(alan.time, "sleep"):
         watcher = alan.Watcher(changed, stopped)
         watcher._thread.join(1)
@@ -209,17 +243,14 @@ def test_watcher_emits_actor_metadata_only_changes():
 def test_observation_failure_is_visible_and_clears_projection():
     stopped = threading.Event()
     changed = queue.Queue()
-    observations = iter((graph({"op": "create"}), OSError("closed")))
+    observations = ObservationStream(
+        (graph({"op": "create"}), OSError("closed")), stopped)
 
-    def observe():
-        value = next(observations)
-        if isinstance(value, Exception):
-            stopped.set()
-            raise value
-        return value
+    def observe(*, stream):
+        assert stream
+        return observations
 
     with mock.patch.object(alan.loop, "observe", side_effect=observe), \
-         mock.patch.object(stopped, "wait", side_effect=lambda _delay: False), \
          mock.patch.object(alan.time, "sleep"):
         watcher = alan.Watcher(changed, stopped)
         watcher._thread.join(1)
@@ -230,51 +261,201 @@ def test_observation_failure_is_visible_and_clears_projection():
     assert watcher.error == "Alan unavailable: closed"
 
 
-def test_watcher_failure_cannot_erase_a_later_successful_refresh():
+def test_watcher_incremental_refresh_updates_under_one_lock():
     watcher = object.__new__(alan.Watcher)
     watcher.actors = ["stale"]
     watcher.graph = "stale graph"
+    watcher.projected = None
+    watcher._operations = {}
+    watcher._descriptors = {}
     watcher.available = True
     watcher.error = None
     watcher.initialized = threading.Event()
     watcher._changed = queue.Queue()
     watcher._lock = threading.Lock()
-    failed_inside_observe = threading.Event()
-    release_failure = threading.Event()
     fresh = graph({"op": "create"})
 
-    def observe():
-        if threading.current_thread().name == "failing-observe":
-            failed_inside_observe.set()
-            release_failure.wait()
-            raise OSError("closed")
-        return fresh
+    watcher.refresh(fresh, {"kind": "replace", "graph": {}})
 
-    def fail():
-        try:
-            watcher.refresh()
-        except OSError as error:
-            errors.append(str(error))
-
-    errors = []
-    failing = threading.Thread(
-        name="failing-observe", target=fail,
-    )
-    succeeding = threading.Thread(target=watcher.refresh)
-    with mock.patch.object(alan.loop, "observe", side_effect=observe):
-        failing.start()
-        assert failed_inside_observe.wait(1)
-        succeeding.start()
-        release_failure.set()
-        failing.join(1)
-        succeeding.join(1)
-
-    actors, observed = watcher.snapshot()
-    assert errors == ["closed"]
-    assert observed is fresh
+    with watcher.snapshot() as (actors, observed):
+        actors = list(actors)
+    assert observed is watcher.projected
     assert actors == watcher.actors
     assert watcher.available
     assert watcher.error is None
+
+
+def test_incremental_refresh_does_not_reenter_whole_graph_derivation():
+    watcher = object.__new__(alan.Watcher)
+    watcher.actors = []
+    watcher.graph = None
+    watcher.projected = None
+    watcher._descriptors = {}
+    watcher.available = False
+    watcher.error = None
+    watcher.initialized = threading.Event()
+    watcher._changed = queue.Queue()
+    watcher._lock = threading.Lock()
+    current = graph({"op": "create"})
+    for position in range(5_000):
+        current.add_node(f"other@newton#{position}", stream="other@newton",
+                         op="input", time="2026-01-01T00:00:00Z")
+    watcher.refresh(current, {"kind": "replace", "graph": {}})
+
+    reference = "codex-a@newton#1"
+    node = {"id": reference, "stream": "codex-a@newton", "op": "evaluation",
+            "time": "2026-01-01T00:00:01Z"}
+    current.add_node(reference, **{key: value for key, value in node.items()
+                                   if key != "id"})
+    current.graph["actors"][0]["state"] = "working"
+    change = {"kind": "delta", "generation": 1, "revision": 1,
+              "actors": [current.graph["actors"][0]], "nodes": [node], "edges": []}
+
+    with mock.patch.object(alan, "actors", side_effect=AssertionError("full actors")), \
+         mock.patch.object(alan, "projection_graph",
+                           side_effect=AssertionError("full projection")):
+        watcher.refresh(current, change)
+
+    assert watcher.actors[0]["active_evaluation"] == reference
+
+
+@pytest.mark.parametrize("prior", [
+    {"status": "ok", "value": "stale summary"},
+    {"status": "error", "error": "stale error"},
+])
+def test_incremental_interruption_matches_full_reconstruction(prior):
+    watcher = object.__new__(alan.Watcher)
+    watcher.actors = []
+    watcher.graph = None
+    watcher.projected = None
+    watcher._descriptors = {}
+    watcher.available = False
+    watcher.error = None
+    watcher.initialized = threading.Event()
+    watcher._changed = queue.Queue()
+    watcher._lock = threading.RLock()
+    current = graph({"op": "create"}, {"op": "output", **prior})
+    watcher.refresh(current, {"kind": "replace", "graph": {}})
+
+    reference = "codex-a@newton#2"
+    interrupted = {
+        "id": reference, "stream": "codex-a@newton", "op": "output",
+        "status": "interrupted", "time": "2026-07-30T12:00:02Z",
+    }
+    current.add_node(reference, **{key: value for key, value in interrupted.items()
+                                   if key != "id"})
+    watcher.refresh(current, {
+        "kind": "delta", "generation": 1, "revision": 1,
+        "actors": current.graph["actors"], "nodes": [interrupted], "edges": [],
+    })
+
+    assert watcher.actors == alan.actors(current)
+    assert "summary" not in watcher.actors[0]
+    assert "last_error" not in watcher.actors[0]
+
+
+def test_watcher_reports_one_loss_and_recovers_with_one_replacement():
+    stopped = threading.Event()
+    changed = queue.Queue()
+    first = ObservationStream((graph({"op": "create"}), OSError("closed")))
+    second = ObservationStream((graph({"op": "create"}, state="working"),), stopped)
+    streams = iter((first, second))
+
+    with mock.patch.object(alan.loop, "observe",
+                           side_effect=lambda **_kwargs: next(streams)), \
+         mock.patch.object(stopped, "wait", side_effect=lambda _delay: False), \
+         mock.patch.object(alan.time, "sleep"):
+        watcher = alan.Watcher(changed, stopped)
+        watcher._thread.join(1)
+
+    assert watcher.available
+    assert watcher.error is None
+    assert watcher.actors[0]["state"] == "working"
+    assert list(changed.queue) == ["alan", "alan", "alan"]
+
+
+def test_actor_lifecycle_delta_updates_without_operation_reconstruction():
+    watcher = object.__new__(alan.Watcher)
+    watcher.actors = []
+    watcher.graph = None
+    watcher.projected = None
+    watcher._descriptors = {}
+    watcher.available = False
+    watcher.error = None
+    watcher.initialized = threading.Event()
+    watcher._changed = queue.Queue()
+    watcher._lock = threading.RLock()
+    current = graph({"op": "create"}, {"op": "evaluation"}, state="working")
+    watcher.refresh(current, {"kind": "replace", "graph": {}})
+    assert watcher.actors[0]["active_evaluation"] == "codex-a@newton#1"
+
+    current.graph["actors"][0]["state"] = "unavailable"
+    watcher.refresh(current, {
+        "kind": "delta", "generation": 1, "revision": 1,
+        "actors": current.graph["actors"], "nodes": [], "edges": [],
+    })
+    assert watcher.actors[0]["state"] == "unavailable"
+    assert watcher.actors[0]["active_evaluation"] is None
+
+
+def test_label_change_updates_only_fleet_projection(tmp_path):
+    actor = "codex-a@newton"
+    labels = tmp_path / "labels"
+    labels.mkdir()
+    path = labels / actor
+    path.write_text("new label\n")
+    watcher = object.__new__(alan.Watcher)
+    watcher._consumer = threading.Event()
+    watcher._descriptors = {actor: {"addr": actor, "kind": "codex",
+                                    "label": "old label"}}
+    watcher.actors = list(watcher._descriptors.values())
+    watcher.projected = nx.MultiDiGraph()
+    watcher.projected.graph["actors"] = watcher.actors
+    watcher._changed = queue.Queue()
+    watcher._lock = threading.Lock()
+
+    with mock.patch.object(alan, "_state_dir", return_value=tmp_path), \
+         mock.patch.object(alan, "watch", return_value=iter((
+             {("modified", str(path))},
+         ))), \
+         mock.patch.object(alan.loop, "observe") as observe:
+        watcher._watch_labels()
+
+    assert watcher.actors[0]["label"] == "new label"
+    assert watcher._changed.get_nowait() == "alan"
+    observe.assert_not_called()
+
+
+def test_production_observation_calls_are_confined_to_explicit_scopes():
+    root = Path(alan.__file__).parent
+    found = []
+    for path in root.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        parents = {}
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                parents[child] = parent
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if (not isinstance(node.func.value, ast.Name)
+                    or node.func.value.id != "loop" or node.func.attr != "observe"):
+                continue
+            parent = node
+            while parent is not None and not isinstance(
+                    parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                parent = parents.get(parent)
+            found.append((path.name, parent.name if parent else "", tuple(
+                sorted(keyword.arg for keyword in node.keywords))))
+    assert sorted(found) == [
+        ("alan.py", "_run", ("stream",)),
+        ("alan.py", "actors", ()),
+        ("alan.py", "commander_actor", ("actors", "stream")),
+        ("alan.py", "preview", ()),
+        ("alan.py", "wait_output", ("actor", "stream")),
+        ("presentation.py", "refresh", ("actor", "stream")),
+        ("presentation.py", "run", ("actor", "stream")),
+    ]
 
 
 def actor_session(addr, kind):
