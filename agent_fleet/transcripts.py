@@ -399,4 +399,33 @@ def observe(sessions, transcripts=None):
             result.append(replace(session, agent_name=row[1], reported_state=row[2],
                                   summary=row[3], recency=row[4], transcript_id=row[5],
                                   human_activity=row[6] or session.human_activity))
-    return result
+    return fold_adopted(result)
+
+
+def fold_adopted(sessions):
+    alan = {}
+    providers = {}
+    for session in sessions:
+        if not session.transcript_id or session.agent not in AGENTS:
+            continue
+        identity = session.ref.server.host, session.agent, session.transcript_id
+        target = alan if session.ref.server.kind == "alan" else providers
+        target.setdefault(identity, []).append(session)
+
+    replacements = {}
+    consumed = set()
+    for identity, actors in alan.items():
+        native = providers.get(identity, [])
+        if len(actors) > 1 or len(native) > 1:
+            raise RuntimeError(
+                f"expected at most one Alan actor and provider session for {identity}, "
+                f"found {len(actors)} and {len(native)}"
+            )
+        if not native:
+            continue
+        actor, provider = actors[0], native[0]
+        replacements[actor.ref] = replace(actor, attachment=provider.ref)
+        consumed.add(provider.ref)
+
+    return [replacements.get(session.ref, session)
+            for session in sessions if session.ref not in consumed]

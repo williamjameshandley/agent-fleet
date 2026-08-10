@@ -24,6 +24,7 @@ import networkx as nx
 from agent_fleet.model import ServerRef, Session, SessionRef
 from agent_fleet.protocol import decode, decode_graph, decode_observation, encode
 from agent_fleet.render import AGENT_COLOUR, STATE_ORDER, recency
+from agent_fleet.transcripts import fold_adopted
 from agent_fleet.tmux import split_key
 from agent_fleet import actions, authority, proc
 from agent_fleet import alan
@@ -195,12 +196,126 @@ class IdentityTests(unittest.TestCase):
 
     def test_protocol_round_trip_preserves_canonical_identity(self):
         sessions = [self.session("newton"), self.session("lovelace")]
+        sessions[0] = replace(
+            sessions[0],
+            attachment=SessionRef(
+                ServerRef("newton", "/tmp/tmux/native", 44, 12), "$9"
+            ),
+        )
         encoded = json.loads(encode(sessions))
         self.assertEqual(set(encoded), {"version", "sessions", "usage", "unavailable"})
         self.assertEqual(encoded["sessions"][0]["server"]["kind"], "tmux")
         self.assertEqual(decode(json.dumps(encoded)), sessions)
         with self.assertRaisesRegex(ValueError, "unsupported Fleet protocol version"):
             decode('{"version":2,"sessions":[],"usage":{},"unavailable":[]}')
+
+    def test_composite_actor_operations_use_the_exact_provider_attachment(self):
+        fleet = Fleet()
+        actor = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
+                           "codex-a@newton")
+        attachment = SessionRef(
+            ServerRef("newton", "/tmp/tmux/native", 44, 12), "$9"
+        )
+        session = replace(self.session("newton"), ref=actor, attachment=attachment)
+        fleet.sessions = {"newton": [session]}
+        fleet.unavailable = set()
+        process = mock.Mock(stdin=mock.Mock())
+        process.stdin.drain = mock.AsyncMock()
+        fleet.processes = {"newton": process}
+
+        async def exercise():
+            preview = asyncio.create_task(fleet.preview(actor.key, 80, 24))
+            await asyncio.sleep(0)
+            fleet.previews[1][1].set_result("pane")
+            self.assertEqual(await preview, "pane")
+            switch = asyncio.create_task(fleet.switch(actor.key, "/dev/pts/8"))
+            await asyncio.sleep(0)
+            fleet.switches[1][1].set_result(None)
+            await switch
+
+        asyncio.run(exercise())
+        requests = [json.loads(call.args[0]) for call in process.stdin.write.call_args_list]
+        self.assertEqual(requests[0]["key"], attachment.key)
+        self.assertEqual(requests[1]["target"],
+                         ["/tmp/tmux/native", 44, 12, "$9"])
+
+    def test_adopted_attachment_survives_leave_reattach_and_fleet_restart(self):
+        host = os.uname().nodename.split(".", 1)[0]
+        identity = "00000000-0000-0000-0000-000000000001"
+        actor = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"),
+                       f"codex-{identity}@{host}"),
+            "actor", 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting",
+            transcript_id=identity,
+        )
+        provider = replace(
+            self.session(host, "$9"),
+            ref=SessionRef(ServerRef(host, "/tmp/tmux/native", 44, 12), "$9"),
+            transcript_id=identity,
+        )
+        [composite] = fold_adopted([provider, actor])
+        expected = ("/tmp/tmux/native", 44, 12, "$9")
+
+        current = composite
+        requests = []
+
+        def daemon(request):
+            requests.append(request)
+            if request.startswith("resolve "):
+                return json.dumps({
+                    "agent": current.agent,
+                    "state": current.state,
+                    "cwd": current.cwd,
+                    "attachment": current.attachment.key,
+                })
+            return json.dumps({"target": expected, "duration": 0.01})
+
+        ui = mock.Mock()
+        ui.command.side_effect = lambda command: (
+            ["@1"] if command[0] == "new-window" else
+            ["/dev/pts/10"] if command[0] == "display-message" else []
+        )
+        state = viewer.Attachment("main", "/dev/pts/8", ui)
+        state.daemon = daemon
+        state.open(actor.ref.key)
+        state.clear()
+
+        [restarted] = fold_adopted([provider, actor])
+        current = restarted
+        state.open(actor.ref.key)
+        self.assertEqual(restarted.ref, actor.ref)
+        self.assertEqual(restarted.attachment, provider.ref)
+        self.assertEqual([request for request in requests if request.startswith("resolve ")],
+                         [f"resolve {actor.ref.key}", f"resolve {actor.ref.key}"])
+        switches = [json.loads(request.removeprefix("switch "))
+                    for request in requests if request.startswith("switch ")]
+        self.assertEqual(switches,
+                         [{"key": actor.ref.key, "client": "/dev/pts/10"}] * 2)
+        self.assertEqual(sum(call.args[0][0] == "kill-window"
+                             for call in ui.command.call_args_list), 1)
+
+    def test_adopted_attachment_does_not_revive_an_unavailable_actor(self):
+        actor = "codex-1@newton"
+        session = mock.Mock(
+            agent="codex", state="unavailable", cwd="/work",
+            attachment="tmux:newton:/tmp/tmux/native:44:12:$9",
+        )
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        with mock.patch.object(state, "find", return_value=session), \
+             self.assertRaises(viewer.ViewerFailure) as raised:
+            state.resolve(f"alan:{actor}")
+        self.assertEqual((raised.exception.stage, raised.exception.cause),
+                         ("resolve", "unavailable"))
+
+    def test_invalid_adopted_attachment_crosses_the_viewer_boundary(self):
+        session = mock.Mock(agent="codex", state="waiting", cwd="/work", attachment=1)
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        with mock.patch.object(state, "find", return_value=session), \
+             self.assertRaises(viewer.ViewerFailure) as raised:
+            state.resolve("alan:codex-1@newton")
+        self.assertEqual((raised.exception.stage, raised.exception.cause,
+                          raised.exception.error_type),
+                         ("resolve", "invalid_identity", "AttributeError"))
 
     def test_protocol_round_trip_preserves_the_alan_graph(self):
         graph = nx.MultiDiGraph()
@@ -351,7 +466,7 @@ class IdentityTests(unittest.TestCase):
         asyncio.run(exercise())
         self.assertEqual(json.loads(writer.write.call_args.args[0]),
                          {"agent": session.agent, "state": session.state,
-                          "cwd": session.cwd})
+                          "cwd": session.cwd, "attachment": ""})
 
     def test_daemon_switch_reply_preserves_the_host_control_error(self):
         fleet = Fleet()
@@ -2534,7 +2649,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_remote_actor_resolution_survives_the_remote_shell(self):
         actor = "codex-1@newton"
-        session = mock.Mock(agent="codex", state="waiting", cwd="/work")
+        session = mock.Mock(agent="codex", state="waiting", cwd="/work", attachment="")
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         listed = mock.Mock(
             stdout="/tmp/tmux-1000/default 2548 1784382062 \\$191\n")

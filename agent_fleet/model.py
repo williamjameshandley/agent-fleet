@@ -48,6 +48,7 @@ class Session:
     evaluation: str = ""
     evaluation_started: int = 0
     transcript_path: str = ""
+    attachment: SessionRef | None = None
 
     @property
     def agent(self):
