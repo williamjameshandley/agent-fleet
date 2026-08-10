@@ -344,6 +344,8 @@ def project(sessions, graph, expanded=(), show_python=False):
     for actor in session_order:
         candidates = nx.ancestors(ancestry, actor) & principals
         if not candidates:
+            if descriptors[actor].get("evaluator") == "native":
+                roots[actor] = actor
             continue
         [principal] = candidates
         first = nx.shortest_path(ancestry, principal, actor)[1]

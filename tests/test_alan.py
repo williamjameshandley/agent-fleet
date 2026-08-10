@@ -473,6 +473,20 @@ def principal_root(current, root, principal="will@newton"):
     current.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
 
 
+def test_projection_includes_adopted_native_root():
+    actor = "codex-native@newton"
+    current = nx.MultiDiGraph()
+    current.graph["actors"] = [
+        {"addr": actor, "kind": "codex", "evaluator": "native"}
+    ]
+    current.add_node(f"{actor}#0", stream=actor, op="create")
+
+    [projected] = alan.project([actor_session(actor, "codex")], current)
+
+    assert projected.session.ref.key == f"alan:{actor}"
+    assert projected.depth == 0
+
+
 def test_projection_derives_recursive_visible_tree():
     root = "codex-root@newton"
     language = "claude-child@lovelace"
