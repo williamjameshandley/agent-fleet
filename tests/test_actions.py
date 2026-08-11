@@ -245,7 +245,8 @@ def test_composite_archive_keeps_bare_actor_and_raw_provider_operations():
 def test_composite_archive_projection_leaves_no_actor_or_raw_provider():
     actor = session(agent="codex")
     provider = session(kind="tmux", agent="codex")
-    [composite] = fold_adopted([provider, actor])
+    live = [provider, actor]
+    [composite] = fold_adopted(live)
     fleet = Fleet()
     fleet.sessions = {"lovelace": [composite]}
     fleet.unavailable.clear()
@@ -255,8 +256,14 @@ def test_composite_archive_projection_leaves_no_actor_or_raw_provider():
     fleet._composed = (fleet.observed, graph)
     assert [item.session for item in fleet.projected()] == [composite]
 
-    async def remove_components(_host, _request):
-        fleet.sessions = {"lovelace": []}
+    async def remove_components(_host, request):
+        if request["operation"] in {"archive-tmux", "archive-composite"}:
+            assert request["source"] == provider.ref.key
+            live.remove(provider)
+        if request["operation"] in {"archive-alan", "archive-composite"}:
+            assert request["actor"] == actor.ref.session_id
+            live.remove(actor)
+        fleet.sessions = {"lovelace": fold_adopted(live)}
         return {}
 
     with mock.patch.object(fleet, "viewers", return_value=[]), \
@@ -270,7 +277,8 @@ def test_composite_archive_projection_leaves_no_actor_or_raw_provider():
 def test_composite_retire_failure_leaves_the_bare_actor_visible():
     actor = session(agent="codex")
     provider = session(kind="tmux", agent="codex")
-    [composite] = fold_adopted([provider, actor])
+    live = [provider, actor]
+    [composite] = fold_adopted(live)
     fleet = Fleet()
     fleet.sessions = {"lovelace": [composite]}
     fleet.unavailable.clear()
@@ -279,8 +287,11 @@ def test_composite_retire_failure_leaves_the_bare_actor_visible():
                               "evaluator": "native"}]
     fleet._composed = (fleet.observed, graph)
 
-    async def fail_after_provider_removal(_host, _request):
-        fleet.sessions = {"lovelace": [actor]}
+    async def fail_after_provider_removal(_host, request):
+        if request["operation"] == "archive-composite":
+            assert request["source"] == provider.ref.key
+            live.remove(provider)
+        fleet.sessions = {"lovelace": fold_adopted(live)}
         raise RuntimeError("retire failed")
 
     with mock.patch.object(fleet, "viewers", return_value=[]), \
