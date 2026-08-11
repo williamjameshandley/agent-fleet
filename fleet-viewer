@@ -1,4 +1,5 @@
 #!/bin/sh
+export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"
 tmux() { /usr/bin/tmux -L agent-fleet-ui "$@"; }
 detach_displays() {
     tmux list-clients -t "fleet@$slot" -f '#{==:#{client_control_mode},0}' \
