@@ -94,6 +94,33 @@ def test_catalog_rejects_duplicate_full_provider_identity(tmp_path, monkeypatch)
         transcripts.catalog()
 
 
+def test_claude_leading_records_without_timestamps_have_zero_recency(tmp_path):
+    path = tmp_path / "claude.jsonl"
+    path.write_text("".join(json.dumps(event) + "\n" for event in [
+        {"type": "mode", "mode": "normal", "sessionId": "session-1"},
+        {"type": "permission-mode", "permissionMode": "bypassPermissions",
+         "sessionId": "session-1"},
+    ]))
+
+    assert transcripts.last_event_time(path) == 0
+
+
+def test_timestamp_free_transcript_still_rejects_malformed_json(tmp_path):
+    path = tmp_path / "claude.jsonl"
+    path.write_text('{"type":"mode"}\n{"broken":}\n')
+
+    with __import__("pytest").raises(json.JSONDecodeError):
+        transcripts.last_event_time(path)
+
+
+def test_transcript_still_rejects_invalid_timestamp(tmp_path):
+    path = tmp_path / "claude.jsonl"
+    path.write_text(json.dumps({"timestamp": "not-a-time"}) + "\n")
+
+    with __import__("pytest").raises(ValueError):
+        transcripts.last_event_time(path)
+
+
 def test_search_is_literal_case_insensitive_and_one_hit_per_message(tmp_path, monkeypatch):
     identity = "00000000-0000-0000-0000-000000000001"
     path = tmp_path / f"rollout-{identity}.jsonl"
