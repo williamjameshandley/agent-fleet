@@ -33,7 +33,8 @@ if [ "$slot" = main ]; then
         tmux kill-session -t fleet@main
     fi
     if ! tmux has-session -t fleet@main 2>/dev/null; then
-        tmux new-session -d -s fleet@main "exec env -u TMUX -u TMUX_PANE python -c 'from agent_fleet.viewer import serve; serve(\"main\")'"
+        tmux new-session -d -s fleet@main 'exec sleep infinity'
+        tmux respawn-pane -k -t '=fleet@main:' "exec env -u TMUX -u TMUX_PANE python -c 'from agent_fleet.viewer import serve; serve(\"main\")'"
         tmux set-option -t fleet@main prefix None
         tmux set-option -t fleet@main prefix2 None
         tmux set-option -t fleet@main window-size latest
@@ -47,7 +48,8 @@ if tmux has-session -t "fleet@$slot" 2>/dev/null && ! printf 'STATUS\n' | /usr/b
     tmux kill-session -t "fleet@$slot"
 fi
 if ! tmux has-session -t "fleet@$slot" 2>/dev/null; then
-    tmux new-session -d -s "fleet@$slot" "exec env -u TMUX -u TMUX_PANE python -c 'import sys; from agent_fleet.viewer import serve; serve(sys.argv[1])' '$slot'"
+    tmux new-session -d -s "fleet@$slot" 'exec sleep infinity'
+    tmux respawn-pane -k -t "=fleet@$slot:" "exec env -u TMUX -u TMUX_PANE python -c 'import sys; from agent_fleet.viewer import serve; serve(sys.argv[1])' '$slot'"
     tmux set-option -t "fleet@$slot" prefix None
     tmux set-option -t "fleet@$slot" prefix2 None
     tmux set-option -t "fleet@$slot" window-size latest

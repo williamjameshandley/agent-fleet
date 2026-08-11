@@ -1173,13 +1173,37 @@ class IdentityTests(unittest.TestCase):
         state.host = os.uname().nodename.split(".", 1)[0]
         entry = mock.Mock(client="/dev/pts/8", source="old")
         state.attachments[state.host] = entry
-        with mock.patch.object(state, "resident_switch") as switch, \
+        with mock.patch.object(state, "ui_windows", return_value={entry.window}), \
+             mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "select_host") as select, \
              mock.patch.object(state, "create_host") as create:
             state.open(session.ref.key)
         switch.assert_called_once_with(session.ref.key, "/dev/pts/8")
         select.assert_not_called(); create.assert_not_called()
         self.assertEqual(entry.source, session.ref.key)
+
+    def test_missing_cached_window_is_evicted_before_switch(self):
+        session = self.session(os.uname().nodename)
+        state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+        host = os.uname().nodename.split(".", 1)[0]
+        stale = mock.Mock(window="@2", client="/dev/pts/8", source="old")
+        fresh = mock.Mock(window="@3", client="/dev/pts/10", source=session.ref.key)
+        state.source = "old"; state.host = host
+        state.attachments[host] = stale
+
+        def remove(removed, _reason):
+            state.attachments.pop(removed)
+
+        with mock.patch.object(state, "ui_windows", return_value={"@1"}), \
+             mock.patch.object(state, "remove_host", side_effect=remove) as removed, \
+             mock.patch.object(state, "create_host", return_value=fresh), \
+             mock.patch.object(state, "resident_switch") as switch, \
+             mock.patch.object(state, "select_host"):
+            state.open(session.ref.key)
+        removed.assert_called_once_with(host, "missing")
+        switch.assert_not_called()
+        self.assertIs(state.attachments[host], fresh)
+        self.assertEqual(state.source, session.ref.key)
 
     def test_initial_local_attachment_does_not_request_nested_tmux(self):
         ui = mock.Mock()
@@ -1280,6 +1304,8 @@ class IdentityTests(unittest.TestCase):
             "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
             "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
         with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
+             mock.patch.object(state, "ui_windows",
+                               return_value={state.attachments["new-host"].window}), \
              mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "select_host", side_effect=RuntimeError("UI failed")):
             with self.assertRaisesRegex(RuntimeError, "UI failed"):
@@ -1297,6 +1323,8 @@ class IdentityTests(unittest.TestCase):
             "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
             "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
         with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
+             mock.patch.object(state, "ui_windows",
+                               return_value={state.attachments["new-host"].window}), \
              mock.patch.object(
                 state, "resident_switch",
                 side_effect=[None, RuntimeError("rollback failed")]), \
@@ -1314,6 +1342,7 @@ class IdentityTests(unittest.TestCase):
         state.attachments = {"old-host": old, "new-host": new}
         state.source = "old-source"; state.host = "old-host"
         with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
+             mock.patch.object(state, "ui_windows", return_value={new.window}), \
              mock.patch.object(state, "resident_switch"), \
              mock.patch.object(state, "select_host"):
             state.open("new-host:/tmp/tmux/default:12:10:$1")
@@ -1390,6 +1419,18 @@ class IdentityTests(unittest.TestCase):
                 self.assertIsNone(control_process.poll())
                 self.assertEqual(set(state.attachments), {"lovelace", "newton"})
                 self.assertEqual(state.source, entries["lovelace"].source)
+                control.command(["new-session", "-d", "-s", "fleet@other",
+                                 "sleep 30"])
+                index = state.ui_value(entries["lovelace"].window,
+                                       "#{window_index}")
+                control.command(["link-window", "-s", entries["lovelace"].window,
+                                 "-t", "=fleet@other:"])
+                control.command(["unlink-window", "-t",
+                                 f"=fleet@test:{index}"])
+                self.assertEqual(state.check(),
+                                 "Viewer attachment exited unexpectedly")
+                self.assertEqual(set(state.attachments), {"newton"})
+                self.assertEqual(state.source, "")
             finally:
                 if display and display.poll() is None:
                     display.terminate(); display.wait()
@@ -1434,6 +1475,7 @@ class IdentityTests(unittest.TestCase):
             window="@2", remote_file="/run/user/1000/agent-fleet/viewer.tty",
             owner="lovelace", master=None)
         with mock.patch.object(state, "ui_value", return_value="1"), \
+             mock.patch.object(state, "ui_windows", return_value={"@2"}), \
              mock.patch.object(state, "reclaim_marker") as reclaim, \
              mock.patch.object(state, "ssh") as ssh:
             error = state.check()
@@ -1452,6 +1494,7 @@ class IdentityTests(unittest.TestCase):
             "newton": mock.Mock(window="@2", remote_file="marker",
                                  owner="lovelace", master=(82, 10))}
         with mock.patch.object(viewer, "process_alive", return_value=False), \
+             mock.patch.object(state, "ui_windows", return_value={"@1", "@2"}), \
              mock.patch.object(state, "ui_value", return_value="0"), \
              mock.patch.object(state, "reclaim_marker",
                                side_effect=RuntimeError(
@@ -1469,6 +1512,7 @@ class IdentityTests(unittest.TestCase):
         entry = mock.Mock(source=state.source, client="/dev/pts/8", window="@2")
         state.attachments["remote"] = entry
         with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"remote"})), \
+             mock.patch.object(state, "ui_windows", return_value={entry.window}), \
              mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "create_host") as create, \
              mock.patch.object(state, "select_host") as select:
@@ -1971,6 +2015,10 @@ class IdentityTests(unittest.TestCase):
             environment["PYTHONPATH"] = str(root)
             (directory / "tmux").mkdir()
             (directory / "runtime").mkdir()
+            (directory / "bin").mkdir()
+            (directory / "bin" / "hostname").write_text("#!/bin/sh\necho lovelace\n")
+            (directory / "bin" / "hostname").chmod(0o755)
+            environment["PATH"] = str(directory / "bin") + ":" + environment["PATH"]
             subprocess.run(["tmux", "new-session", "-d", "-s", "source",
                             "sleep 30"], check=True, env=environment)
             subprocess.run(
@@ -2018,6 +2066,11 @@ class IdentityTests(unittest.TestCase):
                            "PYTHONPATH": str(root)}
             (Path(directory) / "tmux").mkdir()
             (Path(directory) / "runtime").mkdir()
+            (Path(directory) / "bin").mkdir()
+            (Path(directory) / "bin" / "hostname").write_text(
+                "#!/bin/sh\necho lovelace\n")
+            (Path(directory) / "bin" / "hostname").chmod(0o755)
+            environment["PATH"] = str(Path(directory) / "bin") + ":" + environment["PATH"]
             master, slave = pty.openpty()
             process = subprocess.Popen([root / "fleet-viewer", "main"],
                                        stdin=slave, stdout=slave, stderr=slave,
@@ -2584,7 +2637,7 @@ class IdentityTests(unittest.TestCase):
                 ui.muster()
             command = execute.call_args.args[1]
             selected = [command[0], "--disabled", "--no-input", "--delimiter=\t",
-                        "--with-nth=3..", "--id-nth=1"]
+                        "--with-nth=4..", "--id-nth=1"]
             selected.extend(argument for argument in command
                             if argument.startswith(("--bind=x:", "--bind=R:")))
             tmux_runtime = directory / "tmux"
@@ -2592,7 +2645,7 @@ class IdentityTests(unittest.TestCase):
             environment = {**without_tmux_client(),
                            "TMUX_TMPDIR": str(tmux_runtime)}
             key = "alan:codex-one@lovelace"
-            shell = f"printf {shlex.quote(f'{key}\t7\tvisible\n')} | exec {shlex.join(selected)}"
+            shell = f"printf {shlex.quote(f'{key}\t7\t0\tvisible\n')} | exec {shlex.join(selected)}"
             subprocess.run(["tmux", "new-session", "-d", "-s", "fixture", shell],
                            check=True, env=environment)
             try:
@@ -2611,6 +2664,69 @@ class IdentityTests(unittest.TestCase):
                     time.sleep(.01)
                 self.assertEqual([request.split("\t")[:3] for request in received],
                                  [["archive", key, "7"], ["refresh", key, "7"]])
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_stock_fzf_fold_keys_only_request_folding_for_parents(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            runtime = directory / "runtime"
+            runtime.mkdir()
+            daemon_socket = runtime / "fleet.sock"
+            received = []
+
+            def serve():
+                with socket.socket(socket.AF_UNIX) as server:
+                    server.bind(str(daemon_socket))
+                    server.listen()
+                    connection, _ = server.accept()
+                    with connection:
+                        received.append(connection.makefile().readline().rstrip("\n"))
+                        connection.sendall(b"change-header(done)\n")
+
+            thread = threading.Thread(target=serve, daemon=True)
+            thread.start()
+            with mock.patch("agent_fleet.ui.RUNTIME", runtime), \
+                 mock.patch.object(ui, "header", return_value="header"), \
+                 mock.patch.object(ui, "footer", return_value="footer"), \
+                 mock.patch.object(ui.os, "execvp", side_effect=RuntimeError) as execute, \
+                 self.assertRaises(RuntimeError):
+                ui.muster()
+            command = execute.call_args.args[1]
+            selected = [command[0], "--disabled", "--no-input", "--delimiter=\t",
+                        "--with-nth=4..", "--id-nth=1"]
+            selected.extend(argument for argument in command
+                            if argument.startswith(("--bind=l:", "--bind=h:",
+                                                    "--bind=right:", "--bind=left:")))
+            tmux_runtime = directory / "tmux"
+            tmux_runtime.mkdir()
+            environment = {**without_tmux_client(),
+                           "TMUX_TMPDIR": str(tmux_runtime)}
+            key = "alan:codex-one@lovelace"
+
+            def start(name, children):
+                row = f"{key}\t7\t{children}\tvisible\n"
+                shell = f"printf {shlex.quote(row)} | exec {shlex.join(selected)}"
+                subprocess.run(["tmux", "new-session", "-d", "-s", name, shell],
+                               check=True, env=environment)
+                time.sleep(.05)
+
+            try:
+                start("leaf", 0)
+                for key_name in ("l", "h", "Right", "Left"):
+                    subprocess.run(["tmux", "send-keys", "-t", "=leaf:", key_name],
+                                   check=True, env=environment)
+                time.sleep(.1)
+                self.assertEqual(received, [])
+                subprocess.run(["tmux", "kill-session", "-t", "=leaf"],
+                               check=True, env=environment)
+
+                start("parent", 2)
+                subprocess.run(["tmux", "send-keys", "-t", "=parent:", "l"],
+                               check=True, env=environment)
+                thread.join(timeout=2)
+                self.assertEqual(received, [f"fold\topen\t{key}\t7\t80"])
             finally:
                 subprocess.run(["tmux", "kill-server"], env=environment,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
