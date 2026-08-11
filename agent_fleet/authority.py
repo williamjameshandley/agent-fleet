@@ -10,6 +10,7 @@ FIELDS = {
     "rename-alan": {"operation", "actor", "name"},
     "rename-tmux": {"operation", "source", "name"},
     "archive-alan": {"operation", "actor", "agent"},
+    "archive-composite": {"operation", "actor", "agent", "source", "transcript"},
     "archive-tmux": {"operation", "source", "agent", "transcript"},
     "refresh": {"operation", "actor"},
     "restore-alan": {"operation", "actor"},
@@ -39,6 +40,13 @@ def execute(request):
             raise ValueError("archive requires a language actor")
         if request["agent"] == "llm":
             presentation.close(request["actor"])
+        alan.retire(request["actor"])
+        return {}
+    if operation == "archive-composite":
+        if request["agent"] not in {"claude", "codex"}:
+            raise ValueError("archive requires Claude or Codex")
+        transcripts.verify(request["agent"], request["transcript"])
+        tmux.mutate(request["source"], "archive", [])
         alan.retire(request["actor"])
         return {}
     if operation == "archive-tmux":
