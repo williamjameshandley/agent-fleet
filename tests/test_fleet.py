@@ -2031,7 +2031,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_muster_always_opens_the_global_main_viewer(self):
         source = (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text()
-        self.assertIn("focus:execute-silent(exec /usr/lib/agent-fleet/fleet-open project main {1})", source)
+        self.assertIn("focus,result-final:execute-silent(exec /usr/lib/agent-fleet/fleet-open project main {1})", source)
         self.assertIn("enter:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})", source)
         self.assertNotIn("/usr/lib/agent-fleet/ui show", source)
         self.assertIn("load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)", source)
@@ -2226,11 +2226,124 @@ class IdentityTests(unittest.TestCase):
             result = asyncio.run(fleet.mutate_action(
                 f"archive\t{key}\t{fleet.view_revision}\t100"))
         self.assertIn("reload-sync(/usr/bin/cat", result)
+        self.assertNotIn("result-final", result)
         self.assertEqual(fleet.projected(), [])
         self.assertIn(key, fleet.pending_archives)
         raw = encode(fleet.sessions["lovelace"], {}, graph=fleet._composed[1])
         fleet.update_host("lovelace", raw)
         self.assertEqual(fleet.projected(), [])
+
+    def test_archive_transform_projects_the_remaining_successor(self):
+        fleet, root, _, _ = self.fold_fleet()
+        successor = "codex-successor@lovelace"
+        fleet._composed[1].graph["actors"].append(
+            {"addr": successor, "kind": "codex"})
+        fleet._composed[1].add_node(
+            f"{successor}#0", stream=successor, op="create")
+        fleet._composed[1].add_node(
+            "will@lovelace#2", stream="will@lovelace", op="spawn")
+        fleet._composed[1].add_edge(
+            "will@lovelace#2", f"{successor}#0", key="spawn")
+        fleet.sessions["lovelace"].append(Session(
+            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), successor),
+            successor, 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting"))
+        fleet._view_cache = None
+
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
+             mock.patch.object(fleet, "archive_authority", return_value=(
+                 fleet.sessions["lovelace"][0], "lovelace",
+                 {"operation": "archive"})), \
+             mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
+            result = asyncio.run(fleet.mutate_action(
+                f"archive\talan:{root}\t{fleet.view_revision}\t100"))
+
+        self.assertNotIn("result-final", result)
+        self.assertEqual([item.session.ref.key for item in fleet.projected()],
+                         [f"alan:{successor}"])
+
+    def test_stock_fzf_archive_focuses_the_rendered_successor(self):
+        self.assertIn(
+            "--bind=focus,result-final:execute-silent(exec "
+            "/usr/lib/agent-fleet/fleet-open project main {1})",
+            (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text())
+        fleet, root, _, _ = self.fold_fleet()
+        successor = "codex-successor@lovelace"
+        fleet._composed[1].graph["actors"].append(
+            {"addr": successor, "kind": "codex"})
+        fleet._composed[1].add_node(
+            f"{successor}#0", stream=successor, op="create")
+        fleet._composed[1].add_node(
+            "will@lovelace#2", stream="will@lovelace", op="spawn")
+        fleet._composed[1].add_edge(
+            "will@lovelace#2", f"{successor}#0", key="spawn")
+        fleet.sessions["lovelace"].append(Session(
+            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), successor),
+            successor, 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting"))
+        fleet._view_cache = None
+
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            runtime = directory / "runtime"
+            runtime.mkdir()
+            tmux_runtime = directory / "tmux"
+            tmux_runtime.mkdir()
+            socket_path = runtime / "muster.sock"
+            action_path = directory / "archive.action"
+            focus_path = directory / "focus"
+            initial_path = directory / "initial.rows"
+            initial_path.write_text(
+                f"alan:{root}\t1\troot\nalan:{successor}\t1\tsuccessor\n")
+            with mock.patch("agent_fleet.daemon.RUNTIME", runtime), \
+                 mock.patch.object(fleet, "archive_authority", return_value=(
+                     fleet.sessions["lovelace"][0], "lovelace",
+                     {"operation": "archive"})), \
+                 mock.patch.object(fleet, "complete_archive",
+                                   new_callable=mock.AsyncMock):
+                action = asyncio.run(fleet.mutate_action(
+                    f"archive\talan:{root}\t{fleet.view_revision}\t100"))
+            record_focus = shlex.join((
+                "/bin/sh", "-c", f"printf '%s\\n' \"$1\" >> {focus_path}",
+                "sh", "{1}"))
+            action_path.write_text(action)
+            command = (
+                f"exec fzf --listen {shlex.quote(str(socket_path))} --disabled "
+                "--no-input --delimiter='\\t' --with-nth=3.. --id-nth=1 "
+                f"--bind {shlex.quote('focus:execute-silent(' + record_focus + ')')} "
+                f"--bind {shlex.quote('result-final:execute-silent(' + record_focus + ')')} "
+                f"--bind {shlex.quote('x:transform(cat ' + str(action_path) + ')')} "
+                f"< {shlex.quote(str(initial_path))}")
+            environment = {**without_tmux_client(),
+                           "TMUX_TMPDIR": str(tmux_runtime)}
+            subprocess.run(["tmux", "new-session", "-d", "-s", "fleet@muster",
+                            command], check=True, env=environment)
+            try:
+                for _ in range(100):
+                    if socket_path.exists() and focus_path.exists():
+                        break
+                    time.sleep(.01)
+                self.assertEqual(focus_path.read_text().splitlines()[-1],
+                                 f"alan:{root}")
+                subprocess.run(["tmux", "send-keys", "-t", "fleet@muster", "x"],
+                               check=True, env=environment)
+                endpoint = ["curl", "-fsS", "--unix-socket", str(socket_path)]
+                for _ in range(100):
+                    state = json.loads(subprocess.run(
+                        endpoint + ["http://localhost"], check=True, text=True,
+                        capture_output=True, env=environment).stdout)
+                    current = (state.get("current") or {}).get("text", "")
+                    if (current.partition("\t")[0] == f"alan:{successor}"
+                            and focus_path.read_text().splitlines()[-1]
+                            == f"alan:{successor}"):
+                        break
+                    time.sleep(.01)
+                self.assertEqual(current.partition("\t")[0], f"alan:{successor}")
+                self.assertEqual(focus_path.read_text().splitlines()[-1],
+                                 f"alan:{successor}")
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
 
     def test_archive_accepts_an_exact_current_source_across_an_unrelated_revision(self):
         fleet, root, _, _ = self.fold_fleet()
