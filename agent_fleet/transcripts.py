@@ -247,12 +247,18 @@ def project_native(sessions, transcripts=None):
             result.append(session)
             continue
         item = transcripts.get((session.agent, session.transcript_id))
-        result.append(replace(
-            session, transcript_path=str(item.path) if item else "",
-            summary=latest_assistant_text(item) if item else "",
-            human_activity=max(session.human_activity, last_human_time(item))
-            if item else session.human_activity,
-        ))
+        try:
+            result.append(replace(
+                session, transcript_path=str(item.path) if item else "",
+                summary=latest_assistant_text(item) if item else "",
+                human_activity=max(session.human_activity, last_human_time(item))
+                if item else session.human_activity,
+            ))
+        except (json.JSONDecodeError, ValueError) as error:
+            result.append(replace(
+                session, transcript_path=str(item.path), reported_state="needs-action",
+                summary=f"Transcript is invalid: {item.path.name}: {error}",
+            ))
     return result
 
 
@@ -290,10 +296,13 @@ def descendants(pid, children):
 
 
 def select_codex(targets, resumed):
+    targets = list(dict.fromkeys(targets))
     explicit = [target for target in targets
                 if any(identity in target for identity in resumed)]
     if len(explicit) == 1:
         return explicit[0]
+    if len(targets) == 1:
+        return targets[0]
     roots = []
     for target in targets:
         with open(target) as stream:
@@ -306,7 +315,7 @@ def select_codex(targets, resumed):
     return roots[0]
 
 
-def codex_transcript(pids):
+def codex_candidates(pids):
     targets, resumed = [], set()
     for pid in pids:
         try:
@@ -323,6 +332,11 @@ def codex_transcript(pids):
                 continue
             if "rollout-" in target:
                 targets.append(target)
+    return targets, resumed
+
+
+def codex_transcript(pids):
+    targets, resumed = codex_candidates(pids)
     return transcript("codex", select_codex(targets, resumed))
 
 
@@ -367,18 +381,40 @@ def observe(sessions, transcripts=None):
                      "waiting" if entry.get("status") == "idle" or title.startswith("✳") else
                      "working")
             path = CLAUDE / entry["cwd"].replace("/", "-").replace(".", "-") / f"{identity}.jsonl"
-            updated = last_event_time(path) if path.exists() else 0
-            human_activity = last_human_time(transcript("claude", path)) if path.exists() else 0
-            summary = (latest_assistant_text(transcript("claude", path))
-                       if path.exists() else "")
-        else:
+            item = transcript("claude", path) if path.exists() else None
             try:
-                item = codex_transcript(tree)
+                updated = last_event_time(path) if item else 0
+                human_activity = last_human_time(item) if item else 0
+                summary = latest_assistant_text(item) if item else ""
+            except (json.JSONDecodeError, ValueError) as error:
+                state = "needs-action"
+                summary = f"Transcript is invalid: {path.name}: {error}"
+                updated = int(path.stat().st_mtime)
+                human_activity = 0
+        else:
+            targets, resumed = codex_candidates(tree)
+            try:
+                item = transcript("codex", select_codex(targets, resumed))
             except RuntimeError:
                 continue
+            except (json.JSONDecodeError, ValueError) as error:
+                identity = ""
+                state = "needs-action"
+                summary = f"Codex transcript selection failed: {error}"
+                updated = max((int(Path(path).stat().st_mtime) for path in targets), default=0)
+                human_activity = 0
+                rows.append((session_id, agent, state, " ".join(summary.split()), updated,
+                             identity, human_activity))
+                continue
             identity = item.session_id
-            state, summary, updated = codex_state(item)
-            human_activity = last_human_time(item)
+            try:
+                state, summary, updated = codex_state(item)
+                human_activity = last_human_time(item)
+            except (json.JSONDecodeError, ValueError) as error:
+                state = "needs-action"
+                summary = f"Transcript is invalid: {item.path.name}: {error}"
+                updated = int(item.mtime)
+                human_activity = 0
         rows.append((session_id, agent, state, " ".join(summary.split()), updated, identity,
                      human_activity))
 
