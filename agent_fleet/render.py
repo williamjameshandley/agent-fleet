@@ -95,6 +95,7 @@ def rows_text(projected, unavailable, width, now=None, revision=None):
                    f"{agent_colour}{agent:1}{RESET}{emphasis} {elapsed:>4} "
                    f"{state_colour}{marker}{RESET}{emphasis} "
                    f"{fold:<4} {name:<20.20} {summary:<{room}.{room}}{RESET}")
-        identity = session.ref.key if revision is None else f"{session.ref.key}\t{revision}"
+        identity = (session.ref.key if revision is None else
+                    f"{session.ref.key}\t{revision}\t{projection.child_count}")
         lines.append(f"{identity}\t{visible}")
     return "\n".join(lines)

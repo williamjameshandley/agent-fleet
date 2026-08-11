@@ -11,7 +11,7 @@ VALUES = {
     "operation": {"CHECK", "CLEAR", "FOCUS", "OPEN", "PROJECT", "SHUTDOWN",
                   "SOURCE", "STATUS", "WORKSTATION"},
     "path": {"cold", "cross_host", "same_host"},
-    "reason": {"clear", "create_failed", "exited", "rollback_failed",
+    "reason": {"clear", "create_failed", "exited", "missing", "rollback_failed",
                "select_failed", "shutdown"},
     "route": {"local", "remote"},
     "stage": {"attach", "daemon", "focus", "resolve", "select", "ssh", "switch",

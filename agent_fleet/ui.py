@@ -45,10 +45,10 @@ def muster():
     sock = RUNTIME / "muster.sock"
     prepare_socket(sock)
     daemon_socket = shlex.quote(str(RUNTIME / "fleet.sock"))
-    fold_open = ("printf 'fold\\topen\\t%s\\t%s\\t%s\\n' {1} {2} "
-                 f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
-    fold_close = ("printf 'fold\\tclose\\t%s\\t%s\\t%s\\n' {1} {2} "
-                  f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
+    fold_open = ("if [ {3} -gt 0 ]; then printf 'fold\\topen\\t%s\\t%s\\t%s\\n' "
+                 f"{{1}} {{2}} \"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}; fi")
+    fold_close = ("if [ {3} -gt 0 ]; then printf 'fold\\tclose\\t%s\\t%s\\t%s\\n' "
+                  f"{{1}} {{2}} \"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}; fi")
     toggle_python = ("printf 'toggle\\tpython\\t%s\\n' \"$FZF_COLUMNS\" | "
                      f"/usr/bin/nc -U {daemon_socket}")
     resize = ("printf 'resize\\t%s\\n' \"$FZF_COLUMNS\" | "
@@ -62,7 +62,7 @@ def muster():
         f"--color={FZF_COLOUR}",
         "--no-unicode", "--pointer=>", "--gutter= ",
         "--no-scrollbar", "--no-hscroll",
-        "--delimiter=\t", "--with-nth=3..", "--id-nth=1",
+        "--delimiter=\t", "--with-nth=4..", "--id-nth=1",
         "--layout=reverse", "--no-sort", "--no-multi", "--info=inline", "--border=none",
         f"--header={header()}",
         f"--footer={footer()}",

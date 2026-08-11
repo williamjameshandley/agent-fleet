@@ -323,6 +323,12 @@ class Attachment:
                 raise RuntimeError(f"UI server did not report {value}")
             return output[0]
 
+    def ui_windows(self):
+        with boundary("attach", "window"):
+            return set(self.ui.command(
+                ["list-windows", "-t", f"=fleet@{self.slot}",
+                 "-F", "#{window_id}"]))
+
     def create_host(self, host, key):
         local = os.uname().nodename.split(".", 1)[0]
         remote_file = None
@@ -454,6 +460,11 @@ class Attachment:
         started = time.monotonic()
         new_host = source_host(key) if host is None else host
         entry = self.attachments.get(new_host)
+        if entry is not None and entry.window not in self.ui_windows():
+            self.remove_host(new_host, "missing")
+            if new_host == self.host:
+                self.source = self.host = ""
+            entry = None
         if entry is None:
             path = "cold"
             entry = self.create_host(new_host, key)
@@ -530,12 +541,17 @@ class Attachment:
                        window=entry.window, reason=reason)
 
     def check(self):
+        if not self.attachments:
+            return ""
+        windows = self.ui_windows()
         for host, entry in list(self.attachments.items()):
             master_dead = entry.master is not None and not process_alive(entry.master)
-            try:
-                dead = self.ui_value(entry.window, "#{pane_dead}") == "1"
-            except RuntimeError:
-                dead = True
+            dead = entry.window not in windows
+            if not dead:
+                try:
+                    dead = self.ui_value(entry.window, "#{pane_dead}") == "1"
+                except RuntimeError:
+                    dead = True
             if master_dead or dead:
                 status = signal = ""
                 if dead:
