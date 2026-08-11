@@ -34,7 +34,7 @@ def test_claude_observe_accepts_optional_status(monkeypatch):
     ]
     entries = [
         {"pid": 100 + index, "sessionId": f"session-{index}", "cwd": "/work",
-         "kind": "interactive", "startTime": 1, **fields}
+         "kind": "interactive", "startedAt": 1, **fields}
         for index, (fields, _title, _state) in enumerate(cases)
     ]
     panes = "".join(
