@@ -1986,6 +1986,8 @@ class IdentityTests(unittest.TestCase):
         self.assertIn('set -- --workstation "$workstation"', muster)
         self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
                       muster)
+        self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
+                      main)
         self.assertIn("new-session -d -s fleet@main", main)
         self.assertIn("exec env -u TMUX -u TMUX_PANE python", main)
         self.assertIn("/usr/bin/tmux -L agent-fleet-ui", main)
@@ -1998,6 +2000,11 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("#{==:#{client_control_mode},0}", main)
         self.assertNotIn("attach-session -d", main)
         self.assertIn("--destroy", main)
+        launcher = (root / "fleet-view").read_text()
+        self.assertIn('export SSH_AUTH_SOCK="/run/user/$(id -u)/gnupg/S.gpg-agent.ssh"',
+                      launcher)
+        self.assertNotIn("viewer-main.sock", launcher)
+        self.assertIn('arrive("laptop")', launcher)
         self.assertIn('ui.command(["refresh-client", "-f", "no-output"])',
                       (root / "agent_fleet/viewer.py").read_text())
         self.assertIn("set-option -t fleet@muster mouse off", muster)
