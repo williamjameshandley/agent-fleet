@@ -845,8 +845,10 @@ class Fleet:
                 "name": name, "cwd": request["cwd"],
             })
             key = value["source"]
-            await self.wait_for_source(lambda session: session.ref.key == key,
-                                       f"create {key}")
+            await self.wait_for_source(
+                lambda session: session.ref.key == key
+                and session.attachment is not None,
+                f"create {key}")
             return {"source": key}
 
         if operation == "restore":
@@ -857,10 +859,19 @@ class Fleet:
                     raise ValueError("invalid Alan history identity")
                 host = actor.rsplit("@", 1)[1]
                 self.available(host)
+                descriptors = [
+                    item for item in self.composed_graph().graph.get("actors", [])
+                    if item["addr"] == actor]
+                if len(descriptors) != 1:
+                    raise LookupError(f"actor disappeared: {actor}")
+                native = (descriptors[0].get("evaluator") == "native"
+                          and not descriptors[0].get("managed", False))
                 await self.authority(host, {"operation": "restore-alan",
                                             "actor": actor})
-                await self.wait_for_source(lambda session: session.ref.key == key,
-                                           f"restore {key}")
+                await self.wait_for_source(
+                    lambda session: session.ref.key == key
+                    and (not native or session.attachment is not None),
+                    f"restore {key}")
                 return {"source": key}
             try:
                 host, agent, transcript = key.split(":", 2)

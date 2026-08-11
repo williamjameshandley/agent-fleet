@@ -333,6 +333,87 @@ def test_daemon_restores_transcript_then_reconciles_exact_native_identity():
     asyncio.run(exercise())
 
 
+def test_daemon_native_actor_restore_waits_for_its_provider_attachment():
+    fleet = Fleet()
+    fleet.unavailable.clear()
+    actor = session(agent="codex", transcript="1")
+    provider = session(kind="tmux", agent="codex", transcript="1")
+    graph = daemon.nx.MultiDiGraph()
+    graph.graph["actors"] = [{"addr": actor.ref.session_id,
+                               "kind": "codex", "evaluator": "native"}]
+    fleet._composed = (fleet.observed, graph)
+
+    async def exercise():
+        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]), \
+             mock.patch.object(fleet, "authority", return_value={"source": actor.ref.key}):
+            pending = asyncio.create_task(fleet.action({
+                "operation": "restore", "history": actor.ref.key, "name": ""}))
+            await asyncio.sleep(0)
+            fleet.sessions = {"lovelace": [actor]}
+            fleet.observed += 1
+            async with fleet.changed:
+                fleet.changed.notify_all()
+            await asyncio.sleep(0)
+            assert not pending.done()
+            fleet.sessions = {"lovelace": fold_adopted([actor, provider])}
+            fleet.observed += 1
+            async with fleet.changed:
+                fleet.changed.notify_all()
+            value = await pending
+            assert value == {"source": actor.ref.key}
+            assert fleet.source(value["source"]).attachment == provider.ref
+
+    asyncio.run(exercise())
+
+
+def test_daemon_bare_llm_restore_does_not_wait_for_provider_attachment():
+    fleet = Fleet()
+    fleet.unavailable.clear()
+    actor = session(agent="llm", transcript="")
+    graph = daemon.nx.MultiDiGraph()
+    graph.graph["actors"] = [{"addr": actor.ref.session_id, "kind": "llm"}]
+    fleet._composed = (fleet.observed, graph)
+
+    async def exercise():
+        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]), \
+             mock.patch.object(fleet, "authority", return_value={"source": actor.ref.key}):
+            pending = asyncio.create_task(fleet.action({
+                "operation": "restore", "history": actor.ref.key, "name": ""}))
+            await asyncio.sleep(0)
+            fleet.sessions = {"lovelace": [actor]}
+            fleet.observed += 1
+            async with fleet.changed:
+                fleet.changed.notify_all()
+            assert await pending == {"source": actor.ref.key}
+
+    asyncio.run(exercise())
+
+
+def test_daemon_managed_codex_restore_does_not_wait_for_provider_attachment():
+    fleet = Fleet()
+    fleet.unavailable.clear()
+    actor = session(agent="codex", transcript="1")
+    graph = daemon.nx.MultiDiGraph()
+    graph.graph["actors"] = [{"addr": actor.ref.session_id,
+                               "kind": "codex", "capabilities": "read",
+                               "evaluator": "native", "managed": True}]
+    fleet._composed = (fleet.observed, graph)
+
+    async def exercise():
+        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]), \
+             mock.patch.object(fleet, "authority", return_value={"source": actor.ref.key}):
+            pending = asyncio.create_task(fleet.action({
+                "operation": "restore", "history": actor.ref.key, "name": ""}))
+            await asyncio.sleep(0)
+            fleet.sessions = {"lovelace": [actor]}
+            fleet.observed += 1
+            async with fleet.changed:
+                fleet.changed.notify_all()
+            assert await pending == {"source": actor.ref.key}
+
+    asyncio.run(exercise())
+
+
 def test_daemon_refuses_stale_disconnected_and_unrecoverable_sources():
     fleet = Fleet()
     with pytest.raises(LookupError, match="session disappeared"):
