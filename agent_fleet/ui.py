@@ -73,7 +73,7 @@ def muster():
         "--bind=j:down,k:up",
         "--bind=load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)",
         f"--bind=resize:transform({resize})",
-        "--bind=focus:execute-silent(exec /usr/lib/agent-fleet/fleet-open project main {1})",
+        "--bind=focus,result-final:execute-silent(exec /usr/lib/agent-fleet/fleet-open project main {1})",
         "--bind=enter:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})",
         "--bind=double-click:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})",
         "--bind=c:execute-silent(/usr/lib/agent-fleet/ui create-tab)",
