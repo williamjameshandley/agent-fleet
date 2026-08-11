@@ -16,6 +16,7 @@ from agent_fleet import actions
 from agent_fleet import daemon
 from agent_fleet.daemon import Fleet
 from agent_fleet.model import ServerRef, Session, SessionRef
+from agent_fleet.transcripts import fold_adopted
 
 
 def session(host="lovelace", kind="alan", agent="codex", transcript="thread-1"):
@@ -113,6 +114,62 @@ def test_authority_archive_verifies_recovery_before_exact_tmux_kill():
     ]
 
 
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_authority_composite_archive_orders_each_authoritative_component(agent):
+    calls = mock.Mock()
+    with mock.patch("agent_fleet.authority.transcripts.verify") as verify, \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         mock.patch("agent_fleet.authority.alan.retire") as retire:
+        calls.attach_mock(verify, "verify")
+        calls.attach_mock(mutate, "mutate")
+        calls.attach_mock(retire, "retire")
+        authority.execute({"operation": "archive-composite",
+                           "actor": f"{agent}-1@lovelace", "agent": agent,
+                           "source": "source", "transcript": "thread-1"})
+    assert calls.mock_calls == [
+        mock.call.verify(agent, "thread-1"),
+        mock.call.mutate("source", "archive", []),
+        mock.call.retire(f"{agent}-1@lovelace"),
+    ]
+
+
+def test_composite_archive_stops_when_transcript_verification_fails():
+    with mock.patch("agent_fleet.authority.transcripts.verify",
+                    side_effect=LookupError("missing")), \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         pytest.raises(LookupError, match="missing"):
+        authority.execute({"operation": "archive-composite",
+                           "actor": "codex-1@lovelace", "agent": "codex",
+                           "source": "source", "transcript": "thread-1"})
+    mutate.assert_not_called()
+    retire.assert_not_called()
+
+
+def test_composite_archive_stops_before_retire_when_tmux_archive_fails():
+    with mock.patch("agent_fleet.authority.transcripts.verify"), \
+         mock.patch("agent_fleet.authority.tmux.mutate",
+                    side_effect=RuntimeError("tmux failed")), \
+         mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         pytest.raises(RuntimeError, match="tmux failed"):
+        authority.execute({"operation": "archive-composite",
+                           "actor": "codex-1@lovelace", "agent": "codex",
+                           "source": "source", "transcript": "thread-1"})
+    retire.assert_not_called()
+
+
+def test_composite_archive_removes_provider_before_retire_failure():
+    with mock.patch("agent_fleet.authority.transcripts.verify"), \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         mock.patch("agent_fleet.authority.alan.retire",
+                    side_effect=RuntimeError("retire failed")), \
+         pytest.raises(RuntimeError, match="retire failed"):
+        authority.execute({"operation": "archive-composite",
+                           "actor": "codex-1@lovelace", "agent": "codex",
+                           "source": "source", "transcript": "thread-1"})
+    mutate.assert_called_once_with("source", "archive", [])
+
+
 def test_authority_transcript_restore_returns_native_identity():
     with mock.patch("agent_fleet.authority.transcripts.resume") as resume:
         value = authority.execute({"operation": "restore-transcript",
@@ -154,6 +211,85 @@ def test_daemon_rename_and_refresh_revalidate_its_projection():
             "operation": "refresh", "actor": "codex-1@lovelace"})
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_daemon_composite_archive_payload_contains_both_exact_authorities(agent):
+    actor = session(agent=agent)
+    attachment = SessionRef(ServerRef("lovelace", "/tmp/tmux/native", 44, 12), "$9")
+    composite = Session(**{**actor.__dict__, "attachment": attachment})
+    fleet = Fleet()
+    fleet.sessions = {"lovelace": [composite]}
+    fleet.unavailable.clear()
+
+    assert fleet.archive_authority(composite.ref.key)[2] == {
+        "operation": "archive-composite", "actor": f"{agent}-1@lovelace",
+        "agent": agent, "source": attachment.key, "transcript": "thread-1"}
+
+
+def test_composite_archive_keeps_bare_actor_and_raw_provider_operations():
+    actor = session(agent="codex")
+    provider = session(kind="tmux", agent="codex")
+    fleet = Fleet()
+    fleet.sessions = {"lovelace": [actor, provider]}
+    fleet.unavailable.clear()
+
+    assert fleet.archive_authority(actor.ref.key)[2] == {
+        "operation": "archive-alan", "actor": "codex-1@lovelace",
+        "agent": "codex"}
+    assert fleet.archive_authority(provider.ref.key)[2] == {
+        "operation": "archive-tmux", "source": provider.ref.key,
+        "agent": "codex", "transcript": "thread-1"}
+
+
+def test_composite_archive_projection_leaves_no_actor_or_raw_provider():
+    actor = session(agent="codex")
+    provider = session(kind="tmux", agent="codex")
+    [composite] = fold_adopted([provider, actor])
+    fleet = Fleet()
+    fleet.sessions = {"lovelace": [composite]}
+    fleet.unavailable.clear()
+    graph = daemon.nx.MultiDiGraph()
+    graph.graph["actors"] = [{"addr": actor.ref.session_id, "kind": "codex",
+                              "evaluator": "native"}]
+    fleet._composed = (fleet.observed, graph)
+    assert [item.session for item in fleet.projected()] == [composite]
+
+    async def remove_components(_host, _request):
+        fleet.sessions = {"lovelace": []}
+        return {}
+
+    with mock.patch.object(fleet, "viewers", return_value=[]), \
+         mock.patch.object(fleet, "update_viewers"), \
+         mock.patch.object(fleet, "authority", side_effect=remove_components):
+        asyncio.run(fleet.action({"operation": "archive", "source": composite.ref.key}))
+
+    assert fleet.projected() == []
+
+
+def test_composite_retire_failure_leaves_the_bare_actor_visible():
+    actor = session(agent="codex")
+    provider = session(kind="tmux", agent="codex")
+    [composite] = fold_adopted([provider, actor])
+    fleet = Fleet()
+    fleet.sessions = {"lovelace": [composite]}
+    fleet.unavailable.clear()
+    graph = daemon.nx.MultiDiGraph()
+    graph.graph["actors"] = [{"addr": actor.ref.session_id, "kind": "codex",
+                              "evaluator": "native"}]
+    fleet._composed = (fleet.observed, graph)
+
+    async def fail_after_provider_removal(_host, _request):
+        fleet.sessions = {"lovelace": [actor]}
+        raise RuntimeError("retire failed")
+
+    with mock.patch.object(fleet, "viewers", return_value=[]), \
+         mock.patch.object(fleet, "update_viewers"), \
+         mock.patch.object(fleet, "authority", side_effect=fail_after_provider_removal), \
+         pytest.raises(RuntimeError, match="retire failed"):
+        asyncio.run(fleet.action({"operation": "archive", "source": composite.ref.key}))
+
+    assert [item.session for item in fleet.projected()] == [actor]
 
 
 def test_workstation_rename_sends_raw_input_and_returns_boundary_normalization():
