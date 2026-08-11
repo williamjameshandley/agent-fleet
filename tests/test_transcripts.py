@@ -320,7 +320,8 @@ def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
     monkeypatch.setattr(transcripts, "process_tree", lambda: {100: [101]})
     monkeypatch.setattr(transcripts.os, "readlink", lambda path: (
         "/usr/bin/codex" if path == "/proc/101/exe" else "/usr/bin/python3"))
-    monkeypatch.setattr(transcripts, "codex_transcript", lambda _tree: item)
+    monkeypatch.setattr(transcripts, "codex_candidates", lambda _tree: (["rollout.jsonl"], set()))
+    monkeypatch.setattr(transcripts, "transcript", lambda _agent, _path: item)
     monkeypatch.setattr(transcripts, "codex_state",
                         lambda _item: ("waiting", "native reply", 3))
     monkeypatch.setattr(transcripts, "last_human_time", lambda _item: 2)
@@ -329,6 +330,60 @@ def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
 
     assert projected.agent == "codex"
     assert projected.transcript_id == identity
+
+
+def test_invalid_provider_transcript_isolated_to_its_session(tmp_path, monkeypatch):
+    identity = "00000000-0000-0000-0000-000000000001"
+    path = tmp_path / f"rollout-{identity}.jsonl"
+    path.write_text('{"type":"session_meta","payload":{"id":')
+    server = ServerRef("newton", "/tmp/tmux", 1, 1)
+    broken = Session(
+        SessionRef(server, "$7"), "broken", 1, 2, 1, 1,
+        "codex", "", "/work",
+    )
+    healthy = Session(
+        SessionRef(server, "$8"), "healthy", 1, 2, 1, 1,
+        "zsh", "", "/work",
+    )
+
+    def run(arguments, **_kwargs):
+        output = ("[]" if arguments[:2] == ["claude", "agents"] else
+                  "name=broken session=$7 pid=100 command=codex title=''\n")
+        return type("Result", (), {"stdout": output})()
+
+    monkeypatch.setattr(transcripts.subprocess, "run", run)
+    monkeypatch.setattr(transcripts, "process_tree", lambda: {})
+    monkeypatch.setattr(transcripts, "codex_candidates", lambda _tree: ([str(path)], set()))
+
+    projected_broken, projected_healthy = transcripts.observe([broken, healthy], {})
+
+    assert projected_broken.agent == "codex"
+    assert projected_broken.reported_state == "needs-action"
+    assert projected_broken.transcript_id == identity
+    assert projected_broken.summary.startswith("Transcript is invalid:")
+    assert projected_healthy == healthy
+
+
+def test_invalid_actor_transcript_isolated_to_its_session(tmp_path):
+    identity = "00000000-0000-0000-0000-000000000001"
+    path = tmp_path / f"rollout-{identity}.jsonl"
+    path.write_text('{"type":"event_msg","payload":')
+    server = ServerRef("newton", "", 0, 0, "alan")
+    broken = Session(
+        SessionRef(server, f"codex-{identity}@newton"), "broken", 1, 2, 1, 1,
+        "alan", "", "/work", "codex", "waiting", transcript_id=identity,
+    )
+    healthy = Session(
+        SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$8"),
+        "healthy", 1, 2, 1, 1, "zsh", "", "/work",
+    )
+
+    projected_broken, projected_healthy = transcripts.project_native(
+        [broken, healthy], {("codex", identity): transcript("codex", path)})
+
+    assert projected_broken.reported_state == "needs-action"
+    assert projected_broken.summary.startswith("Transcript is invalid:")
+    assert projected_healthy == healthy
 
 
 def test_adoption_join_is_host_local():
