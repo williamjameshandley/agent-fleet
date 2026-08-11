@@ -364,7 +364,7 @@ def observe(sessions, transcripts=None):
                 continue
             identity = entry["sessionId"]
             state = ("needs-action" if entry.get("state") == "blocked" else
-                     "waiting" if entry["status"] == "idle" or title.startswith("✳") else
+                     "waiting" if entry.get("status") == "idle" or title.startswith("✳") else
                      "working")
             path = CLAUDE / entry["cwd"].replace("/", "-").replace(".", "-") / f"{identity}.jsonl"
             updated = last_event_time(path) if path.exists() else 0

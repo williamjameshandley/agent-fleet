@@ -25,6 +25,40 @@ def test_stopped_claude_agents_without_pids_are_ignored():
     assert indexed_claude_agents(json.dumps([live, stopped])) == {42: live}
 
 
+def test_claude_observe_accepts_optional_status(monkeypatch):
+    cases = [
+        ({}, "✳ waiting", "waiting"),
+        ({}, "working", "working"),
+        ({"state": "blocked"}, "working", "needs-action"),
+        ({"status": "idle"}, "working", "waiting"),
+    ]
+    entries = [
+        {"pid": 100 + index, "sessionId": f"session-{index}", "cwd": "/work",
+         "kind": "interactive", "startTime": 1, **fields}
+        for index, (fields, _title, _state) in enumerate(cases)
+    ]
+    panes = "".join(
+        f"name=work-{index} session=${index} pid={100 + index} "
+        f"command=claude title={title!r}\n"
+        for index, (_fields, title, _state) in enumerate(cases)
+    )
+    sessions = [
+        Session(SessionRef(ServerRef("lovelace", "/tmp/tmux", 1, 1), f"${index}"),
+                f"work-{index}", 1, 0, 0, 1, "claude", title, "/work")
+        for index, (_fields, title, _state) in enumerate(cases)
+    ]
+
+    def run(arguments, **_kwargs):
+        output = json.dumps(entries) if arguments[:2] == ["claude", "agents"] else panes
+        return type("Result", (), {"stdout": output})()
+
+    monkeypatch.setattr(transcripts.subprocess, "run", run)
+    monkeypatch.setattr(transcripts, "process_tree", lambda: {})
+
+    assert [session.reported_state for session in transcripts.observe(sessions, {})] == [
+        state for _fields, _title, state in cases]
+
+
 def test_explicit_codex_resume_selects_matching_rollout(tmp_path):
     first = rollout(tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl",
                     "00000000-0000-0000-0000-000000000001")
