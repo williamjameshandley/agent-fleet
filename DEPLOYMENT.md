@@ -1,15 +1,19 @@
 # Deployed estate
 
 The 2026-08-11 cutover installed one attributable Alan/Fleet baseline on
-Lovelace, Newton, Turing, Noether and Boltzmann while preserving each host's
-authoritative tmux server.
+Lovelace, Newton, Turing, Noether and Boltzmann. Package installation preserved
+the authoritative tmux server on every running host. Noether's post-reboot
+server was replaced during cold-start acceptance before it contained a durable
+provider session.
 
 ## Sources and packages
 
-- Alan source: `7b82ced763f20642fc0228ecfd3d0457d0545743`
-- Alan package: `alan 1:3.0.0.a2.r1786453793.g7b82ced-1`
+- Alan source: `1d25133bc75e786ea9fc3f43a12ab78d31eb977d`
+- Alan package: `alan 1:3.0.0.a2.r1786473827.g1d25133-1`
 - Alan package SHA-256:
-  `fc3dc319dae947e604af0e32fd18f4489d902108cd2011f5507ddc7c805b4586`
+  `bafd29b0c06ca56120772d6661af0679d1eb35970e580aa6a926ec9fbcee09bf`
+- Installed `alan-native-session` SHA-256:
+  `33736ac2151459eac9ad84d1c21a84ecc8d5a8498a66b4e1b48810db98bf8921`
 - Installed `alan-claude-confirm` SHA-256:
   `dfe08d06381bc85e768279b353b2681159a48bf555b42244c31829c366283cd3`
 - Installed `alan-claude-gateway` SHA-256:
@@ -33,19 +37,20 @@ after installation; they are identical on all five.
 | Lovelace | 930078 | 4054116 | 2026-08-11 01:22:52 BST |
 | Newton | 2548 | 1032648 | 2026-08-11 01:22:35 BST |
 | Turing | 482057 | 1843374 | 2026-08-11 01:22:35 BST |
-| Noether | 25405 | 426133 | 2026-08-11 01:22:36 BST |
+| Noether | 42674 | 665 | 2026-08-11 16:29:22 BST |
 | Boltzmann | 4089375 | 3327119 | 2026-08-11 01:22:36 BST |
 
 Lovelace's central `fleet.service` remained PID 564993, active since
 2026-08-11 06:24:31 BST, with `NRestarts=0`. Package installation did not
-restart any Alan runtime, Fleet daemon or authoritative tmux server.
+restart any Alan runtime, Fleet daemon or source tmux server. Noether's tmux
+PID changed only during the explicit cold-start acceptance described below.
 
 ## Acceptance
 
 The installed estate passed:
 
 - literal attached-tmux-client launch and native-session adoption for Claude
-  and Codex on Lovelace, Newton, Boltzmann and Turing;
+  and Codex on all five hosts;
 - exact Alan attachment folding in Fleet without duplicate native rows;
 - A to B to Python to C reply routing back to B;
 - cursor projection, Enter focus, fold/unfold, archive and successor selection;
@@ -56,10 +61,15 @@ The installed estate passed:
 - Alan's Loop suite: 200 passed and one excluded; Cockpit: 34 passed; both
   component format and strict Credo checks passed; and the focused native
   launcher/confirmation suite: 27 passed;
-- the complete Python Loop suite: 72 passed, including the real nginx gateway
+- the complete Python Loop suite: 73 passed, including the real nginx gateway
   boundary with all temporary state under each gateway's private runtime.
 
-Noether's native handoff and terminal-input path are proven, but its vendor
-authentication remains a host prerequisite. Claude and Codex acceptance there
-is complete only after their provider sign-ins succeed and each reaches a
-usable TUI.
+Noether was rebooted before its final acceptance. With no tmux server present,
+the first literal native launch created the server and kept Alan's
+`ALAN_NATIVE_*` state session-local rather than placing it in tmux's global
+environment. A subsequently created ordinary tmux session inherited none of
+that state. Authenticated Claude and Codex sessions each returned an exact test
+reply, remained resident after their display client detached, and folded onto
+their exact native tmux sessions in Fleet. Main created one retained Noether
+presentation: its cold projection completed in 93 ms and subsequent same-host
+projection completed in 13 ms while reusing the same nested tmux client.
