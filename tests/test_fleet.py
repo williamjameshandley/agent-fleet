@@ -1659,6 +1659,10 @@ class IdentityTests(unittest.TestCase):
             "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
         }])[0]
+        provider = Session(
+            SessionRef(ServerRef(host, "/tmp/tmux/default", 12, 10), "$7"),
+            "fleet@native-test", 1, 2, 0, 1, "python3", "", "/work",
+            "codex", "waiting", "", 0, "1")
 
         async def exercise():
             with mock.patch("agent_fleet.daemon.hosts", return_value=[host]), \
@@ -1673,7 +1677,16 @@ class IdentityTests(unittest.TestCase):
                 fleet.observed += 1
                 async with fleet.changed:
                     fleet.changed.notify_all()
-                self.assertEqual(await pending, {"source": actor.ref.key})
+                await asyncio.sleep(0)
+                self.assertFalse(pending.done())
+                fleet.sessions[host] = fold_adopted([actor, provider])
+                fleet.observed += 1
+                async with fleet.changed:
+                    fleet.changed.notify_all()
+                value = await pending
+                self.assertEqual(value, {"source": actor.ref.key})
+                self.assertEqual(fleet.source(value["source"]).attachment,
+                                 provider.ref)
             execute.assert_awaited_once()
 
         asyncio.run(exercise())
