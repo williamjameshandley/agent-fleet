@@ -213,7 +213,7 @@ def last_event_time(path):
         if "timestamp" in event:
             return int(datetime.fromisoformat(
                 event["timestamp"].replace("Z", "+00:00")).timestamp())
-    raise ValueError(f"no timestamped events in {path}")
+    return 0
 
 
 def last_human_time(item):
