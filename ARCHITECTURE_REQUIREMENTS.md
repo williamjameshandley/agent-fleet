@@ -70,9 +70,10 @@ a row drops into the real session for keyboard, mouse or voice input.
 ## Projection and actor presentation
 
 - Muster is a view of ongoing work, not a process inventory. Its default rows
-  are standalone native Claude/Codex sessions and direct-root Alan actors,
-  excluding actors identified by Fleet's existing infrastructure roles. Python
-  is never shown by default.
+  are attachable tmux sessions, including standalone native Claude/Codex and
+  ordinary shell sessions, plus direct-root Alan actors. Actors identified by
+  Fleet's existing infrastructure roles are excluded. Python is never shown by
+  default.
 - Alan's operation graph is the sole authority for spawn ancestry. Fleet derives
   each descendant's immediate creator and causal root from `spawn` edges; it does
   not store parent identifiers or an actor catalogue.

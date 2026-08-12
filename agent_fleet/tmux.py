@@ -397,15 +397,14 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
                     try:
                         current = observe(current, native_transcripts.catalog())
                         agent_cache = {session.ref: session for session in current}
-                    except (subprocess.CalledProcessError, RuntimeError) as error:
-                        if isinstance(error, subprocess.CalledProcessError):
-                            probe = subprocess.run(
-                                ["/usr/bin/tmux", "-N", "list-sessions"],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            if probe.returncode:
-                                discard_control()
-                                force = True
-                                continue
+                    except subprocess.CalledProcessError as error:
+                        probe = subprocess.run(
+                            ["/usr/bin/tmux", "-N", "list-sessions"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if probe.returncode:
+                            discard_control()
+                            force = True
+                            continue
                         print(f"agent adapter: {error}", file=sys.stderr, flush=True)
                         current = [replace(session, agent_name=cached.agent_name,
                                            reported_state=cached.reported_state,
