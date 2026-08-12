@@ -84,12 +84,10 @@ a row drops into the real session for keyboard, mouse or voice input.
 - An incomplete cross-host graph never becomes guessed ancestry. A proven
   descendant whose chain cannot currently reach a root stays folded until the
   missing host returns; the ordinary host-unavailable indication explains why.
-- Selecting an actor opens its real conversational interface. Codex uses its
-  native TUI attached to the actor's app server; Python uses `jupyter console`
-  attached to the actor's existing kernel. Claude and bare-model actors retain
-  the minimal Fleet presenter. Claude's native hooks identify normal completion
-  but expose no terminal event correlated to a user-interrupted prompt, so a
-  native Claude TUI cannot close Alan's evaluation without inference.
+- Selecting an actor opens its real conversational interface. Claude and Codex
+  use the deterministic native tmux terminals owned by Alan; Python uses
+  `jupyter console` attached to the actor's existing kernel. Bare-model actors
+  retain the minimal Fleet presenter.
 - Native presentation does not create a second conversation or bypass Alan.
   Input and terminal output from the native interface become the same actor's
   ordinary durable `input`, `evaluation` and `output` operations. Provider JSONL

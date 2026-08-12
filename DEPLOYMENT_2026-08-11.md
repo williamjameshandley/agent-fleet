@@ -1,4 +1,7 @@
-# Deployed estate
+# 2026-08-11 estate cutover record
+
+This is historical evidence for the named cutover, not an inventory of the
+current installed estate.
 
 The 2026-08-11 cutover installed one attributable Alan/Fleet baseline on
 Lovelace, Newton, Turing, Noether and Boltzmann. Package installation preserved
