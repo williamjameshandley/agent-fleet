@@ -625,6 +625,29 @@ def test_projection_folds_an_actor_without_a_principal_root():
     assert alan.project([actor_session(actor, "codex")], current) == []
 
 
+def test_projection_folds_beneath_the_nearest_creator_across_ancestry_lines():
+    chained = "claude-chained@newton"
+    adopted = "claude-adopted@newton"
+    current = nx.MultiDiGraph()
+    current.graph["actors"] = [
+        {"addr": chained, "kind": "claude"},
+        {"addr": adopted, "kind": "claude", "evaluator": "native"},
+    ]
+    current.add_node(f"{chained}#0", stream=chained, op="create")
+    current.add_node(f"{adopted}#0", stream=adopted, op="create")
+    principal_root(current, chained)
+    current.add_node(f"{adopted}#1", stream=adopted, op="spawn")
+    current.add_edge(f"{adopted}#1", f"{chained}#0", key="spawn")
+    sessions = [actor_session(chained, "claude"), actor_session(adopted, "claude")]
+
+    collapsed = alan.project(sessions, current)
+    assert [(item.session.ref.key, item.child_count) for item in collapsed] == [
+        (f"alan:{adopted}", 1)]
+    assert [item.session.ref.key for item in alan.project(
+        sessions, current, expanded={adopted}
+    )] == [f"alan:{adopted}", f"alan:{chained}"]
+
+
 def test_projection_composes_spawn_ancestry_from_separate_hosts():
     parent = "codex-parent@newton"
     child = "claude-child@lovelace"
