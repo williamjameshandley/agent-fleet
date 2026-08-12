@@ -341,3 +341,6 @@ env -u VIRTUAL_ENV PATH=/usr/bin:/bin makepkg -sif --noconfirm
 ```
 
 Package updates must not restart a tmux server or mutate a source session.
+
+Dated deployment evidence is retained as a historical record, not a current
+estate inventory. See [the 2026-08-11 cutover record](DEPLOYMENT_2026-08-11.md).
