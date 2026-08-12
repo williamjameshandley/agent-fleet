@@ -1161,6 +1161,10 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual((operation, actual), ("PROJECT", key))
         self.assertGreater(float(selected), 0)
 
+    def test_fzf_adapter_has_a_runtime_without_a_login_environment(self):
+        source = (Path(__file__).parents[1] / "fleet-open").read_text()
+        self.assertIn("${XDG_RUNTIME_DIR:-/run/user/$(id -u)}", source)
+
     def test_fzf_focus_adapter_focuses_without_a_source(self):
         root = Path(__file__).parents[1]
         with tempfile.TemporaryDirectory() as directory:
