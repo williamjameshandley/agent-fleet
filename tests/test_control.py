@@ -636,7 +636,8 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet.host_reply({"cleanup": cleanup_request["cleanup"]})
             self.assertEqual(await preview, "screen")
             self.assertEqual(await switch,
-                             (("/tmp/tmux/default", 12, 10, "$1"), .001))
+                             (("/tmp/tmux/default", 12, 10, "$1"), .001,
+                              session.name, "fixture"))
             self.assertIsNone(await cleanup)
 
         asyncio.run(exercise())

@@ -242,7 +242,8 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(await preview, "pane")
             switch = asyncio.create_task(fleet.switch(actor.key, "/dev/pts/8"))
             await asyncio.sleep(0)
-            fleet.switches[1][1].set_result(None)
+            fleet.switches[1][1].set_result((
+                ("/tmp/tmux/native", 44, 12, "$9"), .001))
             await switch
 
         asyncio.run(exercise())
@@ -280,7 +281,8 @@ class IdentityTests(unittest.TestCase):
                     "cwd": current.cwd,
                     "attachment": current.attachment.key,
                 })
-            return json.dumps({"target": expected, "duration": 0.01})
+            return json.dumps({"target": expected, "duration": 0.01,
+                               "name": current.name, "host": host})
 
         ui = mock.Mock()
         ui.command.side_effect = lambda command: (
@@ -517,6 +519,31 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(json.loads(writer.write.call_args.args[0]),
                          {"error": "identity changed"})
 
+    def test_daemon_switch_reply_carries_the_human_label(self):
+        fleet = Fleet()
+        session = replace(self.session("lovelace"), name="Calendar")
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable.clear()
+        writer = mock.Mock()
+        writer.drain = mock.AsyncMock()
+
+        async def exercise():
+            reader = asyncio.StreamReader()
+            reader.feed_data(
+                f'switch {{"key":"{session.ref.key}","client":"/dev/pts/8"}}\n'.encode())
+            reader.feed_eof()
+            with mock.patch.object(
+                    fleet, "switch", mock.AsyncMock(
+                        return_value=(("/tmp/tmux", 12, 10, "$1"), .001,
+                                      "Calendar", "lovelace"))):
+                await fleet.reply(reader, writer)
+
+        asyncio.run(exercise())
+        self.assertEqual(json.loads(writer.write.call_args.args[0]), {
+            "target": ["/tmp/tmux", 12, 10, "$1"], "duration": .001,
+            "name": "Calendar", "host": "lovelace",
+        })
+
     def test_alan_switch_carries_the_selected_presentation_descriptor(self):
         host = "lovelace"
         actor = f"llm-one@{host}"
@@ -542,7 +569,8 @@ class IdentityTests(unittest.TestCase):
             fleet.host_reply({"switch": 1, "target": ["/tmp/tmux", 12, 10, "$1"],
                               "duration": .001})
             self.assertEqual(await pending,
-                             (("/tmp/tmux", 12, 10, "$1"), .001))
+                             (("/tmp/tmux", 12, 10, "$1"), .001,
+                              "fixture", "lovelace"))
 
         asyncio.run(exercise())
 
@@ -1234,6 +1262,75 @@ class IdentityTests(unittest.TestCase):
         with mock.patch.object(state, "daemon", return_value='{"error":"identity changed"}'):
             with self.assertRaisesRegex(RuntimeError, "identity changed"):
                 state.resident_switch("source", "/dev/pts/8")
+
+    def test_main_header_renders_tmux_syntax_literally(self):
+        ui = mock.Mock()
+        state = viewer.Attachment("main", "/dev/pts/9", ui)
+        reply = json.dumps({
+            "target": ["/tmp/tmux", 12, 10, "$1"], "duration": .001,
+            "name": "#{pane_id} #[fg=red] }", "host": "lovelace",
+        })
+        with mock.patch.object(state, "daemon", return_value=reply):
+            state.resident_switch("source", "/dev/pts/8")
+        ui.command.assert_called_once_with([
+            "set-option", "-t", "=fleet@main:", "status-format[0]",
+            "#{l: ##{pane_id#} ##[fg=red] #} · lovelace}",
+        ])
+
+    def test_main_header_is_literal_at_the_real_tmux_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = str(Path(directory) / "ui")
+            subprocess.run(["tmux", "-S", socket_path, "new-session", "-d",
+                            "-s", "fleet@main", "sleep 30"], check=True)
+            try:
+                state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+                state.ui.command.side_effect = lambda command: subprocess.run(
+                    ["tmux", "-S", socket_path, *command], check=True,
+                    text=True, capture_output=True).stdout.splitlines()
+                state.set_header("#{pane_id} #[fg=red] # }", "lovelace")
+                rendered = subprocess.run(
+                    ["tmux", "-S", socket_path, "display-message", "-p",
+                     "-t", "fleet@main", "#{E:status-format[0]}"],
+                    check=True, text=True, capture_output=True).stdout.rstrip("\n")
+                self.assertEqual(rendered, " #{pane_id} #[fg=red] # } · lovelace")
+            finally:
+                subprocess.run(["tmux", "-S", socket_path, "kill-server"])
+
+    def test_main_header_does_not_mutate_source_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_socket = str(Path(directory) / "source")
+            ui_socket = str(Path(directory) / "ui")
+            subprocess.run(["tmux", "-S", source_socket, "new-session", "-d",
+                            "-s", "source", "sleep 30"], check=True)
+            subprocess.run(["tmux", "-S", source_socket, "set-option", "-t",
+                            "source", "status", "on"], check=True)
+            subprocess.run(["tmux", "-S", ui_socket, "new-session", "-d",
+                            "-s", "fleet@main", "sleep 30"], check=True)
+            try:
+                state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
+                state.ui.command.side_effect = lambda command: subprocess.run(
+                    ["tmux", "-S", ui_socket, *command], check=True,
+                    text=True, capture_output=True).stdout.splitlines()
+                state.set_header("Legal", "lovelace")
+                source_status = subprocess.run(
+                    ["tmux", "-S", source_socket, "show-option", "-v", "-t",
+                     "source", "status"], check=True, text=True,
+                    capture_output=True).stdout.strip()
+                self.assertEqual(source_status, "on")
+            finally:
+                subprocess.run(["tmux", "-S", ui_socket, "kill-server"])
+                subprocess.run(["tmux", "-S", source_socket, "kill-server"])
+
+    def test_named_viewer_does_not_own_a_header(self):
+        ui = mock.Mock()
+        state = viewer.Attachment("left", "/dev/pts/9", ui)
+        reply = json.dumps({
+            "target": ["/tmp/tmux", 12, 10, "$1"], "duration": .001,
+            "name": "Calendar", "host": "lovelace",
+        })
+        with mock.patch.object(state, "daemon", return_value=reply):
+            state.resident_switch("source", "/dev/pts/8")
+        ui.command.assert_not_called()
 
     def test_atomic_switch_revalidates_server_generation_session_and_client(self):
         command = mock.Mock(stdout=[])
@@ -1995,7 +2092,8 @@ class IdentityTests(unittest.TestCase):
             "exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session "
             "-t fleet@main", main)
         self.assertIn("set-option -t fleet@main prefix None", main)
-        self.assertIn("set-option -t fleet@main status off", main)
+        self.assertIn("set-option -t fleet@main status-position top", main)
+        self.assertIn("set-option -t fleet@main status on", main)
         self.assertIn("set-option -t fleet@main mouse on", main)
         self.assertIn("#{==:#{client_control_mode},0}", main)
         self.assertNotIn("attach-session -d", main)
@@ -2011,7 +2109,7 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("/usr/bin/nc -U", main)
         self.assertIn("ConditionHost=lovelace", service)
 
-    def test_main_viewer_restores_its_transparent_status(self):
+    def test_main_viewer_restores_its_owned_top_status(self):
         root = Path(__file__).parents[1]
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
@@ -2054,7 +2152,13 @@ class IdentityTests(unittest.TestCase):
                      "-t", "fleet@main", "-v", "status"],
                     check=True, text=True, capture_output=True,
                     env=environment).stdout.strip()
-                self.assertEqual(status, "off")
+                self.assertEqual(status, "on")
+                position = subprocess.run(
+                    ["tmux", "-L", "agent-fleet-ui", "show-option",
+                     "-t", "fleet@main", "-v", "status-position"],
+                    check=True, text=True, capture_output=True,
+                    env=environment).stdout.strip()
+                self.assertEqual(position, "top")
                 source_sessions = subprocess.run(
                     ["tmux", "list-sessions", "-F", "#{session_name}"],
                     check=True, text=True, capture_output=True,

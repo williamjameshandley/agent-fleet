@@ -138,6 +138,11 @@ a row drops into the real session for keyboard, mouse or voice input.
 - SSH routes, ProxyJump/fallback and credentials belong to OpenSSH config.
 - Control observers never link source windows and attach with `ignore-size`.
   Viewers use normal client geometry, which must be tested at every profile.
+- `fleet@main` owns one top status line showing the currently projected source's
+  human name and host literally, including any tmux format or style syntax in the
+  name. The label is derived from the canonical Fleet projection on each accepted
+  source transition. Source tmux status options are authoritative to the source
+  owner and remain unmodified.
 
 ## Usage
 

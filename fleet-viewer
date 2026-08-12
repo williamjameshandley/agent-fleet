@@ -40,7 +40,8 @@ if [ "$slot" = main ]; then
         tmux set-option -t fleet@main prefix2 None
         tmux set-option -t fleet@main window-size latest
     fi
-    tmux set-option -t fleet@main status off
+    tmux set-option -t fleet@main status-position top
+    tmux set-option -t fleet@main status on
     tmux set-option -t fleet@main mouse on
     detach_displays
     exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session -t fleet@main
