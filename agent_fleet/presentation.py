@@ -90,24 +90,6 @@ def close(actor):
         result.check_returncode()
 
 
-def refresh(actor):
-    observation = loop.observe(stream=True, actor=actor)
-    try:
-        graph = next(observation)
-    finally:
-        observation.close()
-    descriptor = next((item for item in graph.graph.get("actors", [])
-                       if item["addr"] == actor), None)
-    if descriptor is None:
-        raise RuntimeError(f"Alan actor disappeared: {actor}")
-    if descriptor["kind"] not in {"claude", "codex"}:
-        raise RuntimeError("refresh requires a Claude or Codex actor")
-    if descriptor["state"] != "waiting":
-        raise RuntimeError(f"refresh requires a waiting actor: {actor}")
-    alan.retire(actor)
-    alan.resume(actor)
-
-
 def run(actor, descriptor):
     if descriptor["state"] in {"retired", "unavailable"}:
         raise SystemExit(f"Alan actor is {descriptor['state']}: {actor}")

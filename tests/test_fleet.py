@@ -1934,22 +1934,6 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(rows, [
             ("alan:llm-1@lovelace", "lovelace", "llm", "review", "/work")])
 
-    def test_refresh_restarts_exact_waiting_actor_and_reopens_every_shown_slot(self):
-        host = os.uname().nodename
-        session = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"codex-1@{host}"),
-            "work", 1, 0, 0, 1, "alan", "", "/work",
-            "codex", "waiting", "", 0, "thread-1", 1)
-        with mock.patch("agent_fleet.actions.fleet_action") as action, \
-             mock.patch("agent_fleet.actions.viewer.slots",
-                        return_value=[("main", session.ref.key),
-                                      ("right", session.ref.key)]), \
-             mock.patch("agent_fleet.actions.viewer.request") as request:
-            actions.refresh(session.ref.key)
-        action.assert_called_once_with(
-            {"operation": "refresh", "source": session.ref.key})
-        request.assert_not_called()
-
     def test_retained_unavailable_actor_remains_the_native_history_authority(self):
         context = {"history": [{
             "key": "alan:codex-1@lovelace", "host": "lovelace",
@@ -2228,12 +2212,11 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("f\"--bind=p:transform({toggle_python})\"", source)
         self.assertIn("f\"--bind=resize:transform({resize})\"", source)
         self.assertIn("f\"--bind=x:transform({archive})\"", source)
-        self.assertIn("f\"--bind=R:transform({refresh})\"", source)
+        self.assertNotIn("--bind=R:", source)
         self.assertIn("/usr/bin/nc -U", source)
         self.assertNotIn("ui fold", source)
         self.assertNotIn("ui toggle", source)
         self.assertNotIn("ui archive", source)
-        self.assertNotIn("ui refresh", source)
         self.assertIn('"--footer-border=bottom"', source)
         self.assertNotIn('"--preview=', source)
         self.assertNotIn('"--preview-window=', source)
@@ -2721,7 +2704,7 @@ class IdentityTests(unittest.TestCase):
                 subprocess.run(["tmux", "kill-server"], env=environment,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    def test_stock_fzf_x_and_refresh_send_the_displayed_identity_and_revision(self):
+    def test_stock_fzf_x_sends_the_displayed_identity_and_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             runtime = directory / "runtime"
@@ -2733,11 +2716,11 @@ class IdentityTests(unittest.TestCase):
                 with socket.socket(socket.AF_UNIX) as server:
                     server.bind(str(daemon_socket))
                     server.listen()
-                    while len(received) < 2:
+                    while len(received) < 1:
                         connection, _ = server.accept()
                         with connection:
                             request = connection.makefile().readline().rstrip("\n")
-                            if request.startswith(("archive\t", "refresh\t")):
+                            if request.startswith("archive\t"):
                                 received.append(request)
                             connection.sendall(b"change-header(done)\n")
 
@@ -2753,7 +2736,7 @@ class IdentityTests(unittest.TestCase):
             selected = [command[0], "--disabled", "--no-input", "--delimiter=\t",
                         "--with-nth=4..", "--id-nth=1"]
             selected.extend(argument for argument in command
-                            if argument.startswith(("--bind=x:", "--bind=R:")))
+                            if argument.startswith("--bind=x:"))
             tmux_runtime = directory / "tmux"
             tmux_runtime.mkdir()
             environment = {**without_tmux_client(),
@@ -2770,14 +2753,8 @@ class IdentityTests(unittest.TestCase):
                     if received:
                         break
                     time.sleep(.01)
-                subprocess.run(["tmux", "send-keys", "-t", "=fixture:", "R"],
-                               check=True, env=environment)
-                for _ in range(100):
-                    if len(received) == 2:
-                        break
-                    time.sleep(.01)
                 self.assertEqual([request.split("\t")[:3] for request in received],
-                                 [["archive", key, "7"], ["refresh", key, "7"]])
+                                 [["archive", key, "7"]])
             finally:
                 subprocess.run(["tmux", "kill-server"], env=environment,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -2942,7 +2919,7 @@ class IdentityTests(unittest.TestCase):
                         return_value=os.terminal_size((100, 24))):
             self.assertEqual(
                 footer(),
-                "Enter view  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
+                "Enter view  c create  r rename  x archive  l open fold  h close fold  p python")
 
     def test_column_header_renders_the_exact_icon_bytes(self):
         from agent_fleet.render import column_header

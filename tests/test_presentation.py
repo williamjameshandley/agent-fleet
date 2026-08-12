@@ -285,49 +285,6 @@ def test_close_propagates_other_bare_model_tmux_failures():
             raise AssertionError("close hid a tmux failure")
 
 
-def test_refresh_leaves_codex_terminal_lifecycle_to_alan():
-    actor = "codex-a@newton"
-    details = {"addr": actor, "kind": "codex", "state": "waiting",
-               "native": {"path": "/native/rollout-a.jsonl"}}
-    calls = []
-    with mock.patch.object(presentation.loop, "observe",
-                           return_value=Observation(details)), \
-         mock.patch.object(presentation.alan, "retire",
-                           side_effect=lambda value: calls.append(("retire", value))), \
-         mock.patch.object(presentation.alan, "resume",
-                           side_effect=lambda value: calls.append(("resume", value))):
-        presentation.refresh(actor)
-    assert calls == [("retire", actor), ("resume", actor)]
-
-
-def test_refresh_leaves_claude_terminal_lifecycle_to_alan():
-    actor = "claude-a@newton"
-    details = {"addr": actor, "kind": "claude", "state": "waiting",
-               "native": {"path": "/native/a.jsonl"}}
-    calls = []
-    with mock.patch.object(presentation.loop, "observe",
-                           return_value=Observation(details)), \
-         mock.patch.object(presentation.alan, "retire",
-                           side_effect=lambda value: calls.append(("retire", value))), \
-         mock.patch.object(presentation, "close",
-                           side_effect=lambda value: calls.append(("close", value))), \
-         mock.patch.object(presentation.alan, "resume",
-                           side_effect=lambda value: calls.append(("resume", value))):
-        presentation.refresh(actor)
-    assert calls == [("retire", actor), ("resume", actor)]
-
-
-def test_refresh_rejects_a_working_actor_before_lifecycle_changes():
-    actor = "codex-a@newton"
-    details = {"addr": actor, "kind": "codex", "state": "working"}
-    with mock.patch.object(presentation.loop, "observe",
-                           return_value=Observation(details)), \
-         mock.patch.object(presentation.alan, "retire") as retire:
-        with __import__("pytest").raises(RuntimeError, match="waiting actor"):
-            presentation.refresh(actor)
-    retire.assert_not_called()
-
-
 def test_actor_view_dispatches_python_to_jupyter_console():
     actor = "python-a@newton"
     details = {"addr": actor, "kind": "python", "state": "waiting"}

@@ -276,7 +276,7 @@ fleet-commander                 persistent Claude Commander session
 Semantic operations compose directly from Python:
 
 ```python
-from agent_fleet.actions import archive, create, refresh, rename
+from agent_fleet.actions import archive, create, rename
 from agent_fleet.daemon import snapshot
 from agent_fleet.protocol import decode_message
 from agent_fleet.viewer import show
@@ -285,11 +285,10 @@ sessions, usage, unavailable = decode_message(snapshot())
 key = create(host, agent, name, cwd)
 rename(key, new_name)
 show(key, slot="main")
-refresh(key)
 archive(key)
 ```
 
-Fleet accepts only its finite create, rename, archive, restore and refresh
+Fleet accepts only its finite create, rename, archive and restore
 operations; it publishes no general command surface. Recoverable provider
 history is read directly from native transcripts and exact retained Alan actor
 identity; ordinary tmux state has no inferred reconstruction path.

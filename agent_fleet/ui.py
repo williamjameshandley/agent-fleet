@@ -55,8 +55,6 @@ def muster():
               f"/usr/bin/nc -U {daemon_socket}")
     archive = ("printf 'archive\\t%s\\t%s\\t%s\\n' {1} {2} "
                f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
-    refresh = ("printf 'refresh\\t%s\\t%s\\t%s\\n' {1} {2} "
-               f"\"$FZF_COLUMNS\" | /usr/bin/nc -U {daemon_socket}")
     command = [
         "fzf", "--listen", str(sock), "--track", "--disabled", "--no-input", "--ansi",
         f"--color={FZF_COLOUR}",
@@ -68,8 +66,8 @@ def muster():
         f"--footer={footer()}",
         "--footer-border=bottom",
         "--bind=start:unbind(esc)",
-        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,R,d,x,h,j,k,l,p,left,right)+rebind(esc)",
-        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,R,d,x,h,j,k,l,p,left,right)",
+        "--bind=/:enable-search+toggle-sort+show-input+change-prompt(Search: )+unbind(/,c,r,d,x,h,j,k,l,p,left,right)+rebind(esc)",
+        "--bind=esc:disable-search+toggle-sort+clear-query+hide-input+change-prompt(> )+unbind(esc)+rebind(/,c,r,d,x,h,j,k,l,p,left,right)",
         "--bind=j:down,k:up",
         "--bind=load:transform(/usr/lib/agent-fleet/ui cursor)+unbind(load)",
         f"--bind=resize:transform({resize})",
@@ -78,7 +76,6 @@ def muster():
         "--bind=double-click:execute-silent(exec /usr/lib/agent-fleet/fleet-open focus main {1})",
         "--bind=c:execute-silent(/usr/lib/agent-fleet/ui create-tab)",
         "--bind=r:execute-silent(/usr/lib/agent-fleet/ui rename-tab {1})",
-        f"--bind=R:transform({refresh})",
         f"--bind=x:transform({archive})",
         f"--bind=l:transform({fold_open})",
         f"--bind=h:transform({fold_close})",
@@ -96,7 +93,7 @@ def header():
 
 
 def footer():
-    hints = ("Enter view  c create  r rename  R refresh  x archive  l open fold  h close fold  p python")
+    hints = ("Enter view  c create  r rename  x archive  l open fold  h close fold  p python")
     width = max(1, shutil.get_terminal_size((100, 24)).columns - 2)
     return textwrap.fill(hints, width=width, break_long_words=False,
                          break_on_hyphens=False)
