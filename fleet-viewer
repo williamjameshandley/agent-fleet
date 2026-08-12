@@ -40,6 +40,7 @@ if [ "$slot" = main ]; then
         tmux set-option -t fleet@main prefix2 None
         tmux set-option -t fleet@main window-size latest
     fi
+    tmux set-option -u -t fleet@main 'status-format[0]'
     tmux set-option -t fleet@main status-position top
     tmux set-option -t fleet@main status on
     tmux set-option -t fleet@main mouse on

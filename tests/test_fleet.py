@@ -1273,8 +1273,8 @@ class IdentityTests(unittest.TestCase):
         with mock.patch.object(state, "daemon", return_value=reply):
             state.resident_switch("source", "/dev/pts/8")
         ui.command.assert_called_once_with([
-            "set-option", "-t", "=fleet@main:", "status-format[0]",
-            "#{l: ##{pane_id#} ##[fg=red] #} [lovelace]}",
+            "set-option", "-t", "=fleet@main:", "status-left",
+            "#[fg=color3]#{l: ##{pane_id#} ##[fg=red] #} [lovelace]}",
         ])
 
     def test_main_header_is_literal_at_the_real_tmux_boundary(self):
@@ -1290,9 +1290,11 @@ class IdentityTests(unittest.TestCase):
                 state.set_header("#{pane_id} #[fg=red] # }", "lovelace")
                 rendered = subprocess.run(
                     ["tmux", "-S", socket_path, "display-message", "-p",
-                     "-t", "fleet@main", "#{E:status-format[0]}"],
+                     "-t", "fleet@main", "#{E:status-left}"],
                     check=True, text=True, capture_output=True).stdout.rstrip("\n")
-                self.assertEqual(rendered, " #{pane_id} #[fg=red] # } [lovelace]")
+                self.assertEqual(
+                    rendered,
+                    "#[fg=color3] #{pane_id} #[fg=red] # } [lovelace]")
             finally:
                 subprocess.run(["tmux", "-S", socket_path, "kill-server"])
 
@@ -2094,6 +2096,7 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("set-option -t fleet@main prefix None", main)
         self.assertIn("set-option -t fleet@main status-position top", main)
         self.assertIn("set-option -t fleet@main status on", main)
+        self.assertIn("set-option -u -t fleet@main 'status-format[0]'", main)
         self.assertIn("set-option -t fleet@main mouse on", main)
         self.assertIn("#{==:#{client_control_mode},0}", main)
         self.assertNotIn("attach-session -d", main)
