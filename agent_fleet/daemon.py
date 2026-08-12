@@ -367,7 +367,7 @@ class Fleet:
         elif request.startswith(("fold\t", "toggle\t", "resize\t")):
             async with self.view_lock:
                 payload = self.mutate_view(request)
-        elif request.startswith(("archive\t", "refresh\t")):
+        elif request.startswith("archive\t"):
             async with self.view_lock:
                 payload = await self.mutate_action(request)
         elif request.startswith("next-waiting\t"):
@@ -517,7 +517,7 @@ class Fleet:
         try:
             if self.muster_generation is None:
                 raise RuntimeError("Muster generation is not registered")
-            if len(values) != 4 or values[0] not in {"archive", "refresh"}:
+            if len(values) != 4 or values[0] != "archive":
                 raise ValueError("invalid Muster action request")
             operation, key, expected, raw_width = values
             width = int(raw_width)
@@ -527,20 +527,16 @@ class Fleet:
             projected, _, _ = self.view(width)
             if not any(item.session.ref.key == key for item in projected):
                 raise LookupError(f"session is not in the displayed view: {key}")
-            if operation == "archive":
-                session, host, authority = self.archive_authority(key)
-                self.pending_archives.add(key)
-                self.view_revision += 1
-                self._view_cache = None
-                self.action_error = ""
-                action, artifacts = self.publish_view(width)
-                task = asyncio.create_task(
-                    self.complete_archive(key, host, authority, artifacts))
-                self.own_task(task, "archive")
-                return action
-            await self.action({"operation": operation, "source": key})
+            session, host, authority = self.archive_authority(key)
+            self.pending_archives.add(key)
+            self.view_revision += 1
+            self._view_cache = None
             self.action_error = ""
-            return self.publish_view(width)[0]
+            action, artifacts = self.publish_view(width)
+            task = asyncio.create_task(
+                self.complete_archive(key, host, authority, artifacts))
+            self.own_task(task, "archive")
+            return action
         except (LookupError, OSError, RuntimeError, ValueError) as error:
             self.action_error = str(error)
             return self.publish_view(width, self.action_error)[0]
@@ -827,7 +823,6 @@ class Fleet:
             "create": {"operation", "host", "agent", "name", "cwd"},
             "rename": {"operation", "source", "name"},
             "archive": {"operation", "source"},
-            "refresh": {"operation", "source"},
             "restore": {"operation", "history", "name"},
         }
         if operation not in fields or set(request) != fields[operation]:
@@ -900,9 +895,7 @@ class Fleet:
         key = request["source"]
         session = self.source(key)
         host = session.ref.server.host
-        if operation == "refresh":
-            viewers = await self.viewers(key)
-        elif operation == "archive":
+        if operation == "archive":
             viewers = await self.viewers()
         else:
             viewers = []
@@ -914,19 +907,6 @@ class Fleet:
                          {"operation": "rename-tmux", "source": key,
                           "name": name})
             return await self.authority(host, authority)
-        if operation == "refresh":
-            if session.ref.server.kind != "alan":
-                raise ValueError("refresh requires an Alan actor")
-            if session.agent not in {"claude", "codex"}:
-                raise ValueError("refresh requires a Claude or Codex actor")
-            if session.state != "waiting":
-                raise ValueError(f"refresh requires a waiting actor: {session.ref.session_id}")
-            value = await self.authority(host, {
-                "operation": "refresh", "actor": session.ref.session_id,
-            })
-            self.source(key)
-            await self.update_viewers(viewers, f"OPEN {key}")
-            return value
         _, host, authority = self.archive_authority(key)
         self.pending_archives.add(key)
         try:

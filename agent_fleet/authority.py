@@ -12,7 +12,6 @@ FIELDS = {
     "archive-alan": {"operation", "actor", "agent"},
     "archive-composite": {"operation", "actor", "agent", "source", "transcript"},
     "archive-tmux": {"operation", "source", "agent", "transcript"},
-    "refresh": {"operation", "actor"},
     "restore-alan": {"operation", "actor"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
 }
@@ -53,9 +52,6 @@ def execute(request):
         transcripts.verify(request["agent"], request["transcript"])
         tmux.mutate(request["source"], "archive", [])
         return {}
-    if operation == "refresh":
-        presentation.refresh(request["actor"])
-        return {"source": f"alan:{request['actor']}"}
     if operation == "restore-alan":
         return {"source": f"alan:{alan.resume(request['actor'])}"}
     transcripts.resume(

@@ -453,7 +453,6 @@ def test_production_observation_calls_are_confined_to_explicit_scopes():
         ("alan.py", "commander_actor", ("actors", "stream")),
         ("alan.py", "preview", ()),
         ("alan.py", "wait_output", ("actor", "stream")),
-        ("presentation.py", "refresh", ("actor", "stream")),
         ("presentation.py", "run", ("actor", "stream")),
     ]
 

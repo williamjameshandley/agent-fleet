@@ -88,10 +88,6 @@ def test_authority_operations_are_finite_and_direct():
                                "actor": "llm-rebuild@lovelace", "agent": "llm"})
     close.assert_called_once_with("llm-rebuild@lovelace")
 
-    with mock.patch("agent_fleet.authority.presentation.refresh") as refresh:
-        authority.execute({"operation": "refresh", "actor": "codex-1@lovelace"})
-    refresh.assert_called_once_with("codex-1@lovelace")
-
     with mock.patch("agent_fleet.authority.alan.resume",
                     return_value="codex-1@lovelace") as resume:
         assert authority.execute({"operation": "restore-alan",
@@ -181,15 +177,20 @@ def test_authority_transcript_restore_returns_native_identity():
 
 def test_authority_rejects_generic_or_extra_operations():
     for request in ({"operation": "exec", "command": "sh"},
+                    {"operation": "refresh", "actor": "codex-a@lovelace"},
                     {"operation": "archive-alan", "actor": "a", "fallback": True}):
-        with pytest.raises(ValueError, match="invalid authority action"):
-            authority.execute(request)
+        with mock.patch("agent_fleet.authority.alan.retire") as retire, \
+             mock.patch("agent_fleet.authority.alan.resume") as resume:
+            with pytest.raises(ValueError, match="invalid authority action"):
+                authority.execute(request)
+        retire.assert_not_called()
+        resume.assert_not_called()
     with pytest.raises(ValueError, match="language actor"):
         authority.execute({"operation": "archive-alan", "actor": "python-a",
                            "agent": "python"})
 
 
-def test_daemon_rename_and_refresh_revalidate_its_projection():
+def test_daemon_rename_revalidates_its_projection():
     item = session()
     fleet = Fleet()
     fleet.sessions["lovelace"] = [item]
@@ -202,13 +203,25 @@ def test_daemon_rename_and_refresh_revalidate_its_projection():
         execute.assert_awaited_once_with("lovelace", {
             "operation": "rename-alan", "actor": "codex-1@lovelace",
             "name": "new"})
-        with mock.patch.object(fleet, "authority",
-                               return_value={"source": item.ref.key}) as execute:
-            assert await fleet.action({"operation": "refresh",
-                                       "source": item.ref.key}) == {
-                                           "source": item.ref.key}
-        execute.assert_awaited_once_with("lovelace", {
-            "operation": "refresh", "actor": "codex-1@lovelace"})
+    asyncio.run(exercise())
+
+
+def test_removed_refresh_is_rejected_without_authority_or_viewer_effects():
+    item = session()
+    fleet = Fleet()
+    fleet.sessions["lovelace"] = [item]
+    fleet.unavailable.clear()
+
+    async def exercise():
+        with mock.patch.object(fleet, "authority") as execute, \
+             mock.patch.object(fleet, "viewers") as viewers, \
+             mock.patch.object(fleet, "update_viewers") as update:
+            with pytest.raises(ValueError, match="invalid Fleet action"):
+                await fleet.action({"operation": "refresh",
+                                    "source": item.ref.key})
+        execute.assert_not_awaited()
+        viewers.assert_not_awaited()
+        update.assert_not_awaited()
 
     asyncio.run(exercise())
 
@@ -452,10 +465,10 @@ def test_authority_uses_one_finite_command_on_the_target_host():
     asyncio.run(exercise())
 
 
-def test_archive_clears_and_refresh_reopens_every_shown_viewer():
-    async def exercise(operation):
+def test_archive_clears_every_shown_viewer():
+    async def exercise():
         fleet = Fleet()
-        item = session(kind="tmux" if operation == "archive" else "alan")
+        item = session(kind="tmux")
         fleet.sessions = {"lovelace": [item]}
         fleet.unavailable.clear()
         paths = [Path("/run/viewer-main.sock"), Path("/run/viewer-right.sock")]
@@ -464,17 +477,11 @@ def test_archive_clears_and_refresh_reopens_every_shown_viewer():
              mock.patch.object(fleet, "authority", return_value={}), \
              mock.patch.object(fleet, "wait_for_absence"), \
              mock.patch.object(fleet, "update_viewers") as update:
-            await fleet.action({"operation": operation, "source": item.ref.key})
-        if operation == "archive":
-            showing.assert_awaited_once_with()
-        else:
-            showing.assert_awaited_once_with(item.ref.key)
-        message = (f"CLEAR {item.ref.key}" if operation == "archive" else
-                   f"OPEN {item.ref.key}")
-        update.assert_awaited_once_with(paths, message)
+            await fleet.action({"operation": "archive", "source": item.ref.key})
+        showing.assert_awaited_once_with()
+        update.assert_awaited_once_with(paths, f"CLEAR {item.ref.key}")
 
-    asyncio.run(exercise("archive"))
-    asyncio.run(exercise("refresh"))
+    asyncio.run(exercise())
 
 
 def test_background_archive_releases_viewers_before_source_authority(tmp_path,
