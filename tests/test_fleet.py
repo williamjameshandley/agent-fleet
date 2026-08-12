@@ -1274,7 +1274,7 @@ class IdentityTests(unittest.TestCase):
             state.resident_switch("source", "/dev/pts/8")
         ui.command.assert_called_once_with([
             "set-option", "-t", "=fleet@main:", "status-format[0]",
-            "#{l: ##{pane_id#} ##[fg=red] #} · lovelace}",
+            "#{l: ##{pane_id#} ##[fg=red] #} [lovelace]}",
         ])
 
     def test_main_header_is_literal_at_the_real_tmux_boundary(self):
@@ -1292,7 +1292,7 @@ class IdentityTests(unittest.TestCase):
                     ["tmux", "-S", socket_path, "display-message", "-p",
                      "-t", "fleet@main", "#{E:status-format[0]}"],
                     check=True, text=True, capture_output=True).stdout.rstrip("\n")
-                self.assertEqual(rendered, " #{pane_id} #[fg=red] # } · lovelace")
+                self.assertEqual(rendered, " #{pane_id} #[fg=red] # } [lovelace]")
             finally:
                 subprocess.run(["tmux", "-S", socket_path, "kill-server"])
 

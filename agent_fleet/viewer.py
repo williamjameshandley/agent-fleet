@@ -293,7 +293,7 @@ class Attachment:
         return tuple(value["target"])
 
     def set_header(self, name, host):
-        label = f" {name} · {host}"
+        label = f" {name} [{host}]"
         literal = label.replace("#", "##").replace("}", "#}")
         with boundary("select", "header"):
             self.ui.command(["set-option", "-t", "=fleet@main:",
