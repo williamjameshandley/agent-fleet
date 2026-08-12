@@ -297,7 +297,7 @@ class Attachment:
         literal = label.replace("#", "##").replace("}", "#}")
         with boundary("select", "header"):
             self.ui.command(["set-option", "-t", "=fleet@main:",
-                             "status-format[0]", f"#{{l:{literal}}}"])
+                             "status-left", f"#[fg=color3]#{{l:{literal}}}"])
 
     def reclaim_marker(self, host, owner):
         try:
