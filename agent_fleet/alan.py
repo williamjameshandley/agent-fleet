@@ -363,8 +363,8 @@ def project(sessions, graph, expanded=(), show_python=False):
     for actor in visible:
         candidates = nx.ancestors(ancestry, actor) & visible_set
         if candidates:
-            parent = max(candidates, key=lambda item: nx.shortest_path_length(
-                ancestry, roots[actor], item))
+            parent = min(candidates, key=lambda item: nx.shortest_path_length(
+                ancestry, item, actor))
             children.setdefault(parent, []).append(actor)
         else:
             eligible.add(actor)
