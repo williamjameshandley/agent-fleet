@@ -1191,6 +1191,56 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual((operation, actual), ("PROJECT", key))
         self.assertGreater(float(selected), 0)
 
+    def test_real_fzf_focus_projects_after_clean_tmux_environment(self):
+        root = Path(__file__).parents[1]
+        socket_dir = Path(f"/run/user/{os.getuid()}/agent-fleet")
+        socket_dir.mkdir(exist_ok=True)
+        slot = f"test-{os.getpid()}"
+        path = socket_dir / f"viewer-{slot}.sock"
+        received = []
+        ready = threading.Event()
+
+        def answer():
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(path)); server.listen(2); ready.set()
+                while len(received) < 2:
+                    connection, _ = server.accept()
+                    with connection:
+                        received.append(connection.makefile().readline().strip())
+                        connection.sendall(b"OK\n")
+
+        thread = threading.Thread(target=answer); thread.start(); ready.wait(1)
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {
+                "HOME": os.environ["HOME"],
+                "PATH": os.environ["PATH"],
+                "SHELL": "/bin/sh",
+                "TMUX_TMPDIR": directory,
+            }
+            action = shlex.join(
+                (str(root / "fleet-open"), "project", slot, "{1}"))
+            command = (
+                "printf 'first\\trow one\\nsecond\\trow two\\n' | exec fzf "
+                "--disabled --no-input --bind "
+                + shlex.quote("focus:execute-silent(" + action + ")"))
+            subprocess.run(["tmux", "new-session", "-d", "-s", "focus", command],
+                           check=True, env=environment)
+            try:
+                for _ in range(100):
+                    if received:
+                        break
+                    time.sleep(.01)
+                subprocess.run(["tmux", "send-keys", "-t", "focus", "Up"],
+                               check=True, env=environment)
+                thread.join(2)
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+                path.unlink(missing_ok=True)
+        self.assertEqual([message.split(" ")[:2] for message in received],
+                         [["PROJECT", "first"], ["PROJECT", "second"]])
+
     def test_fzf_focus_adapter_focuses_without_a_source(self):
         root = Path(__file__).parents[1]
         with tempfile.TemporaryDirectory() as directory:
@@ -2640,6 +2690,96 @@ class IdentityTests(unittest.TestCase):
             finally:
                 subprocess.run(["tmux", "kill-server"], env=environment,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_daemon_start_accepts_a_replacement_muster_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = {**without_tmux_client(), "TMUX_TMPDIR": directory}
+
+            def start():
+                subprocess.run(["tmux", "new-session", "-d", "-s", "fleet@muster",
+                                "sleep 30"], check=True, env=environment)
+                return subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", "=fleet@muster:",
+                     "#{socket_path}\t#{pid}\t#{session_id}"], check=True,
+                    text=True, capture_output=True, env=environment
+                ).stdout.rstrip("\n").split("\t")
+
+            first = start()
+            fleet = Fleet()
+
+            async def replace(_generation, _width):
+                subprocess.run(["tmux", "kill-server"], check=True, env=environment)
+                replacement = Path(directory) / "replacement"
+                replacement.mkdir()
+                environment["TMUX_TMPDIR"] = str(replacement)
+                os.environ["TMUX_TMPDIR"] = str(replacement)
+                start()
+                raise ValueError("invalid Muster tmux generation")
+
+            class Server:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    pass
+
+                async def serve_forever(self):
+                    pass
+
+            async def listen(*_args):
+                return Server()
+
+            try:
+                with mock.patch.dict(os.environ, environment, clear=True), \
+                     mock.patch.object(fleet, "register_muster", side_effect=replace), \
+                     mock.patch("agent_fleet.daemon.RUNTIME", Path(directory) / "runtime"), \
+                     mock.patch("agent_fleet.daemon.hosts", return_value=[]), \
+                     mock.patch("agent_fleet.daemon.asyncio.start_unix_server",
+                                side_effect=listen), \
+                     mock.patch("agent_fleet.daemon.os.chmod"), \
+                     mock.patch("agent_fleet.daemon.journal.record") as record:
+                    asyncio.run(fleet.serve())
+                self.assertIn("daemon_ready", [call.args[0] for call in record.call_args_list])
+                second = subprocess.run(
+                    ["tmux", "display-message", "-p", "-t", "=fleet@muster:",
+                     "#{socket_path}\t#{pid}\t#{session_id}"], check=True,
+                    text=True, capture_output=True, env=environment
+                ).stdout.rstrip("\n").split("\t")
+                self.assertNotEqual(first[1:], second[1:])
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    asyncio.run(Fleet().register_muster(
+                        (second[0], int(second[1]), proc.start_time(int(second[1])),
+                         second[2]), 100))
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_daemon_start_rejects_the_same_invalid_muster_generation(self):
+        fleet = Fleet()
+        discovered = mock.AsyncMock()
+        discovered.returncode = 0
+        discovered.communicate.return_value = (b"/tmp/tmux.sock\t123\t$4\n", b"")
+        same = mock.AsyncMock()
+        same.returncode = 0
+        same.communicate.return_value = (b"/tmp/tmux.sock\t123\t$4\n", b"")
+        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
+                        side_effect=[discovered, same]), \
+             mock.patch.object(fleet, "register_muster",
+                               side_effect=ValueError("invalid Muster tmux generation")), \
+             mock.patch("agent_fleet.daemon.proc.start_time", return_value=456):
+            with self.assertRaisesRegex(ValueError, "invalid Muster tmux generation"):
+                asyncio.run(fleet.register_existing_muster())
+
+    def test_daemon_start_ignores_muster_removed_before_process_validation(self):
+        fleet = Fleet()
+        discovered = mock.AsyncMock()
+        discovered.returncode = 0
+        discovered.communicate.return_value = (b"/tmp/tmux.sock\t123\t$4\n", b"")
+        with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec",
+                        return_value=discovered), \
+             mock.patch("agent_fleet.daemon.proc.start_time",
+                        side_effect=FileNotFoundError):
+            asyncio.run(fleet.register_existing_muster())
 
     def test_resize_width_governs_the_next_observation_projection(self):
         fleet, _, _, _ = self.fold_fleet()

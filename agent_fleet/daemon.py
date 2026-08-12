@@ -621,9 +621,31 @@ class Fleet:
         if process.returncode:
             return
         socket_path, pid, session_id = stdout.decode().rstrip("\n").split("\t")
-        await self.register_muster(
-            (socket_path, int(pid), proc.start_time(int(pid)), session_id),
-            self.view_width)
+        try:
+            generation = (socket_path, int(pid), proc.start_time(int(pid)), session_id)
+        except (FileNotFoundError, ProcessLookupError):
+            return
+        try:
+            await self.register_muster(generation, self.view_width)
+        except (FileNotFoundError, ValueError):
+            process = await asyncio.create_subprocess_exec(
+                "/usr/bin/tmux", "-N", "display-message", "-p",
+                "-t", "=fleet@muster:",
+                "#{socket_path}\t#{pid}\t#{session_id}",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            current, _ = await process.communicate()
+            if process.returncode:
+                return
+            current_socket, current_pid, current_session = (
+                current.decode().rstrip("\n").split("\t"))
+            try:
+                current_generation = (
+                    current_socket, int(current_pid),
+                    proc.start_time(int(current_pid)), current_session)
+            except (FileNotFoundError, ProcessLookupError):
+                return
+            if current_generation == generation:
+                raise
 
     def next_waiting(self, active):
         waiting = [item.session for item in self.projected()
