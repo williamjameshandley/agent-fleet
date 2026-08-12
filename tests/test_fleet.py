@@ -2170,7 +2170,7 @@ class IdentityTests(unittest.TestCase):
                       launcher)
         self.assertNotIn("viewer-main.sock", launcher)
         self.assertIn('arrive("laptop")', launcher)
-        self.assertIn('ui.command(["refresh-client", "-f", "no-output"])',
+        self.assertIn('ui.command(["refresh-client", "-f", "no-output,ignore-size"])',
                       (root / "agent_fleet/viewer.py").read_text())
         self.assertIn("set-option -t fleet@muster mouse off", muster)
         self.assertIn("/usr/bin/nc -U", main)
