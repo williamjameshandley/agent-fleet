@@ -85,6 +85,12 @@ windows, so rebuilding `fleet@main` need not terminate a native session. UI
 windows contain nested tmux clients attached to the authoritative source
 servers; they are not copies or mirrors of source windows.
 
+`fleet@main` owns one top status line showing the projected source's human name
+and host literally, including any tmux formatting syntax in the name. This is
+derived display state, not identity: switching still uses the canonical source
+key. Fleet does not alter the nested source session's own status setting, so an
+ordinary shell session may retain a second, source-owned status line.
+
 ### Observation and authority
 
 Lovelace alone runs `fleet.service`. It maintains one long-lived,

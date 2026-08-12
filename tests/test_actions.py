@@ -830,7 +830,8 @@ def test_blocked_authority_does_not_enter_or_delay_the_host_control_lane():
                               "target": target,
                               "duration": .001})
             fleet.host_reply({"preview": preview["preview"], "text": "screen"})
-            assert await asyncio.wait_for(switch_task, 1) == (target, .001)
+            assert await asyncio.wait_for(switch_task, 1) == (
+                target, .001, item.name, host)
             assert await asyncio.wait_for(preview_task, 1) == "screen"
             assert not authority_task.done()
             release_authority.set()

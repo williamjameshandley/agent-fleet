@@ -271,6 +271,90 @@ class ProtocolCorrelationTests(unittest.TestCase):
             with self.assertRaises(StopIteration):
                 next(stream)
 
+    def test_non_tmux_adapter_failure_retains_cached_agent_projection(self):
+        consumer = threading.Event()
+        changed = queue.Queue()
+        alan = mock.Mock(error=None)
+        alan.snapshot.return_value = contextlib.nullcontext(([], None))
+        process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
+        process.poll.return_value = None
+        control = mock.Mock(closed=False)
+        tmux = mock.Mock()
+        tmux.has_session.return_value = True
+        ref = SessionRef(ServerRef("fixture", "/tmp/tmux", 1, 2), "$1")
+        raw = Session(ref, "source", 1, 1, 0, 1, "zsh", "", "/tmp")
+        changed_raw = Session(ref, "source", 1, 2, 0, 1, "zsh", "", "/tmp")
+        projected = Session(ref, "source", 1, 1, 0, 1, "zsh", "", "/tmp",
+                            agent_name="claude", reported_state="working",
+                            summary="derived", transcript_id="identity")
+        failure = subprocess.CalledProcessError(1, ["claude", "agents", "--json"])
+        with mock.patch("agent_fleet.tmux.AlanWatcher", return_value=alan), \
+             mock.patch("agent_fleet.tmux.subprocess.run",
+                        side_effect=[mock.Mock(returncode=0), mock.Mock(returncode=0)]), \
+             mock.patch("agent_fleet.tmux.subprocess.Popen", return_value=process), \
+             mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
+             mock.patch("agent_fleet.tmux.server", return_value=tmux), \
+             mock.patch("agent_fleet.tmux.inventory",
+                        side_effect=[[raw], [changed_raw]]), \
+             mock.patch("agent_fleet.tmux.observe",
+                        side_effect=[[projected], failure]):
+            stream = event_stream("fixture", consumer, changed=changed)
+            self.assertEqual(next(stream)[0], [projected])
+            changed.put("transcript")
+            [cached] = next(stream)[0]
+            self.assertEqual((cached.activity, cached.agent_name, cached.summary),
+                             (2, "claude", "derived"))
+            self.assertTrue(control.closed is False)
+            consumer.set()
+            changed.put("consumer")
+            with self.assertRaises(StopIteration):
+                next(stream)
+
+    def test_internal_observation_invariant_is_not_replaced_by_cached_fields(self):
+        consumer = threading.Event()
+        changed = queue.Queue()
+        alan = mock.Mock(error=None)
+        alan.snapshot.return_value = contextlib.nullcontext(([], None))
+        process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
+        process.poll.return_value = None
+        control = mock.Mock(closed=False)
+        tmux = mock.Mock()
+        tmux.has_session.return_value = True
+        alan_server = ServerRef("fixture", "", 0, 0, "alan")
+        tmux_server = ServerRef("fixture", "/tmp/tmux", 1, 2)
+        actor = Session(SessionRef(alan_server, "claude-one@fixture"), "one",
+                        1, 1, 0, 1, "", "", "/tmp", agent_name="claude",
+                        transcript_id="identity")
+        duplicate = Session(SessionRef(alan_server, "claude-two@fixture"), "two",
+                            1, 2, 0, 1, "", "", "/tmp", agent_name="claude",
+                            transcript_id="identity")
+        provider = Session(SessionRef(tmux_server, "$1"), "provider", 1, 1, 0, 1,
+                           "zsh", "", "/tmp", agent_name="claude",
+                           transcript_id="identity")
+
+        def subprocess_result(arguments, **_options):
+            if arguments[:2] == ["claude", "agents"]:
+                return mock.Mock(returncode=0, stdout="[]")
+            return mock.Mock(returncode=0, stdout="")
+
+        with mock.patch("agent_fleet.tmux.AlanWatcher", return_value=alan), \
+             mock.patch("agent_fleet.tmux.subprocess.run",
+                        side_effect=subprocess_result), \
+             mock.patch("agent_fleet.tmux.subprocess.Popen", return_value=process), \
+             mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
+             mock.patch("agent_fleet.tmux.server", return_value=tmux), \
+             mock.patch("agent_fleet.tmux.inventory",
+                        side_effect=[[actor, provider], [actor, duplicate, provider]]), \
+             mock.patch("agent_fleet.tmux.native_transcripts.catalog", return_value={}):
+            stream = event_stream("fixture", consumer, changed=changed)
+            [projected] = next(stream)[0]
+            self.assertEqual(projected.attachment, provider.ref)
+            changed.put("alan")
+            with self.assertRaisesRegex(
+                    RuntimeError,
+                    "expected at most one Alan actor and provider session.*found 2 and 1"):
+                next(stream)
+
     def test_one_collector_survives_tmux_absence_loss_and_recovery(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -552,7 +636,8 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet.host_reply({"cleanup": cleanup_request["cleanup"]})
             self.assertEqual(await preview, "screen")
             self.assertEqual(await switch,
-                             (("/tmp/tmux/default", 12, 10, "$1"), .001))
+                             (("/tmp/tmux/default", 12, 10, "$1"), .001,
+                              session.name, "fixture"))
             self.assertIsNone(await cleanup)
 
         asyncio.run(exercise())

@@ -23,11 +23,12 @@ across machines, operable with one hand and eventually none.
   indices and rows are never identity.
 - Agent status and summaries are derived, disposable projections.
 - fzf renders and selects stable IDs. It is not authoritative state.
-- Muster defaults to standalone native sessions and the immediate children of
-  Alan's Unix principal actors. Principals are not rows. Further descendants are
-  derived from Alan's graph and recursively folded beneath their nearest visible
-  creator. Each visible actor folds independently; Python has one global
-  presentation toggle. Fleet stores no parent IDs.
+- Muster defaults to attachable tmux sessions, including ordinary shells and
+  standalone native providers, plus the immediate children of Alan's Unix
+  principal actors. Principals are not rows. Further descendants are derived
+  from Alan's graph and recursively folded beneath their nearest visible creator.
+  Each visible actor folds independently; Python has one global presentation
+  toggle. Fleet stores no parent IDs.
 
 ## Safety and spatial behavior
 
@@ -60,8 +61,11 @@ across machines, operable with one hand and eventually none.
 - No persistent JSON state. Lovelace owns the sole disposable in-memory
   projection and the global `fleet@muster` and `fleet@main` sessions. Actual
   named-viewer placement remains workstation-local and comes from i3.
-- `fleet@main` is a transparent routing session: its status and prefixes remain
-  off. The attached source presentation owns the one visible tmux status line.
+- `fleet@main` owns one concise status line at the top of the display containing
+  the projected source's human name and host literally, including any tmux format
+  or style syntax in the name. Its prefixes remain off. Source sessions retain
+  their own status policy; Fleet does not mutate it, so an ordinary tmux source
+  may also show its existing status line.
 - Verify installed tmux, SSH, fzf and agent behavior experimentally. In
   particular, control observers attach with `ignore-size`, shell-bound remote
   arguments use `shlex.join`, and tmux `#{q:}` fields are parsed with `shlex`.

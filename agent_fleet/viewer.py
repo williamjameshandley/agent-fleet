@@ -284,11 +284,20 @@ class Attachment:
         if set(value) == {"error"}:
             error = RuntimeError(value["error"])
             raise ViewerFailure("switch", "identity_or_client", error) from error
-        if set(value) != {"target", "duration"}:
+        if set(value) != {"target", "duration", "name", "host"}:
             error = RuntimeError("invalid Fleet switch response")
             raise ViewerFailure("daemon", "invalid_reply", error) from error
         self.switch_duration = value["duration"]
+        if self.slot == "main":
+            self.set_header(value["name"], value["host"])
         return tuple(value["target"])
+
+    def set_header(self, name, host):
+        label = f" {name} · {host}"
+        literal = label.replace("#", "##").replace("}", "#}")
+        with boundary("select", "header"):
+            self.ui.command(["set-option", "-t", "=fleet@main:",
+                             "status-format[0]", f"#{{l:{literal}}}"])
 
     def reclaim_marker(self, host, owner):
         try:

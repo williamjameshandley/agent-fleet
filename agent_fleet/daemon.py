@@ -315,8 +315,10 @@ class Fleet:
         elif request.startswith("switch "):
             try:
                 value = json.loads(request.removeprefix("switch "))
-                target, duration = await self.switch(value["key"], value["client"])
-                response = {"target": target, "duration": duration}
+                target, duration, name, host = await self.switch(
+                    value["key"], value["client"])
+                response = {"target": target, "duration": duration,
+                            "name": name, "host": host}
             except (KeyError, LookupError, OSError, RuntimeError, ValueError,
                     json.JSONDecodeError) as error:
                 response = {"error": str(error)}
@@ -1113,7 +1115,8 @@ class Fleet:
         assert process.stdin
         process.stdin.write((json.dumps(payload) + "\n").encode())
         await process.stdin.drain()
-        return await future
+        target, duration = await future
+        return target, duration, session.name, session.ref.server.host
 
     async def cleanup(self, host, owner, slot):
         if host in self.unavailable:
