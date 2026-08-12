@@ -1162,8 +1162,34 @@ class IdentityTests(unittest.TestCase):
         self.assertGreater(float(selected), 0)
 
     def test_fzf_adapter_has_a_runtime_without_a_login_environment(self):
-        source = (Path(__file__).parents[1] / "fleet-open").read_text()
-        self.assertIn("${XDG_RUNTIME_DIR:-/run/user/$(id -u)}", source)
+        root = Path(__file__).parents[1]
+        key = "newton:/tmp/tmux-1000/default:12:10:$1"
+        socket_dir = Path(f"/run/user/{os.getuid()}/agent-fleet")
+        socket_dir.mkdir(exist_ok=True)
+        slot = f"test-{os.getpid()}-{time.time_ns()}"
+        path = socket_dir / f"viewer-{slot}.sock"
+        received = []
+        ready = threading.Event()
+
+        def answer():
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(path)); server.listen(); ready.set()
+                connection, _ = server.accept()
+                with connection:
+                    received.append(connection.makefile().readline().strip())
+                    connection.sendall(b"OK\n")
+
+        thread = threading.Thread(target=answer); thread.start(); ready.wait(1)
+        environment = {**os.environ}
+        environment.pop("XDG_RUNTIME_DIR", None)
+        result = subprocess.run([root / "fleet-open", "project", slot, key],
+                                env=environment, text=True, capture_output=True)
+        thread.join(1)
+        path.unlink(missing_ok=True)
+        self.assertEqual(result.returncode, 0)
+        operation, actual, selected = received[0].split(" ")
+        self.assertEqual((operation, actual), ("PROJECT", key))
+        self.assertGreater(float(selected), 0)
 
     def test_fzf_focus_adapter_focuses_without_a_source(self):
         root = Path(__file__).parents[1]
