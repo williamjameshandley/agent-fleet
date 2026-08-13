@@ -562,7 +562,8 @@ def commander_actor():
         finally:
             observation.close()
         commanders = [actor["addr"] for actor in graph.graph.get("actors", [])
-                      if actor.get("preset") == "commander"]
+                      if actor.get("preset") == "commander"
+                      and actor.get("state") != "retired"]
         if len(commanders) > 1:
             raise RuntimeError("multiple Commander actors")
         if commanders:

@@ -368,6 +368,16 @@ class CommanderActorTests(unittest.TestCase):
             self.assertEqual(alan.commander_actor(), "llm-commander@newton")
         spawn.assert_not_called()
 
+    def test_a_retired_commander_is_not_treated_as_live(self):
+        retired = {"addr": "llm-old@newton", "preset": "commander",
+                   "state": "retired"}
+        with mock.patch.object(alan.loop, "observe",
+                               return_value=self.stream(self.graph(retired))), \
+             mock.patch.object(alan.loop, "spawn",
+                               return_value="llm-fresh@newton") as spawn:
+            self.assertEqual(alan.commander_actor(), "llm-fresh@newton")
+        spawn.assert_called_once_with({"kind": "llm", "preset": "commander"})
+
     def test_multiple_commanders_fail_visibly(self):
         current = self.graph(
             {"addr": "llm-first@newton", "preset": "commander"},
