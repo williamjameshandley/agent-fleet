@@ -675,7 +675,7 @@ class Fleet:
             ({"source": session.ref.key, "host": session.ref.server.host,
               "name": session.name, "agent": session.agent, "state": session.state,
               "summary": session.summary, "recency": session.human_activity,
-              "transcript_id": session.transcript_id}
+              "transcript_id": session.transcript_id, "worked": session.worked}
              for group in self.sessions.values() for session in group),
             key=lambda item: item["source"])
         source_hosts = sorted(hosts())
