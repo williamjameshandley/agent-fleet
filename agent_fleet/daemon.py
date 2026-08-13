@@ -725,7 +725,7 @@ class Fleet:
         matches = [session for group in self.sessions.values()
                    for session in group if session.ref.key == key]
         if len(matches) != 1:
-            raise LookupError(f"session disappeared: {key}")
+            raise LookupError(f"source is not in the current projection: {key}")
         session = matches[0]
         if session.ref.server.host in self.unavailable:
             raise RuntimeError(
@@ -1088,7 +1088,7 @@ class Fleet:
         session = next((session for group in self.sessions.values() for session in group
                         if session.ref.key == key), None)
         if session is None:
-            raise RuntimeError(f"session disappeared: {key}")
+            raise RuntimeError(f"source is not in the current projection: {key}")
         host = key_host(key)
         if host in self.unavailable:
             raise RuntimeError(f"{host} is disconnected; refusing action")

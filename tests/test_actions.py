@@ -461,7 +461,7 @@ def test_daemon_managed_codex_restore_does_not_wait_for_provider_attachment():
 
 def test_daemon_refuses_stale_disconnected_and_unrecoverable_sources():
     fleet = Fleet()
-    with pytest.raises(LookupError, match="session disappeared"):
+    with pytest.raises(LookupError, match="not in the current projection"):
         asyncio.run(fleet.action({"operation": "archive", "source": "gone"}))
 
     item = session(host="newton")

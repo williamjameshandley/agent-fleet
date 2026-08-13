@@ -590,7 +590,7 @@ class IdentityTests(unittest.TestCase):
         for key in ["lovelace:/tmp/tmux/default:12:10:$gone", "malformed"]:
             with self.assertRaises(RuntimeError) as raised:
                 asyncio.run(fleet.preview(key))
-            self.assertEqual(str(raised.exception), f"session disappeared: {key}")
+            self.assertEqual(str(raised.exception), f"source is not in the current projection: {key}")
 
         fleet.unavailable = {"lovelace"}
         with self.assertRaises(RuntimeError) as raised:
@@ -2098,12 +2098,12 @@ class IdentityTests(unittest.TestCase):
         asyncio.run(exercise())
         response = json.loads(writer.write.call_args.args[0])
         self.assertEqual(response, {"ok": False,
-                                    "error": "session disappeared: gone"})
-        self.assertEqual(fleet.action_error, "session disappeared: gone")
+                                    "error": "source is not in the current projection: gone"})
+        self.assertEqual(fleet.action_error, "source is not in the current projection: gone")
 
     def test_stale_archive_row_is_visible_in_muster(self):
         fleet = Fleet()
-        fleet.action_error = "session disappeared: gone"
+        fleet.action_error = "source is not in the current projection: gone"
         with mock.patch.object(fleet, "projected", return_value=[]), \
              mock.patch("agent_fleet.daemon.render.header_text",
                         return_value="columns"):
@@ -2118,7 +2118,7 @@ class IdentityTests(unittest.TestCase):
 
             asyncio.run(exercise())
         self.assertEqual(writer.write.call_args.args[0],
-                         b"Action failed: session disappeared: gone\ncolumns\n")
+                         b"Action failed: source is not in the current projection: gone\ncolumns\n")
 
     def test_history_open_failure_is_visible_in_muster(self):
         with mock.patch("agent_fleet.actions.fleet_action",
