@@ -1948,6 +1948,37 @@ class IdentityTests(unittest.TestCase):
                    "agent": "claude"})
         absent.assert_awaited_once_with(session.ref.key)
 
+    def test_archive_closes_a_pristine_attached_session_without_a_transcript(self):
+        host = os.uname().nodename
+        attachment = SessionRef(
+            ServerRef(host, "/tmp/tmux/native", 44, 12), "$9")
+        session = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"codex-1@{host}"),
+            "fresh", 1, 0, 0, 1, "alan", "", "/work",
+            "codex", "waiting", "", 0, "", 1, worked=False,
+            attachment=attachment)
+        fleet = Fleet()
+        fleet.sessions[host] = [session]
+        fleet.unavailable.clear()
+        _, _, authority = fleet.archive_authority(session.ref.key)
+        self.assertEqual(authority, {
+            "operation": "archive-pristine", "actor": f"codex-1@{host}",
+            "agent": "codex", "source": attachment.key})
+
+    def test_archive_still_refuses_a_worked_session_without_a_transcript(self):
+        host = os.uname().nodename
+        session = Session(
+            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"codex-1@{host}"),
+            "busy", 1, 0, 0, 1, "alan", "", "/work",
+            "codex", "waiting", "", 0, "", 1, worked=True,
+            attachment=SessionRef(
+                ServerRef(host, "/tmp/tmux/native", 44, 12), "$9"))
+        fleet = Fleet()
+        fleet.sessions[host] = [session]
+        fleet.unavailable.clear()
+        with self.assertRaisesRegex(ValueError, "durable Claude or Codex identity"):
+            fleet.archive_authority(session.ref.key)
+
     def test_archive_retires_bare_alan_language_actor_by_address(self):
         host = os.uname().nodename
         session = Session(

@@ -104,6 +104,14 @@ def test_closed_and_retired_actors_are_reconstructed_without_extra_state():
     assert retired["state"] == "retired"
 
 
+def test_conversational_work_is_derived_from_input_operations():
+    pristine = alan.actors(graph({"op": "create"}))[0]
+    assert pristine["worked"] is False
+
+    worked = alan.actors(graph({"op": "create"}, {"op": "input"}))[0]
+    assert worked["worked"] is True
+
+
 def test_latest_successful_output_is_the_actor_summary():
     current = alan.actors(graph(
         {"op": "create"},
@@ -452,6 +460,7 @@ def test_production_observation_calls_are_confined_to_explicit_scopes():
         ("alan.py", "actors", ()),
         ("alan.py", "commander_actor", ("actors", "stream")),
         ("alan.py", "preview", ()),
+        ("alan.py", "verify_pristine", ("actor",)),
         ("alan.py", "wait_output", ("actor", "stream")),
         ("presentation.py", "run", ("actor", "stream")),
     ]
