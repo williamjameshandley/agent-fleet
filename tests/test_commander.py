@@ -312,7 +312,7 @@ class ProposalTests(unittest.TestCase):
             commander_client.exchange("status")
 
         self.assertEqual(send.call_args.args[0], "llm-1@newton")
-        self.assertEqual(send.call_args.args[1]["kind"], "message")
+        self.assertEqual(send.call_args.args[1]["kind"], "prompt")
         render_output.assert_called_once()
 
 class CommanderActorTests(unittest.TestCase):
