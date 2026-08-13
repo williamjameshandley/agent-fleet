@@ -462,6 +462,7 @@ def test_production_observation_calls_are_confined_to_explicit_scopes():
         ("alan.py", "preview", ()),
         ("alan.py", "verify_pristine", ("actor",)),
         ("alan.py", "wait_output", ("actor", "stream")),
+        ("commander_client.py", "exchange", ("actor", "stream")),
         ("presentation.py", "run", ("actor", "stream")),
     ]
 
