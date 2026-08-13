@@ -303,6 +303,8 @@ class ProposalTests(unittest.TestCase):
     def test_exchange_uses_send_and_observation(self):
         graph = nx.MultiDiGraph()
         graph.add_node("will@newton#2", input="llm-1@newton#5")
+        graph.add_node("will@newton#3", op="input", reply="will@newton#1",
+                       payload={"kind": "prompt", "text": "done"})
         accepted = mock.MagicMock()
         accepted.__next__ = mock.Mock(return_value=graph)
         accepted.nodes = graph.nodes
@@ -315,16 +317,14 @@ class ProposalTests(unittest.TestCase):
                                              "result": "will@newton#2"}) as send, \
              mock.patch.object(commander_client.loop, "observe",
                                return_value=accepted) as observe, \
-             mock.patch.object(commander_client.alan, "wait_output",
-                               return_value={"status": "ok", "value": "done"}) as wait, \
              mock.patch.object(commander_client, "render") as render_output:
             commander_client.exchange("status")
 
         self.assertEqual(send.call_args.args[0], "llm-1@newton")
         self.assertEqual(send.call_args.args[1]["kind"], "prompt")
         observe.assert_called_once_with(stream=True, actor="will@newton")
-        wait.assert_called_once_with("llm-1@newton#5")
-        render_output.assert_called_once()
+        render_output.assert_called_once_with(
+            {"status": "ok", "value": "done"}, mock.ANY)
 
 class CommanderActorTests(unittest.TestCase):
     def setUp(self):
