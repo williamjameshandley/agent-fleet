@@ -301,18 +301,26 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "provider failed\n")
 
     def test_exchange_uses_send_and_observation(self):
+        accepted = nx.MultiDiGraph()
+        accepted.add_node("will@newton#2", input="llm-1@newton#5")
+
         with mock.patch.object(commander_client, "commander_context", return_value=json.dumps({})), \
              mock.patch.object(commander_client.alan, "commander_actor",
                                return_value="llm-1@newton"), \
              mock.patch.object(commander_client.loop, "send",
-                               return_value={"input": "llm-1@newton#1"}) as send, \
+                               return_value={"send": "will@newton#1",
+                                             "result": "will@newton#2"}) as send, \
+             mock.patch.object(commander_client.loop, "observe",
+                               return_value=accepted) as observe, \
              mock.patch.object(commander_client.alan, "wait_output",
-                               return_value={"status": "ok", "value": "done"}), \
+                               return_value={"status": "ok", "value": "done"}) as wait, \
              mock.patch.object(commander_client, "render") as render_output:
             commander_client.exchange("status")
 
         self.assertEqual(send.call_args.args[0], "llm-1@newton")
         self.assertEqual(send.call_args.args[1]["kind"], "prompt")
+        observe.assert_called_once_with()
+        wait.assert_called_once_with("llm-1@newton#5")
         render_output.assert_called_once()
 
 class CommanderActorTests(unittest.TestCase):

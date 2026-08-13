@@ -31,7 +31,8 @@ def exchange(text):
         "kind": "prompt",
         "text": json.dumps(request, separators=(",", ":"), ensure_ascii=False),
     })
-    output = alan.wait_output(result["input"])
+    accepted = loop.observe().nodes[result["result"]]
+    output = alan.wait_output(accepted["input"])
     render(output, request)
 
 
