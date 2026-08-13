@@ -206,6 +206,7 @@ def actor_descriptor(graph, all_descriptors, descriptor, operations):
                 human_activity = _timestamp(operation["time"])
 
     descriptor["created"] = _timestamp(stream[0][1]["time"]) if stream else 0
+    descriptor["worked"] = any(operation["op"] == "input" for _, operation in stream)
     descriptor["label"] = label(addr)
     descriptor["native_id"] = address_identity(addr, descriptor["kind"])
     working = descriptor["state"] == "working"
@@ -268,7 +269,8 @@ def inventory(host, actor_descriptors):
             actor.get("summary") or actor.get("last_error", ""), 0,
             transcript_id,
             actor["human_activity"], actor.get("active_evaluation") or "",
-            actor["evaluation_started"], ""))
+            actor["evaluation_started"], "",
+            worked=actor.get("worked", True)))
     return sessions
 
 
@@ -466,6 +468,13 @@ def runtime_name(actor):
 
 def retire(addr):
     loop.control(addr, "retire")
+
+
+def verify_pristine(addr):
+    graph = loop.observe(actor=addr)
+    for _reference, operation in graph.nodes(data=True):
+        if operation.get("stream") == addr and operation.get("op") == "input":
+            raise RuntimeError(f"actor has conversational work: {addr}")
 
 
 def resume(addr):

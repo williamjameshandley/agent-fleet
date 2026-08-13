@@ -20,6 +20,7 @@ def encode(sessions, usage=None, unavailable=None, graph=None):
         "evaluation": s.evaluation,
         "evaluation_started": s.evaluation_started,
         "transcript_path": s.transcript_path,
+        "worked": s.worked,
         "attachment": ({
             "server": {
                 "host": s.attachment.server.host,

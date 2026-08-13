@@ -129,6 +129,38 @@ def test_authority_composite_archive_orders_each_authoritative_component(agent):
     ]
 
 
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_pristine_archive_verifies_emptiness_then_closes_and_retires(agent):
+    calls = mock.Mock()
+    with mock.patch("agent_fleet.authority.alan.verify_pristine") as pristine, \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         mock.patch("agent_fleet.authority.alan.retire") as retire:
+        calls.attach_mock(pristine, "pristine")
+        calls.attach_mock(mutate, "mutate")
+        calls.attach_mock(retire, "retire")
+        authority.execute({"operation": "archive-pristine",
+                           "actor": f"{agent}-1@lovelace", "agent": agent,
+                           "source": "source"})
+    assert calls.mock_calls == [
+        mock.call.pristine(f"{agent}-1@lovelace"),
+        mock.call.mutate("source", "archive", []),
+        mock.call.retire(f"{agent}-1@lovelace"),
+    ]
+
+
+def test_pristine_archive_stops_when_the_actor_has_work():
+    with mock.patch("agent_fleet.authority.alan.verify_pristine",
+                    side_effect=RuntimeError("actor has conversational work")), \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         pytest.raises(RuntimeError, match="conversational work"):
+        authority.execute({"operation": "archive-pristine",
+                           "actor": "codex-1@lovelace", "agent": "codex",
+                           "source": "source"})
+    mutate.assert_not_called()
+    retire.assert_not_called()
+
+
 def test_composite_archive_stops_when_transcript_verification_fails():
     with mock.patch("agent_fleet.authority.transcripts.verify",
                     side_effect=LookupError("missing")), \

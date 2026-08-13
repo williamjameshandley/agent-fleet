@@ -11,6 +11,7 @@ FIELDS = {
     "rename-tmux": {"operation", "source", "name"},
     "archive-alan": {"operation", "actor", "agent"},
     "archive-composite": {"operation", "actor", "agent", "source", "transcript"},
+    "archive-pristine": {"operation", "actor", "agent", "source"},
     "archive-tmux": {"operation", "source", "agent", "transcript"},
     "restore-alan": {"operation", "actor"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
@@ -45,6 +46,13 @@ def execute(request):
         if request["agent"] not in {"claude", "codex"}:
             raise ValueError("archive requires Claude or Codex")
         transcripts.verify(request["agent"], request["transcript"])
+        tmux.mutate(request["source"], "archive", [])
+        alan.retire(request["actor"])
+        return {}
+    if operation == "archive-pristine":
+        if request["agent"] not in {"claude", "codex"}:
+            raise ValueError("archive requires Claude or Codex")
+        alan.verify_pristine(request["actor"])
         tmux.mutate(request["source"], "archive", [])
         alan.retire(request["actor"])
         return {}

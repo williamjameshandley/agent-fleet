@@ -821,12 +821,18 @@ class Fleet:
                 raise ValueError("archive requires a language actor")
             if session.attachment:
                 if not session.transcript_id:
-                    raise ValueError("archive requires a durable Claude or Codex identity")
-                authority = {"operation": "archive-composite",
-                             "actor": session.ref.session_id,
-                             "agent": session.agent,
-                             "source": session.attachment.key,
-                             "transcript": session.transcript_id}
+                    if session.worked:
+                        raise ValueError("archive requires a durable Claude or Codex identity")
+                    authority = {"operation": "archive-pristine",
+                                 "actor": session.ref.session_id,
+                                 "agent": session.agent,
+                                 "source": session.attachment.key}
+                else:
+                    authority = {"operation": "archive-composite",
+                                 "actor": session.ref.session_id,
+                                 "agent": session.agent,
+                                 "source": session.attachment.key,
+                                 "transcript": session.transcript_id}
             else:
                 authority = {"operation": "archive-alan",
                              "actor": session.ref.session_id,
