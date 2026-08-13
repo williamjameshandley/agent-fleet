@@ -110,7 +110,7 @@ def run(actor, descriptor):
                 return
             if not text:
                 continue
-            result = loop.send(actor, {"kind": "message", "text": text})
+            result = loop.send(actor, {"kind": "prompt", "text": text})
             try:
                 output = alan.wait_output(result["input"], observations)
             except KeyboardInterrupt:

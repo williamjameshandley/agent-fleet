@@ -28,7 +28,7 @@ def exchange(text):
                "request_id": str(uuid.uuid4()), "text": text, "snapshot": snapshot}
     actor = alan.commander_actor()
     result = loop.send(actor, {
-        "kind": "message",
+        "kind": "prompt",
         "text": json.dumps(request, separators=(",", ":"), ensure_ascii=False),
     })
     output = alan.wait_output(result["input"])

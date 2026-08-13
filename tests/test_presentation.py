@@ -92,7 +92,7 @@ def test_presentation_sends_input_and_renders_its_output(capsys):
     wait.assert_called_once_with("codex-a@newton#1", observations)
     observations.close.assert_called_once_with()
     send.assert_called_once_with(
-        "codex-a@newton", {"kind": "message", "text": "inspect"})
+        "codex-a@newton", {"kind": "prompt", "text": "inspect"})
     assert capsys.readouterr().out == "done\n\n"
 
 
