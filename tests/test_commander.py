@@ -301,8 +301,11 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "provider failed\n")
 
     def test_exchange_uses_send_and_observation(self):
-        accepted = nx.MultiDiGraph()
-        accepted.add_node("will@newton#2", input="llm-1@newton#5")
+        graph = nx.MultiDiGraph()
+        graph.add_node("will@newton#2", input="llm-1@newton#5")
+        accepted = mock.MagicMock()
+        accepted.__next__ = mock.Mock(return_value=graph)
+        accepted.nodes = graph.nodes
 
         with mock.patch.object(commander_client, "commander_context", return_value=json.dumps({})), \
              mock.patch.object(commander_client.alan, "commander_actor",
@@ -319,7 +322,7 @@ class ProposalTests(unittest.TestCase):
 
         self.assertEqual(send.call_args.args[0], "llm-1@newton")
         self.assertEqual(send.call_args.args[1]["kind"], "prompt")
-        observe.assert_called_once_with()
+        observe.assert_called_once_with(stream=True, actor="will@newton")
         wait.assert_called_once_with("llm-1@newton#5")
         render_output.assert_called_once()
 
