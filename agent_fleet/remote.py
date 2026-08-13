@@ -9,4 +9,4 @@ def find(key, live=True):
             if live and session.ref.server.host in unavailable:
                 raise RuntimeError(f"{session.ref.server.host} is disconnected; refusing action")
             return session
-    raise LookupError(f"session disappeared: {key}")
+    raise LookupError(f"source is not in the current projection: {key}")
