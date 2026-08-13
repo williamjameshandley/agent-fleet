@@ -88,7 +88,7 @@ class CommanderContextTests(unittest.TestCase):
         session = SimpleNamespace(
             ref=SimpleNamespace(key="source-1", server=SimpleNamespace(host="lovelace")),
             name="work", agent="codex", state="waiting", summary="summary",
-            human_activity=2, transcript_id="live-thread")
+            human_activity=2, transcript_id="live-thread", worked=True)
         variants = [self.context(["newton"]), self.context(profile_suffix="-changed"),
                     self.context(transcript_name="changed"), self.context(sessions=[session])]
         self.assertTrue(all(item["revision"] != baseline for item in variants))
@@ -253,6 +253,27 @@ class ProposalTests(unittest.TestCase):
                     "snapshot_revision": "abc",
                     "source": "alan:llm-review@newton"}
         self.assertIs(validate_proposal(proposal, self.request), proposal)
+
+    def test_accepts_archive_of_a_pristine_workless_native_session(self):
+        self.request["snapshot"]["sessions"].append({
+            "source": "alan:claude-fresh@lovelace", "agent": "claude",
+            "transcript_id": "", "worked": False,
+        })
+        proposal = {"type": "archive", "request_id": "r1",
+                    "snapshot_revision": "abc",
+                    "source": "alan:claude-fresh@lovelace"}
+        self.assertIs(validate_proposal(proposal, self.request), proposal)
+
+    def test_rejects_archive_of_a_worked_session_without_a_transcript(self):
+        self.request["snapshot"]["sessions"].append({
+            "source": "alan:claude-busy@lovelace", "agent": "claude",
+            "transcript_id": "", "worked": True,
+        })
+        proposal = {"type": "archive", "request_id": "r1",
+                    "snapshot_revision": "abc",
+                    "source": "alan:claude-busy@lovelace"}
+        with self.assertRaises(ValueError):
+            validate_proposal(proposal, self.request)
 
     def test_rejects_extra_fields_stale_identity_and_relative_cwd(self):
         bad = {"type": "archive", "request_id": "r1", "snapshot_revision": "abc",
