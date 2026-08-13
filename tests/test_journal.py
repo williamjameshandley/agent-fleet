@@ -70,6 +70,24 @@ def test_transport_failure_cannot_change_the_callers_result(monkeypatch):
     assert not journal.record("viewer_ready", slot="main", tty="/dev/pts/8")
 
 
+def test_an_accepted_action_is_journaled_with_its_target(monkeypatch):
+    sent = []
+    monkeypatch.setattr(journal, "_send", lambda **fields: sent.append(fields))
+
+    assert journal.record("action_completed", action="rename",
+                          target="lovelace:/tmp/tmux-1000/default:1:2:$3")
+
+    assert sent == [{
+        "MESSAGE": "Fleet action completed",
+        "PRIORITY": journal.INFO,
+        "SYSLOG_IDENTIFIER": "agent-fleet",
+        "FLEET_COMPONENT": "daemon",
+        "FLEET_EVENT": "action_completed",
+        "FLEET_ACTION": "rename",
+        "FLEET_TARGET": "lovelace:/tmp/tmux-1000/default:1:2:$3",
+    }]
+
+
 def test_service_declares_its_journal_streams_and_identifier():
     service = (Path(__file__).parents[1] / "fleet.service").read_text()
     assert "StandardOutput=journal" in service

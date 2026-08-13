@@ -17,6 +17,7 @@ VALUES = {
     "stage": {"attach", "daemon", "focus", "resolve", "select", "ssh", "switch",
               "worker"},
     "task": {"archive", "refresh_muster"},
+    "action": {"archive", "create", "rename", "restore"},
 }
 ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 EVENTS = {
@@ -27,6 +28,8 @@ EVENTS = {
         "daemon", WARNING, "Fleet host disconnected", ("host", "pid", "status")),
     "daemon_task_failed": (
         "daemon", ERROR, "Fleet daemon task failed", ("task", "error_type")),
+    "action_completed": (
+        "daemon", INFO, "Fleet action completed", ("action", "target")),
     "viewer_ready": ("viewer", INFO, "Fleet viewer ready", ("slot", "tty")),
     "viewer_stopping": ("viewer", INFO, "Fleet viewer stopping", ("slot", "tty")),
     "attachment_created": (

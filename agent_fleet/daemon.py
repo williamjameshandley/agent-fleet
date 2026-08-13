@@ -283,7 +283,12 @@ class Fleet:
             self.action_error = ""
             self.schedule_refresh()
             try:
-                value = await self.action(json.loads(request))
+                decoded = json.loads(request)
+                value = await self.action(decoded)
+                journal.record(
+                    "action_completed", action=decoded["operation"],
+                    target=decoded.get("source") or decoded.get("history")
+                    or decoded.get("name") or "")
                 payload = json.dumps({"ok": True, "value": value},
                                      separators=(",", ":"))
             except (KeyError, LookupError, OSError, RuntimeError, ValueError,
