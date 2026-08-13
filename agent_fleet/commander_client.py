@@ -34,11 +34,20 @@ def exchange(text):
     principal = result["result"].rsplit("#", 1)[0]
     observation = loop.observe(stream=True, actor=principal)
     try:
-        accepted = next(observation).nodes[result["result"]]
+        reply = None
+        while reply is None:
+            graph = next(observation)
+            reply = next(
+                (data for _node, data in graph.nodes(data=True)
+                 if data.get("op") == "input" and data.get("reply") == result["send"]),
+                None)
     finally:
         observation.close()
-    output = alan.wait_output(accepted["input"])
-    render(output, request)
+    payload = reply["payload"]
+    if payload.get("kind") == "error":
+        render({"status": "error", "error": payload["error"]}, request)
+    else:
+        render({"status": "ok", "value": payload["text"]}, request)
 
 
 def run():
