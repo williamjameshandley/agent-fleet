@@ -118,6 +118,7 @@ class Fleet:
         self.view_lock = asyncio.Lock()
         self.publication = 0
         self.pending_archives = set()
+        self.restores = {}
         self.background_tasks = set()
         self.task_names = {}
 
@@ -304,18 +305,13 @@ class Fleet:
         elif request.startswith("resolve "):
             key = request.removeprefix("resolve ")
             try:
-                session = self.source(key)
-            except (LookupError, RuntimeError) as error:
+                session = await self.ensure_attachment(key)
+                value = {"agent": session.agent, "state": session.state,
+                         "cwd": session.cwd,
+                         "attachment": session.attachment.key
+                         if session.attachment else ""}
+            except (LookupError, OSError, RuntimeError, ValueError) as error:
                 value = {"error": str(error)}
-            else:
-                if session.ref.server.host in self.presentation_unavailable():
-                    value = {"error": (f"{session.ref.server.host} presentation is "
-                                       "unavailable; refusing action")}
-                else:
-                    value = {"agent": session.agent, "state": session.state,
-                             "cwd": session.cwd,
-                             "attachment": session.attachment.key
-                             if session.attachment else ""}
             payload = json.dumps(value, separators=(",", ":"))
         elif request.startswith("switch "):
             try:
@@ -558,6 +554,10 @@ class Fleet:
         self.background_tasks.add(task)
         self.task_names[task] = name
         task.add_done_callback(self.background_task_done)
+
+    def restore_task_done(self, key, task):
+        if self.restores.get(key) is task:
+            del self.restores[key]
 
     async def publish_current_view(self, error=""):
         path = RUNTIME / "muster.sock"
@@ -1107,7 +1107,7 @@ class Fleet:
         return await future
 
     async def switch(self, key, client):
-        session = self.source(key)
+        session = await self.ensure_attachment(key)
         host = key_host(key)
         if host in self.tmux_unavailable:
             raise RuntimeError(f"{host} tmux server is unavailable")
@@ -1130,6 +1130,45 @@ class Fleet:
         await process.stdin.drain()
         target, duration = await future
         return target, duration, session.name, session.ref.server.host
+
+    async def ensure_attachment(self, key):
+        session = self.source(key)
+        host = session.ref.server.host
+        if host in self.presentation_unavailable():
+            raise RuntimeError(f"{host} presentation is unavailable; refusing action")
+        descriptors = [
+            item for item in self.composed_graph().graph.get("actors", [])
+            if item["addr"] == session.ref.session_id]
+        native = (len(descriptors) == 1
+                  and descriptors[0].get("evaluator") == "native"
+                  and not descriptors[0].get("managed", False))
+        if session.attachment or not native or session.agent not in {"claude", "codex"}:
+            return session
+        if not session.transcript_id:
+            raise ValueError("native restore requires a durable transcript identity")
+        task = self.restores.get(key)
+        if task is None:
+            task = asyncio.create_task(self.restore_native(session))
+            self.restores[key] = task
+            task.add_done_callback(lambda completed: self.restore_task_done(key, completed))
+            self.own_task(task, f"restore {key}")
+        await asyncio.shield(task)
+        session = self.source(key)
+        if not session.attachment:
+            raise RuntimeError(f"restored native presentation disappeared: {key}")
+        return session
+
+    async def restore_native(self, session):
+        await self.authority(session.ref.server.host, {
+            "operation": "restore-native",
+            "actor": session.ref.session_id,
+            "agent": session.agent,
+            "transcript": session.transcript_id,
+        })
+        await self.wait_for_source(
+            lambda current: current.ref == session.ref
+            and current.attachment is not None,
+            f"restore {session.ref.key}")
 
     async def cleanup(self, host, owner, slot):
         if host in self.unavailable:

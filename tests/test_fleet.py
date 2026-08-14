@@ -482,6 +482,199 @@ class IdentityTests(unittest.TestCase):
                          {"agent": session.agent, "state": session.state,
                           "cwd": session.cwd, "attachment": ""})
 
+    def test_daemon_resolve_restores_a_missing_native_provider_attachment(self):
+        fleet = Fleet()
+        actor = "codex-full-id@lovelace"
+        session = Session(
+            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
+            "full-id")
+        attachment = SessionRef(ServerRef("lovelace", "/tmp/tmux/default", 12, 10), "$9")
+        restored = replace(session, attachment=attachment)
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable.clear()
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]
+        fleet._composed = (fleet.observed, graph)
+        writer = mock.Mock()
+        writer.drain = mock.AsyncMock()
+
+        async def wait(*_args):
+            fleet.sessions = {"lovelace": [restored]}
+            return session.ref.key
+
+        async def exercise():
+            reader = asyncio.StreamReader()
+            reader.feed_data(f"resolve {session.ref.key}\n".encode())
+            reader.feed_eof()
+            with mock.patch.object(fleet, "authority", mock.AsyncMock()) as authority, \
+                 mock.patch.object(fleet, "wait_for_source", side_effect=wait) as waiting:
+                await fleet.reply(reader, writer)
+            authority.assert_awaited_once_with("lovelace", {
+                "operation": "restore-native", "actor": actor,
+                "agent": "codex", "transcript": "full-id"})
+            waiting.assert_awaited_once()
+
+        asyncio.run(exercise())
+        self.assertEqual(json.loads(writer.write.call_args.args[0]),
+                         {"agent": "codex", "state": "waiting", "cwd": "/work",
+                          "attachment": attachment.key})
+
+    def test_native_restore_is_shared_by_concurrent_opens(self):
+        fleet = Fleet()
+        actor = "codex-full-id@lovelace"
+        session = Session(
+            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
+            "full-id")
+        attachment = SessionRef(ServerRef("lovelace", "/tmp/tmux/default", 12, 10), "$9")
+        restored = replace(session, attachment=attachment)
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable.clear()
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]
+        fleet._composed = (fleet.observed, graph)
+        launched = asyncio.Event()
+        release = asyncio.Event()
+
+        async def authority(*_args):
+            launched.set()
+            await release.wait()
+
+        async def wait(*_args):
+            fleet.sessions = {"lovelace": [restored]}
+            return session.ref.key
+
+        async def exercise():
+            with mock.patch.object(fleet, "authority", side_effect=authority) as restoring, \
+                 mock.patch.object(fleet, "wait_for_source", side_effect=wait) as waiting:
+                first = asyncio.create_task(fleet.ensure_attachment(session.ref.key))
+                await launched.wait()
+                second = asyncio.create_task(fleet.ensure_attachment(session.ref.key))
+                release.set()
+                self.assertEqual(await asyncio.gather(first, second), [restored, restored])
+            restoring.assert_awaited_once()
+            waiting.assert_awaited_once()
+
+        asyncio.run(exercise())
+
+    def test_cancelled_opener_leaves_restore_owned_until_completion(self):
+        fleet = Fleet()
+        actor = "codex-full-id@lovelace"
+        session = Session(
+            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
+            "full-id")
+        attachment = SessionRef(ServerRef("lovelace", "/tmp/tmux/default", 12, 10), "$9")
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable.clear()
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]
+        fleet._composed = (fleet.observed, graph)
+        launched = asyncio.Event()
+        release = asyncio.Event()
+
+        async def authority(*_args):
+            launched.set()
+            await release.wait()
+
+        async def wait(*_args):
+            fleet.sessions = {"lovelace": [replace(session, attachment=attachment)]}
+            return session.ref.key
+
+        async def exercise():
+            with mock.patch.object(fleet, "authority", side_effect=authority), \
+                 mock.patch.object(fleet, "wait_for_source", side_effect=wait):
+                opener = asyncio.create_task(fleet.ensure_attachment(session.ref.key))
+                await launched.wait()
+                restore = fleet.restores[session.ref.key]
+                opener.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await opener
+                self.assertIn(restore, fleet.background_tasks)
+                self.assertIs(fleet.restores[session.ref.key], restore)
+                release.set()
+                await restore
+                await asyncio.sleep(0)
+            self.assertNotIn(restore, fleet.background_tasks)
+            self.assertNotIn(session.ref.key, fleet.restores)
+
+        asyncio.run(exercise())
+
+    def test_native_restore_rejects_an_attachment_that_immediately_disappears(self):
+        fleet = Fleet()
+        actor = "codex-full-id@lovelace"
+        session = Session(
+            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
+            "full-id")
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable.clear()
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]
+        fleet._composed = (fleet.observed, graph)
+
+        async def exercise():
+            with mock.patch.object(fleet, "restore_native", mock.AsyncMock()):
+                with self.assertRaisesRegex(
+                        RuntimeError, "restored native presentation disappeared"):
+                    await fleet.ensure_attachment(session.ref.key)
+
+        asyncio.run(exercise())
+
+    def test_native_restore_without_a_transcript_fails_before_launch(self):
+        fleet = Fleet()
+        actor = "codex-full-id@lovelace"
+        session = Session(
+            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting")
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable.clear()
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]
+        fleet._composed = (fleet.observed, graph)
+
+        async def exercise():
+            with mock.patch.object(fleet, "authority", mock.AsyncMock()) as authority:
+                with self.assertRaisesRegex(
+                        ValueError, "native restore requires a durable transcript identity"):
+                    await fleet.ensure_attachment(session.ref.key)
+            authority.assert_not_awaited()
+
+        asyncio.run(exercise())
+
+    def test_warm_switch_restores_before_addressing_the_presentation(self):
+        fleet = Fleet()
+        session = self.session("lovelace")
+        attachment = SessionRef(ServerRef("lovelace", "/tmp/tmux/default", 12, 10), "$9")
+        restored = replace(session, attachment=attachment)
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable.clear()
+        process = mock.Mock(stdin=mock.Mock())
+        process.stdin.drain = mock.AsyncMock()
+        fleet.processes = {"lovelace": process}
+
+        async def exercise():
+            with mock.patch.object(
+                    fleet, "ensure_attachment", mock.AsyncMock(return_value=restored)) as ensure:
+                pending = asyncio.create_task(fleet.switch(session.ref.key, "/dev/pts/8"))
+                await asyncio.sleep(0)
+                request = json.loads(process.stdin.write.call_args.args[0])
+                self.assertEqual(request["target"],
+                                 ["/tmp/tmux/default", 12, 10, "$9"])
+                fleet.host_reply({"switch": 1,
+                                  "target": ["/tmp/tmux/default", 12, 10, "$9"],
+                                  "duration": .001})
+                await pending
+            ensure.assert_awaited_once_with(session.ref.key)
+
+        asyncio.run(exercise())
+
     def test_daemon_refuses_to_resolve_a_pending_archive(self):
         fleet = Fleet()
         session = self.session("lovelace")

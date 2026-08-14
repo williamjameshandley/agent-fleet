@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from unittest import mock
 
 import agent_fleet.transcripts as transcripts
@@ -187,6 +188,34 @@ def test_resume_rejects_a_prefix_before_creating_tmux(monkeypatch):
          __import__("pytest").raises(RuntimeError, match="transcript identity changed"):
         transcripts.resume("codex", "prefix", "work")
     run.assert_not_called()
+
+
+def test_native_resume_launches_the_integrated_provider_without_attaching(monkeypatch):
+    item = type("Transcript", (), {"session_id": "full-codex-id",
+                                   "cwd": lambda self: "/work"})()
+    monkeypatch.setattr(transcripts, "find", lambda session_id, agent: item)
+    with mock.patch.dict("agent_fleet.transcripts.os.environ",
+                         {"HOME": "/home/will", "XDG_RUNTIME_DIR": "/run/user/1000"}), \
+         mock.patch("agent_fleet.transcripts.tempfile.mkdtemp",
+                    return_value="/run/user/1000/alan/native/codex-root") as temporary, \
+         mock.patch("agent_fleet.transcripts.secrets.token_hex",
+                    return_value="0123456789abcdef"), \
+         mock.patch("agent_fleet.transcripts.subprocess.run") as run:
+        transcripts.resume_native("codex", "full-codex-id")
+    temporary.assert_called_once_with(prefix="codex-", dir=Path("/run/user/1000/alan/native"))
+    assert run.call_args_list == [
+        mock.call([
+            "/usr/bin/tmux", "-N", "new-session", "-d", "-s",
+            "fleet@native-0123456789abcdef", "-c", "/work",
+            "-e", "ALAN_NATIVE_INNER=1", "-e",
+            "ALAN_NATIVE_ROOT=/run/user/1000/alan/native/codex-root",
+            "/usr/lib/alan/alan-native-session", "codex", "resume", "full-codex-id",
+        ], check=True),
+        mock.call(["/usr/bin/tmux", "-N", "set-option", "-t",
+                   "fleet@native-0123456789abcdef", "status", "off"], check=True),
+        mock.call(["/usr/bin/tmux", "-N", "set-option", "-t",
+                   "fleet@native-0123456789abcdef", "mouse", "on"], check=True),
+    ]
 
 
 def test_claude_human_activity_excludes_tool_results_and_meta_events(tmp_path):

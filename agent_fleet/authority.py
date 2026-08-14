@@ -14,6 +14,7 @@ FIELDS = {
     "archive-pristine": {"operation", "actor", "agent", "source"},
     "archive-tmux": {"operation", "source", "agent", "transcript"},
     "restore-alan": {"operation", "actor"},
+    "restore-native": {"operation", "actor", "agent", "transcript"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
 }
 
@@ -62,6 +63,11 @@ def execute(request):
         return {}
     if operation == "restore-alan":
         return {"source": f"alan:{alan.resume(request['actor'])}"}
+    if operation == "restore-native":
+        if alan.address_identity(request["actor"], request["agent"]) != request["transcript"]:
+            raise ValueError("actor and transcript identity differ")
+        transcripts.resume_native(request["agent"], request["transcript"])
+        return {"source": f"alan:{request['actor']}"}
     transcripts.resume(
         request["agent"], request["transcript"], request["name"]
     )
