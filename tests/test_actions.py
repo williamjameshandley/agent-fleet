@@ -207,6 +207,24 @@ def test_authority_transcript_restore_returns_native_identity():
     resume.assert_called_once_with("claude", "full-id", "work")
 
 
+def test_authority_restores_the_exact_adopted_native_identity():
+    with mock.patch("agent_fleet.authority.transcripts.resume_native") as resume:
+        value = authority.execute({"operation": "restore-native",
+                                   "actor": "codex-full-id@lovelace",
+                                   "agent": "codex", "transcript": "full-id"})
+    assert value == {"source": "alan:codex-full-id@lovelace"}
+    resume.assert_called_once_with("codex", "full-id")
+
+
+def test_authority_rejects_a_native_restore_for_another_actor():
+    with mock.patch("agent_fleet.authority.transcripts.resume_native") as resume, \
+         pytest.raises(ValueError, match="actor and transcript identity differ"):
+        authority.execute({"operation": "restore-native",
+                           "actor": "codex-other-id@lovelace",
+                           "agent": "codex", "transcript": "full-id"})
+    resume.assert_not_called()
+
+
 def test_authority_rejects_generic_or_extra_operations():
     for request in ({"operation": "exec", "command": "sh"},
                     {"operation": "refresh", "actor": "codex-a@lovelace"},

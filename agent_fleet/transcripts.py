@@ -2,8 +2,10 @@ import json
 import mmap
 import os
 import re
+import secrets
 import shlex
 import subprocess
+import tempfile
 import textwrap
 from collections import deque
 from dataclasses import dataclass, replace
@@ -148,6 +150,26 @@ def resume(agent, session_id, name):
                     item.cwd() or str(Path.home()), *command], check=True)
     subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "status", "on"],
                    check=True)
+
+
+def resume_native(agent, session_id):
+    item = verify(agent, session_id)
+    arguments = (["--resume", item.session_id] if agent == "claude"
+                 else ["resume", item.session_id])
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "alan/native"
+    runtime.mkdir(parents=True, exist_ok=True)
+    root = tempfile.mkdtemp(prefix=f"{agent}-", dir=runtime)
+    name = "fleet@native-" + secrets.token_hex(16)
+    subprocess.run([
+        "/usr/bin/tmux", "-N", "new-session", "-d", "-s", name,
+        "-c", item.cwd() or str(Path.home()),
+        "-e", "ALAN_NATIVE_INNER=1", "-e", f"ALAN_NATIVE_ROOT={root}",
+        "/usr/lib/alan/alan-native-session", agent, *arguments,
+    ], check=True)
+    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name,
+                    "status", "off"], check=True)
+    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name,
+                    "mouse", "on"], check=True)
 
 
 def event_text(agent, event, role):
