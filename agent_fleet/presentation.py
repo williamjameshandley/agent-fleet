@@ -91,9 +91,6 @@ def close(actor):
 
 
 def run(actor, descriptor):
-    if descriptor["state"] in {"retired", "unavailable"}:
-        raise SystemExit(f"Alan actor is {descriptor['state']}: {actor}")
-
     if descriptor["kind"] == "python":
         python_console(actor, alan.native_dir(actor) / "kernel.json")
         return

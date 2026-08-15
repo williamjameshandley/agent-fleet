@@ -7,12 +7,8 @@ import networkx as nx
 from agent_fleet import presentation
 
 
-def descriptor(state="waiting"):
-    return {
-        "addr": "codex-a@newton",
-        "kind": "llm",
-        "state": state,
-    }
+def descriptor():
+    return {"kind": "llm", "cwd": "/home/will"}
 
 
 class Observation:
