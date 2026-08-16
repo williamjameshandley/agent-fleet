@@ -276,17 +276,19 @@ fleet-commander                 persistent Claude Commander session
 Semantic operations compose directly from Python:
 
 ```python
-from agent_fleet.actions import archive, create, rename
+from agent_fleet.actions import archive, rename
 from agent_fleet.daemon import snapshot
 from agent_fleet.protocol import decode_message
 from agent_fleet.viewer import show
 
 sessions, usage, unavailable = decode_message(snapshot())
-key = create(host, agent, name, cwd)
 rename(key, new_name)
 show(key, slot="main")
 archive(key)
 ```
+
+Actor creation is not a Fleet Python operation. Muster's fzf create flow makes
+human-rooted sessions; actors create descendants with Alan's `loop.spawn()`.
 
 Fleet accepts only its finite create, rename, archive and restore
 operations; it publishes no general command surface. Recoverable provider

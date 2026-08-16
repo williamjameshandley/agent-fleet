@@ -54,8 +54,10 @@ def create_tab():
                     "exec /usr/lib/agent-fleet/ui create"], check=True)
 
 
-def create(host, agent, name, cwd):
-    """Create and present one Alan actor from explicit values."""
+def _create_human_root(host, agent, name, cwd):
+    """Create and present one human-rooted Alan actor for Muster."""
+    if os.environ.get("LOOP_SOCKET"):
+        raise RuntimeError("Muster create cannot run with an actor socket; use loop.spawn()")
     value = fleet_action({"operation": "create", "host": host,
                           "agent": agent, "name": name, "cwd": cwd})
     key = value["source"]
@@ -64,13 +66,13 @@ def create(host, agent, name, cwd):
 
 
 def create_prompt():
-    """Collect Muster input and call :func:`create`."""
+    """Collect Muster input and create one human-rooted actor."""
     host = muster_input("host", hosts())
     agent = muster_input("agent", ("codex", "claude"), context=host)
     name = muster_input("name", context=f"{host} · {agent}")
     cwd = muster_input("directory", initial=str(Path.home()),
                        context=f"{host} · {agent} · {name}") or str(Path.home())
-    return create(host, agent, name, cwd)
+    return _create_human_root(host, agent, name, cwd)
 
 
 def rename_tab(key):

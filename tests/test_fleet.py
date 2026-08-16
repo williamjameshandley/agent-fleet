@@ -1992,7 +1992,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_create_materializes_codex_as_an_alan_actor(self):
         host = os.uname().nodename
-        with mock.patch("agent_fleet.actions.muster_input",
+        with mock.patch.dict(os.environ, {"LOOP_SOCKET": ""}), \
+             mock.patch("agent_fleet.actions.muster_input",
                         side_effect=[host, "codex", "analysis.", "/work"]) as prompt, \
              mock.patch("agent_fleet.actions.fleet_action",
                         return_value={"source": f"alan:codex-deadbeef@{host}"}) as action, \
@@ -2006,18 +2007,16 @@ class IdentityTests(unittest.TestCase):
                                        "cwd": "/work"})
         show.assert_called_once_with(f"alan:codex-deadbeef@{host}")
 
-    def test_create_composes_from_explicit_python_values(self):
+    def test_muster_create_rejects_an_actor_socket(self):
         host = os.uname().nodename
-        with mock.patch("agent_fleet.actions.fleet_action",
-                        return_value={"source": f"alan:codex-deadbeef@{host}"}) as action, \
-             mock.patch("agent_fleet.actions.viewer.open_main"), \
-             mock.patch("agent_fleet.actions.muster_input") as prompt:
-            key = actions.create(host, "codex", "analysis.", "/work")
-        self.assertEqual(key, f"alan:codex-deadbeef@{host}")
-        prompt.assert_not_called()
-        action.assert_called_once_with({"operation": "create", "host": host,
-                                       "agent": "codex", "name": "analysis.",
-                                       "cwd": "/work"})
+        with mock.patch.dict(os.environ, {"LOOP_SOCKET": "/actor/loop.sock"}), \
+             mock.patch("agent_fleet.actions.fleet_action") as action:
+            with self.assertRaisesRegex(RuntimeError, "use loop.spawn"):
+                actions._create_human_root(host, "codex", "analysis.", "/work")
+        action.assert_not_called()
+
+    def test_create_is_not_a_public_python_action(self):
+        self.assertFalse(hasattr(actions, "create"))
 
     def test_next_waiting_module_uses_the_composable_action(self):
         source = (Path(__file__).parents[1] / "agent_fleet/next_waiting.py").read_text()
@@ -2025,7 +2024,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_create_uses_claudes_existing_provider_presentation(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
-        with mock.patch("agent_fleet.actions.muster_input",
+        with mock.patch.dict(os.environ, {"LOOP_SOCKET": ""}), \
+             mock.patch("agent_fleet.actions.muster_input",
                         side_effect=[host, "claude", "analysis", "/work"]) as prompt, \
              mock.patch("agent_fleet.actions.fleet_action",
                         return_value={"source": f"alan:claude-deadbeef@{host}"}) as action, \
