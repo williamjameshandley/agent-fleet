@@ -87,7 +87,7 @@ a row drops into the real session for keyboard, mouse or voice input.
 - Selecting an actor opens its real conversational interface. Claude and Codex
   use the deterministic native tmux terminals owned by Alan; Python uses
   `jupyter console` attached to the actor's existing kernel. Bare-model actors
-  retain the minimal Fleet presenter.
+  use alan-tui resumed on the exact actor.
 - Native presentation does not create a second conversation or bypass Alan.
   Input and terminal output from the native interface become the same actor's
   ordinary durable `input`, `evaluation` and `output` operations. Provider JSONL

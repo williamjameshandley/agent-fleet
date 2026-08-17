@@ -11,7 +11,8 @@ across machines, operable with one hand and eventually none.
 - A viewer attaches to the requested tmux terminal session or the actor's native
   provider/kernel interface. Alan owns the exact Claude and Codex tmux terminals;
   Fleet attaches to and previews them directly. Python uses a Fleet-owned Jupyter
-  projection and bare-model actors use Fleet's minimal conversational presenter.
+  projection and bare-model actors present through alan-tui in a Fleet-owned
+  tmux session.
   There is no Main
   mirror, linked observer, copied window, numbered join or parallel ordering.
 - tmux owns terminal sessions, windows, panes and focus. Alan owns actor
