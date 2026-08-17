@@ -342,11 +342,14 @@ def project(sessions, graph, expanded=(), show_python=False):
                      and (show_python or session.agent != "python")]
     principals = {addr for addr, descriptor in descriptors.items()
                   if descriptor["kind"] == "principal"}
+    native_roots = {addr for addr, descriptor in descriptors.items()
+                    if descriptor.get("evaluator") == "native"}
     roots = {}
     for actor in session_order:
-        candidates = nx.ancestors(ancestry, actor) & principals
+        ancestors = nx.ancestors(ancestry, actor)
+        candidates = ancestors & principals
         if not candidates:
-            if descriptors[actor].get("evaluator") == "native":
+            if (ancestors | {actor}) & native_roots:
                 roots[actor] = actor
             continue
         [principal] = candidates

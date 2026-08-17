@@ -482,18 +482,39 @@ def principal_root(current, root, principal="will@newton"):
     current.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
 
 
-def test_projection_includes_adopted_native_root():
+def test_projection_includes_adopted_native_root_and_descendants():
     actor = "codex-native@newton"
+    python = "python-child@newton"
+    llm = "llm-grandchild@newton"
     current = nx.MultiDiGraph()
     current.graph["actors"] = [
-        {"addr": actor, "kind": "codex", "evaluator": "native"}
+        {"addr": actor, "kind": "codex", "evaluator": "native"},
+        {"addr": python, "kind": "python"},
+        {"addr": llm, "kind": "llm"},
     ]
-    current.add_node(f"{actor}#0", stream=actor, op="create")
+    for descendant in (actor, python, llm):
+        current.add_node(f"{descendant}#0", stream=descendant, op="create")
+    for parent, child in ((actor, python), (python, llm)):
+        current.add_node(f"{parent}#1", stream=parent, op="spawn")
+        current.add_edge(f"{parent}#1", f"{child}#0", key="spawn")
 
-    [projected] = alan.project([actor_session(actor, "codex")], current)
+    sessions = [
+        actor_session(actor, "codex"),
+        actor_session(python, "python"),
+        actor_session(llm, "llm"),
+    ]
+
+    [projected] = alan.project(sessions, current)
 
     assert projected.session.ref.key == f"alan:{actor}"
     assert projected.depth == 0
+    assert projected.child_count == 1
+    assert [item.session.ref.key for item in alan.project(
+        sessions, current, expanded={actor}
+    )] == [f"alan:{actor}", f"alan:{llm}"]
+    assert [item.session.ref.key for item in alan.project(
+        sessions, current, expanded={actor, python}, show_python=True
+    )] == [f"alan:{actor}", f"alan:{python}", f"alan:{llm}"]
 
 
 def test_projection_derives_recursive_visible_tree():
