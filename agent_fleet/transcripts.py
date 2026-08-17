@@ -144,7 +144,7 @@ def search(query):
     query = query.casefold()
     rows = []
     for item in catalog().values():
-        cwd = ""
+        cwd = item.cwd() if item.agent == "antigravity" else ""
         matches = []
         with item.path.open() as stream:
             for line_number, line in enumerate(stream, 1):
@@ -308,7 +308,8 @@ def project_native(sessions, transcripts=None):
     transcripts = catalog() if transcripts is None else transcripts
     result = []
     for session in sessions:
-        if session.ref.server.kind != "alan" or session.agent not in AGENTS:
+        if (session.ref.server.kind != "alan" or session.agent not in AGENTS
+                or not session.transcript_id):
             result.append(session)
             continue
         item = transcripts.get((session.agent, session.transcript_id))

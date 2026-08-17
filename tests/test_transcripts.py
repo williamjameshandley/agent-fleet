@@ -594,3 +594,39 @@ def test_agy_panes_present_as_antigravity():
                       "work", 1, 2, 0, 1, "/usr/bin/agy", "waiting", "/work")
     assert session.agent == "antigravity"
     assert session.state == "waiting"
+
+
+def test_alan_antigravity_actor_summary_survives_projection():
+    source = ServerRef("newton", "", 0, 0, "alan")
+    session = Session(SessionRef(source, "antigravity-1"), "work", 1, 0, 0, 1,
+                      "alan", "", "/work", "antigravity", "waiting",
+                      summary="last antigravity output", transcript_id="")
+    [projected] = project_native([session], {})
+    assert projected.summary == "last antigravity output"
+    assert projected.transcript_path == ""
+
+
+def test_antigravity_search_hits_carry_the_summaries_workspace(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setattr(transcripts, "ANTIGRAVITY", tmp_path)
+    path = antigravity_transcript(tmp_path, ANTIGRAVITY_ID, [
+        {"type": "USER_INPUT", "content":
+         "<USER_REQUEST>\nfind the needle\n</USER_REQUEST>",
+         "created_at": "2026-08-17T00:00:00Z"},
+    ])
+    with sqlite3.connect(tmp_path / "conversation_summaries.db") as connection:
+        connection.execute(
+            "create table conversation_summaries"
+            " (conversation_id text, workspace_uris text)")
+        connection.execute(
+            "insert into conversation_summaries values (?, ?)",
+            (ANTIGRAVITY_ID, json.dumps(["file:///srv/project"])))
+    monkeypatch.setattr(transcripts, "all_transcripts",
+                        lambda agent=None: [transcript("antigravity", path)])
+
+    assert transcripts.search("needle") == [{
+        "agent": "antigravity", "session_id": ANTIGRAVITY_ID, "path": str(path),
+        "line": 1, "role": "user", "cwd": "/srv/project",
+        "text": "find the needle",
+    }]
