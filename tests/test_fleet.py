@@ -2001,7 +2001,8 @@ class IdentityTests(unittest.TestCase):
             actions.create_prompt()
         self.assertEqual(
             prompt.call_args_list[1],
-            mock.call("agent", ("codex", "claude"), context=host))
+            mock.call("agent", ("claude", "codex", "grok", "antigravity", "llm"),
+                      context=host))
         action.assert_called_once_with({"operation": "create", "host": host,
                                        "agent": "codex", "name": "analysis.",
                                        "cwd": "/work"})
@@ -2033,7 +2034,8 @@ class IdentityTests(unittest.TestCase):
             actions.create_prompt()
         self.assertEqual(
             prompt.call_args_list[1],
-            mock.call("agent", ("codex", "claude"), context=host))
+            mock.call("agent", ("claude", "codex", "grok", "antigravity", "llm"),
+                      context=host))
         action.assert_called_once_with({"operation": "create", "host": host,
                                        "agent": "claude", "name": "analysis",
                                        "cwd": "/work"})
@@ -2060,7 +2062,7 @@ class IdentityTests(unittest.TestCase):
         fleet.unavailable.clear()
         with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]), \
              mock.patch.object(fleet, "authority") as execute:
-            with self.assertRaisesRegex(ValueError, "Claude or Codex"):
+            with self.assertRaisesRegex(ValueError, "language-actor kind"):
                 asyncio.run(fleet.action({"operation": "create", "host": "lovelace",
                                           "agent": "python", "name": "work",
                                           "cwd": "/work"}))

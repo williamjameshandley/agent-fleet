@@ -6,6 +6,10 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "age
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "agent-fleet"
 HUB = "lovelace"
 
+# Language-actor kinds Muster create offers. Alan's spawn is the authority on
+# which kinds are installed; an unconfigured kind is refused there visibly.
+KINDS = ("claude", "codex", "grok", "antigravity", "llm")
+
 
 def ssh_environment():
     """Return an environment pinned to the user's stable SSH agent socket."""
