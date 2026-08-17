@@ -2043,10 +2043,10 @@ class IdentityTests(unittest.TestCase):
         self.assertNotIn('"tmux", "new-session"',
                          (Path(__file__).parents[1] / "agent_fleet/actions.py").read_text())
 
-    def test_fleet_package_requires_the_canonical_alan_client(self):
+    def test_fleet_package_requires_the_alan_presenter(self):
         package = (Path(__file__).parents[1] / "PKGBUILD").read_text()
-        self.assertIn(
-            "depends=('alan>=1:3.0.0.a1' ", package)
+        self.assertIn("depends=('alan-tui' ", package)
+        self.assertNotIn("depends=('alan'", package)
         self.assertNotIn('"$pkgdir/usr/bin/fleet"', package)
         self.assertIn('"$pkgdir/usr/lib/agent-fleet/ui"', package)
         private = (Path(__file__).parents[1] / "agent_fleet/ui_process.py").read_text()
