@@ -154,7 +154,7 @@ def _timestamp(value):
 
 
 def address_identity(addr, kind):
-    if kind not in {"claude", "codex"}:
+    if kind not in {"claude", "codex", "grok"}:
         return ""
     return addr.split("-", 1)[1].rsplit("@", 1)[0]
 

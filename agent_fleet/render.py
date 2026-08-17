@@ -24,7 +24,8 @@ HOST_COLOUR = {
     "noether": "\033[32m",
 }
 AGENT_COLOUR = {"claude": "\033[38;5;173m", "codex": "\033[38;5;75m",
-                "antigravity": "\033[38;5;141m"}
+                "antigravity": "\033[38;5;141m",
+                "grok": "\033[38;5;250m"}
 COLUMN_ICONS = {"machine": "", "agent": "", "time": "",
                 "status": "", "title": "", "summary": ""}
 

@@ -452,7 +452,7 @@ class Attachment:
         with boundary("resolve", "unavailable"):
             result = locate()
             values = shlex.split(result.stdout.strip())
-            if len(values) != 4 and session.agent not in {"claude", "codex"}:
+            if len(values) != 4 and session.agent not in {"claude", "codex", "grok"}:
                 if remote:
                     self.ssh(key_host(key), shlex.join([
                         "/usr/lib/agent-fleet/fleet-present", actor, session.agent,

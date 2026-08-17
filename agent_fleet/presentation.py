@@ -11,7 +11,7 @@ from . import alan
 
 
 def available(actor, descriptor, session_names):
-    if descriptor["kind"] not in {"claude", "codex", "python", "llm", "antigravity"}:
+    if descriptor["kind"] not in {"claude", "codex", "grok", "python", "llm", "antigravity"}:
         return False
     name = "fleet@alan-" + alan.runtime_name(actor)
     matches = session_names.count(name)
@@ -51,7 +51,7 @@ def target(actor, descriptor):
         stderr=subprocess.DEVNULL,
     )
     if exists.returncode:
-        if descriptor["kind"] in {"claude", "codex"}:
+        if descriptor["kind"] in {"claude", "codex", "grok"}:
             raise RuntimeError(
                 f"{descriptor['kind'].capitalize()} evaluator terminal is unavailable: {actor}"
             )

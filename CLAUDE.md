@@ -9,7 +9,7 @@ across machines, operable with one hand and eventually none.
 ## The source is the view
 
 - A viewer attaches to the requested tmux terminal session or the actor's native
-  provider/kernel interface. Alan owns the exact Claude and Codex tmux terminals;
+  provider/kernel interface. Alan owns the exact Claude, Codex, and Grok tmux terminals;
   Fleet attaches to and previews them directly. Python uses a Fleet-owned Jupyter
   projection and bare-model actors use Fleet's minimal conversational presenter.
   There is no Main
@@ -79,6 +79,6 @@ local `Alan, send` control sends its visible snapshot and presses Enter. The
 composer archives recoverable state but never becomes tmux topology authority.
 mdgtd and shared keyboard/mouse control remain later integrations.
 
-Commander transcript search is a composable Python API over Claude and Codex
-JSONL. Do not introduce MCP servers or a second command interface; this
+Commander transcript search is a composable Python API over Claude, Codex,
+and Grok JSONL. Do not introduce MCP servers or a second command interface; this
 repository follows the post-MCP approach used by Alan Home and Alan Work.

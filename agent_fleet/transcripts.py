@@ -17,7 +17,8 @@ from pathlib import Path
 CLAUDE = Path.home() / ".claude/projects"
 CODEX = Path.home() / ".codex/sessions"
 ANTIGRAVITY = Path.home() / ".gemini/antigravity-cli"
-AGENTS = {"claude", "codex", "antigravity"}
+GROK = Path.home() / ".grok/sessions"
+AGENTS = {"claude", "codex", "grok", "antigravity"}
 PRIORITY = {"needs-action": 0, "working": 1, "waiting": 2, "finished": 3}
 PANE_FORMAT = ("name=#{q:session_name} session=#{q:session_id} pid=#{q:pane_pid} "
                "command=#{q:pane_current_command} title=#{q:pane_title}")
@@ -39,6 +40,9 @@ class Transcript:
     def cwd(self):
         if self.agent == "antigravity":
             return antigravity_workspace(self.session_id)
+        if self.agent == "grok":
+            summary = json.loads((self.path.parent / "summary.json").read_text())
+            return summary["info"]["cwd"]
         for event in self.events():
             if self.agent == "claude" and "cwd" in event:
                 return event["cwd"]
@@ -59,6 +63,8 @@ def transcript(agent, path):
     path = Path(path)
     if agent == "antigravity":
         return Transcript(agent, path.parents[2].name, path, path.stat().st_mtime)
+    if agent == "grok":
+        return Transcript(agent, path.parent.name, path, path.stat().st_mtime)
     return Transcript(agent, path.stem[-36:], path, path.stat().st_mtime)
 
 
@@ -93,6 +99,9 @@ def all_transcripts(agent=None):
         found.extend(
             transcript("antigravity", path) for path in
             ANTIGRAVITY.glob("brain/*/.system_generated/logs/transcript_full.jsonl"))
+    if agent in (None, "grok"):
+        found.extend(transcript("grok", path)
+                     for path in GROK.glob("*/*/updates.jsonl"))
     return sorted(found, key=lambda item: item.mtime, reverse=True)
 
 
@@ -144,7 +153,7 @@ def search(query):
     query = query.casefold()
     rows = []
     for item in catalog().values():
-        cwd = item.cwd() if item.agent == "antigravity" else ""
+        cwd = item.cwd() if item.agent in {"grok", "antigravity"} else ""
         matches = []
         with item.path.open() as stream:
             for line_number, line in enumerate(stream, 1):
@@ -176,6 +185,7 @@ def resume(agent, session_id, name):
     item = verify(agent, session_id)
     command = {"claude": ["claude", "--resume", item.session_id],
                "codex": ["codex", "resume", item.session_id],
+               "grok": ["grok", "--resume", item.session_id],
                "antigravity": ["agy", "--conversation", item.session_id]}[agent]
     subprocess.run(["/usr/bin/tmux", "-N", "new-session", "-d", "-s", name, "-c",
                     item.cwd() or str(Path.home()), *command], check=True)
@@ -185,8 +195,8 @@ def resume(agent, session_id, name):
 
 def resume_native(agent, session_id):
     item = verify(agent, session_id)
-    arguments = (["--resume", item.session_id] if agent == "claude"
-                 else ["resume", item.session_id])
+    arguments = (["resume", item.session_id] if agent == "codex"
+                 else ["--resume", item.session_id])
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "alan/native"
     runtime.mkdir(parents=True, exist_ok=True)
     root = tempfile.mkdtemp(prefix=f"{agent}-", dir=runtime)
@@ -214,6 +224,12 @@ def event_text(agent, event, role):
         wanted = {"assistant": "agent_message", "user": "user_message"}[role]
         if event["payload"]["type"] == wanted:
             return event["payload"]["message"]
+    if agent == "grok" and "session/update" in event.get("method", ""):
+        update = event["params"]["update"]
+        wanted = {"assistant": "agent_message_chunk",
+                  "user": "user_message_chunk"}[role]
+        if update.get("sessionUpdate") == wanted:
+            return update["content"]["text"]
     if agent == "antigravity":
         wanted = {"assistant": "PLANNER_RESPONSE", "user": "USER_INPUT"}[role]
         if event.get("type") == wanted:
@@ -270,11 +286,16 @@ def reverse_events(path):
                     yield json.loads(line)
 
 
+def event_time(value):
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+
+
 def last_event_time(path):
     for event in reverse_events(path):
         if "timestamp" in event:
-            return int(datetime.fromisoformat(
-                event["timestamp"].replace("Z", "+00:00")).timestamp())
+            return event_time(event["timestamp"])
     return 0
 
 
@@ -288,12 +309,15 @@ def last_human_time(item):
                       any(block.get("type") == "text" for block in content)))
         elif item.agent == "codex" and event.get("type") == "event_msg":
             human = event.get("payload", {}).get("type") == "user_message"
+        elif item.agent == "grok":
+            human = ("session/update" in event.get("method", "")
+                     and event["params"]["update"].get("sessionUpdate")
+                     == "user_message_chunk")
         elif item.agent == "antigravity":
             human = event.get("type") == "USER_INPUT"
         stamp = event.get("timestamp") or event.get("created_at")
         if human and stamp:
-            return int(datetime.fromisoformat(
-                stamp.replace("Z", "+00:00")).timestamp())
+            return event_time(stamp)
     return 0
 
 
@@ -372,6 +396,43 @@ def antigravity_candidates(pids):
             if match:
                 conversations.add(match.group(1))
     return conversations
+
+
+def grok_state(item):
+    active, summary, updated = False, "", 0
+    for event in item.events():
+        if "timestamp" in event:
+            updated = event_time(event["timestamp"])
+        if "session/update" not in event.get("method", ""):
+            continue
+        update = event["params"]["update"]
+        kind = update.get("sessionUpdate")
+        if kind == "user_message_chunk":
+            active = True
+        elif kind == "turn_completed":
+            active = False
+        elif kind == "agent_message_chunk":
+            summary = update["content"]["text"]
+    return ("working" if active else "waiting"), summary, updated
+
+
+def grok_candidates(pids):
+    sessions = {}
+    for pid in pids:
+        try:
+            descriptors = list(Path(f"/proc/{pid}/fd").iterdir())
+        except OSError:
+            continue
+        for fd in descriptors:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            match = re.search(
+                r"/\.grok/sessions/[^/]+/([0-9a-f-]{36})/", target)
+            if match:
+                sessions[match.group(1)] = Path(target).parent
+    return sessions
 
 
 def process_tree():
@@ -489,6 +550,23 @@ def observe(sessions, transcripts=None):
                 state = "needs-action"
                 summary = f"Transcript is invalid: {path.name}: {error}"
                 updated = int(path.stat().st_mtime)
+                human_activity = 0
+        elif agent == "grok":
+            identities = grok_candidates(tree)
+            if len(identities) != 1:
+                continue
+            [(identity, directory)] = identities.items()
+            path = directory / "updates.jsonl"
+            if not path.exists():
+                continue
+            item = transcript("grok", path)
+            try:
+                state, summary, updated = grok_state(item)
+                human_activity = last_human_time(item)
+            except (json.JSONDecodeError, ValueError) as error:
+                state = "needs-action"
+                summary = f"Transcript is invalid: {item.path.name}: {error}"
+                updated = int(item.mtime)
                 human_activity = 0
         elif agent == "antigravity":
             conversations = antigravity_candidates(tree)

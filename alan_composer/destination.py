@@ -62,7 +62,7 @@ def _active_pane(session):
     host = session.ref.server.host
     session_id = session.ref.session_id
     if (getattr(session.ref.server, "kind", "tmux") == "alan"
-            and session.agent in {"claude", "codex"}):
+            and session.agent in {"claude", "codex", "grok"}):
         session_id = "=fleet@alan-" + alan.runtime_name(session_id) + ":"
     command = ["/usr/bin/tmux", "-N", "display-message", "-p", "-t", session_id,
                "#{pane_id}"]

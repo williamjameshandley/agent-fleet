@@ -36,7 +36,7 @@ def validate_proposal(proposal, request):
         session = sessions[proposal["source"]]
         retained = (session["agent"] == "llm" and
                     proposal["source"].startswith("alan:")) or (
-            session["agent"] in {"claude", "codex"} and
+            session["agent"] in {"claude", "codex", "grok"} and
             (session.get("transcript_id") or session.get("worked") is False))
         if not retained:
             raise ValueError("source is not a recoverable LLM session")

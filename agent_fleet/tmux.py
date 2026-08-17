@@ -319,6 +319,7 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     transcript_roots = [path for path in (Path.home() / ".claude/projects",
                                           Path.home() / ".codex/sessions",
+                                          Path.home() / ".grok/sessions",
                                           Path.home() / ".gemini/antigravity-cli/brain")
                         if path.exists()]
     paths = transcript_roots + ([RUNTIME] if RUNTIME.exists() else [])
