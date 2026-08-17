@@ -477,3 +477,156 @@ def test_claude_preview_keeps_only_the_last_eight_messages(tmp_path, monkeypatch
     assert "message 1" not in rendered
     assert "message 2" in rendered
     assert "message 9" in rendered
+
+
+ANTIGRAVITY_ID = "0a1b2c3d-0000-4000-8000-000000000001"
+
+
+def antigravity_transcript(root, identity, events):
+    path = (root / "brain" / identity / ".system_generated/logs"
+            / "transcript_full.jsonl")
+    path.parent.mkdir(parents=True)
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    return path
+
+
+def test_antigravity_identity_comes_from_its_brain_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(transcripts, "ANTIGRAVITY", tmp_path)
+    path = antigravity_transcript(tmp_path, ANTIGRAVITY_ID, [
+        {"step_index": 0, "type": "USER_INPUT", "content": "hello",
+         "created_at": "2026-08-17T00:00:00Z"}])
+
+    assert transcript("antigravity", path).session_id == ANTIGRAVITY_ID
+    (item,) = transcripts.all_transcripts("antigravity")
+    assert item.session_id == ANTIGRAVITY_ID
+    assert item.path == path
+
+
+def test_antigravity_resume_uses_the_conversation_identity(monkeypatch):
+    item = type("Transcript", (), {"session_id": ANTIGRAVITY_ID,
+                                   "cwd": lambda self: "/work"})()
+    monkeypatch.setattr(transcripts, "find", lambda session_id, agent: item)
+    with mock.patch("agent_fleet.transcripts.subprocess.run") as run:
+        transcripts.resume("antigravity", ANTIGRAVITY_ID, "work")
+    assert run.call_args_list[0] == mock.call(
+        ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "work", "-c", "/work",
+         "agy", "--conversation", ANTIGRAVITY_ID], check=True)
+
+
+def test_antigravity_user_text_is_unwrapped_and_roles_are_mapped():
+    user = {"type": "USER_INPUT", "content":
+            "<USER_REQUEST>\nfix the build\n</USER_REQUEST>\n"
+            "<ADDITIONAL_METADATA>\nThe current local time is now.\n"
+            "</ADDITIONAL_METADATA>"}
+    reply = {"type": "PLANNER_RESPONSE", "content": "done"}
+
+    assert transcripts.event_text("antigravity", user, "user") == "fix the build"
+    assert transcripts.event_text("antigravity", user, "assistant") == ""
+    assert transcripts.event_text("antigravity", reply, "assistant") == "done"
+    assert transcripts.event_text("antigravity", reply, "user") == ""
+
+
+def test_antigravity_state_is_working_until_the_turn_checkpoint(tmp_path):
+    working = antigravity_transcript(tmp_path, ANTIGRAVITY_ID, [
+        {"type": "USER_INPUT", "content": "task",
+         "created_at": "2026-08-17T00:00:00Z"},
+        {"type": "CONVERSATION_HISTORY", "created_at": "2026-08-17T00:00:01Z"},
+    ])
+    item = transcript("antigravity", working)
+    state, summary, updated = transcripts.antigravity_state(item)
+    assert (state, summary, updated) == ("working", "", 1786924801)
+
+    with working.open("a") as stream:
+        stream.write(json.dumps({
+            "type": "PLANNER_RESPONSE", "content": "all fixed",
+            "created_at": "2026-08-17T00:00:02Z"}) + "\n")
+        stream.write(json.dumps({
+            "type": "CHECKPOINT", "content": "{{ CHECKPOINT 0 }}",
+            "created_at": "2026-08-17T00:00:03Z"}) + "\n")
+    state, summary, updated = transcripts.antigravity_state(item)
+    assert (state, summary, updated) == ("waiting", "all fixed", 1786924803)
+
+
+def test_antigravity_human_activity_uses_created_at(tmp_path):
+    path = antigravity_transcript(tmp_path, ANTIGRAVITY_ID, [
+        {"type": "USER_INPUT", "content": "one",
+         "created_at": "2026-08-17T00:00:00Z"},
+        {"type": "PLANNER_RESPONSE", "content": "reply",
+         "created_at": "2026-08-17T00:00:01Z"},
+        {"type": "USER_INPUT", "content": "two",
+         "created_at": "2026-08-17T00:00:02Z"},
+        {"type": "CHECKPOINT", "created_at": "2026-08-17T00:00:03Z"},
+    ])
+    assert last_human_time(transcript("antigravity", path)) == 1786924802
+
+
+def test_antigravity_workspace_reads_the_summaries_database(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setattr(transcripts, "ANTIGRAVITY", tmp_path)
+    assert transcripts.antigravity_workspace(ANTIGRAVITY_ID) == ""
+
+    with sqlite3.connect(tmp_path / "conversation_summaries.db") as connection:
+        connection.execute(
+            "create table conversation_summaries"
+            " (conversation_id text, workspace_uris text)")
+        connection.execute(
+            "insert into conversation_summaries values (?, ?)",
+            (ANTIGRAVITY_ID, json.dumps(["file:///work/project"])))
+    assert transcripts.antigravity_workspace(ANTIGRAVITY_ID) == "/work/project"
+    assert transcripts.antigravity_workspace("missing") == ""
+
+
+def test_antigravity_candidates_scan_open_conversation_databases(tmp_path):
+    import os
+
+    database = tmp_path / "antigravity-cli/conversations" / f"{ANTIGRAVITY_ID}.db"
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"")
+    with database.open("rb"):
+        conversations = transcripts.antigravity_candidates([os.getpid()])
+    assert conversations == {ANTIGRAVITY_ID}
+    assert transcripts.antigravity_candidates([os.getpid()]) == set()
+
+
+def test_agy_panes_present_as_antigravity():
+    session = Session(SessionRef(ServerRef("newton", "/tmp/tmux/default", 12, 10), "$1"),
+                      "work", 1, 2, 0, 1, "/usr/bin/agy", "waiting", "/work")
+    assert session.agent == "antigravity"
+    assert session.state == "waiting"
+
+
+def test_alan_antigravity_actor_summary_survives_projection():
+    source = ServerRef("newton", "", 0, 0, "alan")
+    session = Session(SessionRef(source, "antigravity-1"), "work", 1, 0, 0, 1,
+                      "alan", "", "/work", "antigravity", "waiting",
+                      summary="last antigravity output", transcript_id="")
+    [projected] = project_native([session], {})
+    assert projected.summary == "last antigravity output"
+    assert projected.transcript_path == ""
+
+
+def test_antigravity_search_hits_carry_the_summaries_workspace(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setattr(transcripts, "ANTIGRAVITY", tmp_path)
+    path = antigravity_transcript(tmp_path, ANTIGRAVITY_ID, [
+        {"type": "USER_INPUT", "content":
+         "<USER_REQUEST>\nfind the needle\n</USER_REQUEST>",
+         "created_at": "2026-08-17T00:00:00Z"},
+    ])
+    with sqlite3.connect(tmp_path / "conversation_summaries.db") as connection:
+        connection.execute(
+            "create table conversation_summaries"
+            " (conversation_id text, workspace_uris text)")
+        connection.execute(
+            "insert into conversation_summaries values (?, ?)",
+            (ANTIGRAVITY_ID, json.dumps(["file:///srv/project"])))
+    monkeypatch.setattr(transcripts, "all_transcripts",
+                        lambda agent=None: [transcript("antigravity", path)])
+
+    assert transcripts.search("needle") == [{
+        "agent": "antigravity", "session_id": ANTIGRAVITY_ID, "path": str(path),
+        "line": 1, "role": "user", "cwd": "/srv/project",
+        "text": "find the needle",
+    }]

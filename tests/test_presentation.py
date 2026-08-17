@@ -8,7 +8,7 @@ from agent_fleet import presentation
 
 
 def descriptor():
-    return {"kind": "llm", "cwd": "/home/will"}
+    return {"kind": "antigravity", "cwd": "/home/will"}
 
 
 class Observation:
@@ -54,6 +54,9 @@ def test_presentation_availability_is_derived_from_exact_native_evidence(tmp_pat
         (native / "kernel.json").touch()
         assert presentation.available(
             llm, {"kind": "llm", "cwd": str(tmp_path)}, names)
+        assert presentation.available(
+            "antigravity-a@newton", {"kind": "antigravity", "cwd": str(tmp_path)},
+            names)
         assert not presentation.available(
             "python-gone@newton",
             {"kind": "python", "cwd": str(tmp_path / "gone")}, names)
@@ -71,6 +74,48 @@ def test_disappeared_native_presentation_immediately_removes_language_eligibilit
     name = "fleet@alan-" + presentation.alan.runtime_name(actor)
     assert presentation.available(actor, descriptor, [name])
     assert not presentation.available(actor, descriptor, [])
+
+
+def test_presentation_sends_input_and_renders_its_output(capsys):
+    observations = mock.Mock()
+    with mock.patch.object(presentation.loop, "observe",
+                           return_value=observations) as observe, \
+         mock.patch("builtins.input", side_effect=["inspect", EOFError]), \
+         mock.patch.object(presentation.loop, "send",
+                           return_value={"input": "antigravity-a@newton#1"}) as send, \
+         mock.patch.object(presentation.alan, "wait_output",
+                           return_value={"status": "ok", "value": "done"}) as wait:
+        presentation.run("antigravity-a@newton", descriptor())
+
+    observe.assert_called_once_with(stream=True, actor="antigravity-a@newton")
+    wait.assert_called_once_with("antigravity-a@newton#1", observations)
+    observations.close.assert_called_once_with()
+    send.assert_called_once_with(
+        "antigravity-a@newton", {"kind": "prompt", "text": "inspect"})
+    assert capsys.readouterr().out == "done\n\n"
+
+
+def test_interrupt_controls_the_active_actor_then_observes_its_output(capsys):
+    observations = mock.Mock()
+    with mock.patch.object(presentation.loop, "observe",
+                           return_value=observations), \
+         mock.patch("builtins.input", side_effect=["inspect", EOFError]), \
+         mock.patch.object(presentation.loop, "send",
+                           return_value={"input": "antigravity-a@newton#1"}), \
+         mock.patch.object(presentation.alan, "wait_output",
+                           side_effect=[KeyboardInterrupt, {
+                               "status": "interrupted", "error": "interrupted",
+                           }]) as wait, \
+         mock.patch.object(presentation.loop, "control") as control:
+        presentation.run("antigravity-a@newton", descriptor())
+
+    control.assert_called_once_with("antigravity-a@newton", "interrupt")
+    assert wait.call_args_list == [
+        mock.call("antigravity-a@newton#1", observations),
+        mock.call("antigravity-a@newton#1", observations),
+    ]
+    observations.close.assert_called_once_with()
+    assert capsys.readouterr().out == "interrupted\n\n"
 
 
 def test_run_owns_only_the_python_presentation():
@@ -228,9 +273,9 @@ def test_close_rejects_non_bare_model_terminals():
             try:
                 presentation.close(actor)
             except RuntimeError as error:
-                assert "bare-model" in str(error)
+                assert "conversational" in str(error)
             else:
-                raise AssertionError("Fleet closed a non-bare-model presentation")
+                raise AssertionError("Fleet closed a non-conversational presentation")
         run.assert_not_called()
 
 
@@ -242,6 +287,10 @@ def test_close_kills_the_exact_bare_model_presentation():
     run.assert_called_once_with(
         ["/usr/bin/tmux", "-N", "kill-session", "-t", "=fleet@alan-hash"], text=True,
         stdout=presentation.subprocess.DEVNULL, stderr=presentation.subprocess.PIPE)
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run", return_value=present) as run:
+        presentation.close("antigravity-a@newton")
+    run.assert_called_once()
 
 
 def test_close_accepts_an_absent_bare_model_presentation():

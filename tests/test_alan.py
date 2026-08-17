@@ -142,6 +142,21 @@ def test_explicit_empty_graph_is_not_replaced_by_a_live_observation():
     observe.assert_not_called()
 
 
+def test_output_is_selected_by_fifo_input_ordinal():
+    current = graph(
+        {"op": "create"},
+        {"op": "input"},
+        {"op": "evaluation"},
+        {"op": "output", "status": "ok", "value": "first"},
+        {"op": "input"},
+        {"op": "evaluation"},
+        {"op": "output", "status": "ok", "value": "second"},
+    )
+    with mock.patch.object(
+            alan.loop, "observe", return_value=ObservationStream((current,))):
+        assert alan.wait_output("codex-a@newton#4")["value"] == "second"
+
+
 def test_preview_is_a_projection_of_input_and_output_operations():
     current = graph(
         {"op": "create"},
@@ -446,7 +461,9 @@ def test_production_observation_calls_are_confined_to_explicit_scopes():
         ("alan.py", "commander_actor", ("actors", "stream")),
         ("alan.py", "preview", ()),
         ("alan.py", "verify_pristine", ("actor",)),
+        ("alan.py", "wait_output", ("actor", "stream")),
         ("commander_client.py", "exchange", ("actor", "stream")),
+        ("presentation.py", "run", ("actor", "stream")),
     ]
 
 

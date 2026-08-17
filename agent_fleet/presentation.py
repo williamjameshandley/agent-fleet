@@ -11,7 +11,7 @@ from . import alan
 
 
 def available(actor, descriptor, session_names):
-    if descriptor["kind"] not in {"claude", "codex", "python", "llm"}:
+    if descriptor["kind"] not in {"claude", "codex", "python", "llm", "antigravity"}:
         return False
     name = "fleet@alan-" + alan.runtime_name(actor)
     matches = session_names.count(name)
@@ -22,7 +22,7 @@ def available(actor, descriptor, session_names):
         return False
     if descriptor["kind"] == "python":
         return (alan.native_dir(actor) / "kernel.json").is_file()
-    return descriptor["kind"] == "llm"
+    return descriptor["kind"] in {"llm", "antigravity"}
 
 
 class PythonConsole(ZMQTerminalIPythonApp):
@@ -82,8 +82,8 @@ def attach(actor, descriptor):
 
 
 def close(actor):
-    if not actor.startswith("llm-"):
-        raise RuntimeError("Fleet owns only bare-model actor presentations")
+    if not actor.startswith(("llm-", "antigravity-")):
+        raise RuntimeError("Fleet owns only conversational actor presentations")
     name = "fleet@alan-" + alan.runtime_name(actor)
     target = "=" + name
     result = subprocess.run(
@@ -95,6 +95,28 @@ def close(actor):
 
 
 def run(actor, descriptor):
-    if descriptor["kind"] != "python":
+    if descriptor["kind"] == "python":
+        python_console(actor, alan.native_dir(actor) / "kernel.json")
+        return
+    if descriptor["kind"] != "antigravity":
         raise SystemExit(f"{descriptor['kind']} has no Fleet-owned presentation")
-    python_console(actor, alan.native_dir(actor) / "kernel.json")
+
+    observations = loop.observe(stream=True, actor=actor)
+    try:
+        while True:
+            try:
+                text = input("> ")
+            except EOFError:
+                print()
+                return
+            if not text:
+                continue
+            result = loop.send(actor, {"kind": "prompt", "text": text})
+            try:
+                output = alan.wait_output(result["input"], observations)
+            except KeyboardInterrupt:
+                loop.control(actor, "interrupt")
+                output = alan.wait_output(result["input"], observations)
+            print(output.get("value", output.get("error", output["status"])), flush=True)
+    finally:
+        observations.close()
