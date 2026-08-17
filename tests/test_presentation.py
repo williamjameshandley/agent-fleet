@@ -82,13 +82,14 @@ def test_presentation_sends_input_and_renders_its_output(capsys):
                            return_value=observations) as observe, \
          mock.patch("builtins.input", side_effect=["inspect", EOFError]), \
          mock.patch.object(presentation.loop, "send",
-                           return_value={"input": "antigravity-a@newton#1"}) as send, \
+                           return_value={"send": "will@newton#7", "result": "will@newton#8"}) as send, \
          mock.patch.object(presentation.alan, "wait_output",
                            return_value={"status": "ok", "value": "done"}) as wait:
         presentation.run("antigravity-a@newton", descriptor())
 
     observe.assert_called_once_with(stream=True, actor="antigravity-a@newton")
-    wait.assert_called_once_with("antigravity-a@newton#1", observations)
+    wait.assert_called_once_with(
+        "antigravity-a@newton", "will@newton#8", observations)
     observations.close.assert_called_once_with()
     send.assert_called_once_with(
         "antigravity-a@newton", {"kind": "prompt", "text": "inspect"})
@@ -101,7 +102,7 @@ def test_interrupt_controls_the_active_actor_then_observes_its_output(capsys):
                            return_value=observations), \
          mock.patch("builtins.input", side_effect=["inspect", EOFError]), \
          mock.patch.object(presentation.loop, "send",
-                           return_value={"input": "antigravity-a@newton#1"}), \
+                           return_value={"send": "will@newton#7", "result": "will@newton#8"}), \
          mock.patch.object(presentation.alan, "wait_output",
                            side_effect=[KeyboardInterrupt, {
                                "status": "interrupted", "error": "interrupted",
@@ -111,8 +112,8 @@ def test_interrupt_controls_the_active_actor_then_observes_its_output(capsys):
 
     control.assert_called_once_with("antigravity-a@newton", "interrupt")
     assert wait.call_args_list == [
-        mock.call("antigravity-a@newton#1", observations),
-        mock.call("antigravity-a@newton#1", observations),
+        mock.call("antigravity-a@newton", "will@newton#8", observations),
+        mock.call("antigravity-a@newton", "will@newton#8", observations),
     ]
     observations.close.assert_called_once_with()
     assert capsys.readouterr().out == "interrupted\n\n"

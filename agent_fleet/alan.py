@@ -496,13 +496,18 @@ def label(addr):
     return path.read_text().rstrip("\n") if path.exists() else addr
 
 
-def wait_output(input_reference, observations=None):
-    actor = input_reference.rsplit("#", 1)[0]
+def wait_output(actor, result_reference, observations=None):
     owned = observations is None
     if owned:
         observations = loop.observe(stream=True, actor=actor)
     try:
         for graph in observations:
+            result = graph.nodes.get(result_reference)
+            if result is None:
+                continue
+            if "input" not in result:
+                raise RuntimeError(f"delivery reported no input: {result_reference}")
+            delivered = result["input"]
             stream = sorted(
                 ((reference, operation)
                  for reference, operation in graph.nodes(data=True)
@@ -511,7 +516,9 @@ def wait_output(input_reference, observations=None):
             )
             inputs = [reference for reference, operation in stream
                       if operation["op"] == "input"]
-            ordinal = inputs.index(input_reference)
+            if delivered not in inputs:
+                continue
+            ordinal = inputs.index(delivered)
             outputs = [operation for _, operation in stream
                        if operation["op"] == "output"]
             if len(outputs) > ordinal:
