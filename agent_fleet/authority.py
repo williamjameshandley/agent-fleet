@@ -3,6 +3,7 @@
 import json
 
 from . import alan, presentation, tmux, transcripts
+from .config import KINDS
 
 
 FIELDS = {
@@ -26,8 +27,8 @@ def execute(request):
            for name, value in request.items() if name != "operation"):
         raise ValueError("invalid authority action")
     if operation == "create":
-        if request["agent"] not in {"claude", "codex"}:
-            raise ValueError("create requires Claude or Codex")
+        if request["agent"] not in KINDS:
+            raise ValueError("create requires a language-actor kind")
         addr = alan.create(request["agent"], request["name"], request["cwd"])
         return {"source": f"alan:{addr}"}
     if operation == "rename-alan":

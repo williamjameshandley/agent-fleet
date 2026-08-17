@@ -5,7 +5,7 @@ import json
 import time
 from pathlib import Path
 
-from .config import hosts
+from .config import KINDS, hosts
 from .remote import find
 from .daemon import action as fleet_action, history as history_projection, history_search
 from .daemon import preview as pane_preview, snapshot
@@ -68,7 +68,7 @@ def _create_human_root(host, agent, name, cwd):
 def create_prompt():
     """Collect Muster input and create one human-rooted actor."""
     host = muster_input("host", hosts())
-    agent = muster_input("agent", ("codex", "claude"), context=host)
+    agent = muster_input("agent", KINDS, context=host)
     name = muster_input("name", context=f"{host} · {agent}")
     cwd = muster_input("directory", initial=str(Path.home()),
                        context=f"{host} · {agent} · {name}") or str(Path.home())
