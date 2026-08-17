@@ -56,7 +56,7 @@ class Session:
         if self.agent_name:
             return self.agent_name
         command = self.command.rsplit("/", 1)[-1]
-        if command in {"claude", "codex", "gemini"}:
+        if command in {"claude", "codex", "gemini", "grok"}:
             return command
         if command == "agy":
             return "antigravity"
@@ -72,6 +72,9 @@ class Session:
         if self.agent == "claude" and any(x in title for x in ("✳", "working", "thinking")):
             return "working"
         if self.agent == "codex" and any(x in title for x in ("working", "thinking")):
+            return "working"
+        if self.agent == "grok" and any(
+                x in title for x in ("waiting for response", "responding", "thinking")):
             return "working"
         return "waiting"
 

@@ -3492,7 +3492,7 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("#{q:socket_path}", ssh.call_args.args[1])
 
     def test_alan_preview_captures_the_actor_owned_terminal(self):
-        for kind in ("claude", "codex"):
+        for kind in ("claude", "codex", "grok"):
             with self.subTest(kind=kind):
                 self.assert_actor_preview_captures_terminal(kind)
 

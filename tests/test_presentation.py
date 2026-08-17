@@ -235,6 +235,20 @@ def test_native_actor_does_not_get_a_fleet_owned_fallback_terminal():
     run.assert_called_once()
 
 
+def test_grok_does_not_get_a_fleet_owned_fallback_terminal():
+    missing = __import__("subprocess").CompletedProcess([], 1)
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run", return_value=missing) as run:
+        try:
+            presentation.attach(
+                "grok-a@newton", {"kind": "grok", "cwd": "/work"})
+        except RuntimeError as error:
+            assert "evaluator terminal is unavailable" in str(error)
+        else:
+            raise AssertionError("Fleet created a second Grok presentation")
+    run.assert_called_once()
+
+
 def test_close_rejects_non_bare_model_terminals():
     for actor in (
         "python-a@newton",

@@ -56,7 +56,7 @@ def events(host):
                         key = request["key"]
                         if (not key.startswith("alan:") or
                                 key.removeprefix("alan:").split("-", 1)[0]
-                                in {"claude", "codex"}):
+                                in {"claude", "codex", "grok"}):
                             controls.get()
                         with alan.full_graph() as graph:
                             text = capture(request["key"], request["columns"],
@@ -823,7 +823,7 @@ class Fleet:
         host = session.ref.server.host
         self.available(host)
         if session.ref.server.kind == "alan":
-            if session.agent not in {"llm", "claude", "codex", "antigravity"}:
+            if session.agent not in {"llm", "claude", "codex", "grok", "antigravity"}:
                 raise ValueError("archive requires a language actor")
             if session.attachment:
                 if not session.transcript_id:
@@ -844,7 +844,7 @@ class Fleet:
                              "actor": session.ref.session_id,
                              "agent": session.agent}
         else:
-            if (session.agent not in {"claude", "codex", "antigravity"}
+            if (session.agent not in {"claude", "codex", "grok", "antigravity"}
                     or not session.transcript_id):
                 raise ValueError("archive requires a durable agent transcript identity")
             authority = {"operation": "archive-tmux", "source": key,
@@ -911,7 +911,7 @@ class Fleet:
             except ValueError:
                 raise ValueError("invalid transcript history identity") from None
             self.available(host)
-            if agent not in {"claude", "codex", "antigravity"} or not transcript:
+            if agent not in {"claude", "codex", "grok", "antigravity"} or not transcript:
                 raise ValueError("invalid transcript history identity")
             if any(session.ref.server.host == host and session.agent == agent
                    and session.transcript_id == transcript
@@ -1000,7 +1000,7 @@ class Fleet:
         for host, observation in zip(source_hosts, observations):
             owners = {}
             for actor in observation["actors"]:
-                if actor.get("kind") not in {"claude", "codex"}:
+                if actor.get("kind") not in {"claude", "codex", "grok"}:
                     continue
                 identity = actor["kind"], address_identity(actor["addr"], actor["kind"])
                 owners.setdefault(identity, []).append(actor)
@@ -1037,7 +1037,7 @@ class Fleet:
                 native_id = address_identity(actor["addr"], actor.get("kind"))
                 identity = host, actor.get("kind"), native_id
                 retained = (actor.get("kind") == "llm" or
-                            actor.get("kind") in {"claude", "codex", "antigravity"})
+                            actor.get("kind") in {"claude", "codex", "grok", "antigravity"})
                 if native_id:
                     claimed.setdefault(identity, []).append(actor["addr"])
                 if retained and actor.get("state") in {"retired", "unavailable"}:
@@ -1145,7 +1145,7 @@ class Fleet:
         native = (len(descriptors) == 1
                   and descriptors[0].get("evaluator") == "native"
                   and not descriptors[0].get("managed", False))
-        if session.attachment or not native or session.agent not in {"claude", "codex"}:
+        if session.attachment or not native or session.agent not in {"claude", "codex", "grok"}:
             return session
         if not session.transcript_id:
             raise ValueError("native restore requires a durable transcript identity")

@@ -38,22 +38,22 @@ def execute(request):
         tmux.mutate(request["source"], "rename", [request["name"]])
         return {"name": request["name"]}
     if operation == "archive-alan":
-        if request["agent"] not in {"llm", "claude", "codex", "antigravity"}:
+        if request["agent"] not in {"llm", "claude", "codex", "grok", "antigravity"}:
             raise ValueError("archive requires a language actor")
         if request["agent"] in {"llm", "antigravity"}:
             presentation.close(request["actor"])
         alan.retire(request["actor"])
         return {}
     if operation == "archive-composite":
-        if request["agent"] not in {"claude", "codex"}:
-            raise ValueError("archive requires Claude or Codex")
+        if request["agent"] not in {"claude", "codex", "grok"}:
+            raise ValueError("archive requires a natively adopted agent")
         transcripts.verify(request["agent"], request["transcript"])
         tmux.mutate(request["source"], "archive", [])
         alan.retire(request["actor"])
         return {}
     if operation == "archive-pristine":
-        if request["agent"] not in {"claude", "codex"}:
-            raise ValueError("archive requires Claude or Codex")
+        if request["agent"] not in {"claude", "codex", "grok"}:
+            raise ValueError("archive requires a natively adopted agent")
         alan.verify_pristine(request["actor"])
         tmux.mutate(request["source"], "archive", [])
         alan.retire(request["actor"])

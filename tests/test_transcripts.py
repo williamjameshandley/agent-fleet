@@ -630,3 +630,125 @@ def test_antigravity_search_hits_carry_the_summaries_workspace(tmp_path, monkeyp
         "line": 1, "role": "user", "cwd": "/srv/project",
         "text": "find the needle",
     }]
+
+
+GROK_ID = "01a00000-0000-7000-8000-000000000001"
+
+
+def grok_update(timestamp, kind, text=None, method="session/update", **fields):
+    update = {"sessionUpdate": kind, **fields}
+    if text is not None:
+        update["content"] = {"type": "text", "text": text}
+    return {"timestamp": timestamp, "method": method,
+            "params": {"sessionId": GROK_ID, "update": update}}
+
+
+def grok_session(root, identity, events, cwd="/work"):
+    directory = root / "%2Fwork" / identity
+    directory.mkdir(parents=True)
+    (directory / "summary.json").write_text(json.dumps(
+        {"info": {"id": identity, "cwd": cwd}}))
+    path = directory / "updates.jsonl"
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    return path
+
+
+def test_grok_identity_comes_from_its_session_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(transcripts, "GROK", tmp_path)
+    path = grok_session(tmp_path, GROK_ID, [
+        grok_update(100, "user_message_chunk", "hello")])
+
+    item = transcript("grok", path)
+    assert item.session_id == GROK_ID
+    assert item.cwd() == "/work"
+    (found,) = transcripts.all_transcripts("grok")
+    assert found.session_id == GROK_ID
+    assert found.path == path
+
+
+def test_grok_resume_uses_the_session_identity(monkeypatch):
+    item = type("Transcript", (), {"session_id": GROK_ID,
+                                   "cwd": lambda self: "/work"})()
+    monkeypatch.setattr(transcripts, "find", lambda session_id, agent: item)
+    with mock.patch("agent_fleet.transcripts.subprocess.run") as run:
+        transcripts.resume("grok", GROK_ID, "work")
+    assert run.call_args_list[0] == mock.call(
+        ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "work", "-c", "/work",
+         "grok", "--resume", GROK_ID], check=True)
+
+
+def test_grok_native_resume_arguments_use_the_flag_form(monkeypatch):
+    item = type("Transcript", (), {"session_id": GROK_ID,
+                                   "cwd": lambda self: "/work"})()
+    monkeypatch.setattr(transcripts, "verify", lambda agent, session_id: item)
+    with mock.patch("agent_fleet.transcripts.subprocess.run") as run:
+        transcripts.resume_native("grok", GROK_ID)
+    arguments = run.call_args_list[0].args[0]
+    assert arguments[-3:] == ["grok", "--resume", GROK_ID]
+    assert "/usr/lib/alan/alan-native-session" in arguments
+
+
+def test_grok_update_chunks_map_to_roles():
+    user = grok_update(100, "user_message_chunk", "fix the build")
+    reply = grok_update(101, "agent_message_chunk", "done")
+    thought = grok_update(101, "agent_thought_chunk", "thinking")
+
+    assert transcripts.event_text("grok", user, "user") == "fix the build"
+    assert transcripts.event_text("grok", user, "assistant") == ""
+    assert transcripts.event_text("grok", reply, "assistant") == "done"
+    assert transcripts.event_text("grok", reply, "user") == ""
+    assert transcripts.event_text("grok", thought, "assistant") == ""
+
+
+def test_grok_state_is_working_until_the_turn_completes(tmp_path):
+    path = grok_session(tmp_path, GROK_ID, [
+        grok_update(100, "user_message_chunk", "task"),
+        grok_update(101, "agent_thought_chunk", "planning"),
+    ])
+    item = transcript("grok", path)
+    assert transcripts.grok_state(item) == ("working", "", 101)
+
+    with path.open("a") as stream:
+        stream.write(json.dumps(grok_update(
+            102, "agent_message_chunk", "all fixed")) + "\n")
+        stream.write(json.dumps(grok_update(
+            103, "turn_completed", method="_x.ai/session/update",
+            prompt_id="prompt-1", stop_reason="end_turn")) + "\n")
+    assert transcripts.grok_state(item) == ("waiting", "all fixed", 103)
+
+
+def test_grok_human_activity_uses_integer_timestamps(tmp_path):
+    path = grok_session(tmp_path, GROK_ID, [
+        grok_update(100, "user_message_chunk", "one"),
+        grok_update(101, "agent_message_chunk", "reply"),
+        grok_update(102, "user_message_chunk", "two"),
+        grok_update(103, "agent_message_chunk", "reply"),
+    ])
+    assert last_human_time(transcript("grok", path)) == 102
+
+
+def test_grok_candidates_scan_open_session_files(tmp_path):
+    import os
+
+    events = tmp_path / ".grok/sessions/%2Fwork" / GROK_ID / "events.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_bytes(b"")
+    with events.open("rb"):
+        sessions = transcripts.grok_candidates([os.getpid()])
+    assert sessions == {GROK_ID: events.parent}
+    assert transcripts.grok_candidates([os.getpid()]) == {}
+
+
+def test_grok_panes_present_as_grok_with_title_states():
+    ref = SessionRef(ServerRef("newton", "/tmp/tmux/default", 12, 10), "$1")
+    waiting = Session(ref, "work", 1, 2, 0, 1, "/usr/bin/grok", "Fix Things - grok",
+                      "/work")
+    assert waiting.agent == "grok"
+    assert waiting.state == "waiting"
+
+    working = Session(ref, "work", 1, 2, 0, 1, "/usr/bin/grok",
+                      "⠦ - Waiting for response… - Fix Things - grok", "/work")
+    assert working.state == "working"
+    responding = Session(ref, "work", 1, 2, 0, 1, "/usr/bin/grok",
+                         "⠹ - Responding - Fix Things - grok", "/work")
+    assert responding.state == "working"

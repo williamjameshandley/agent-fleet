@@ -218,7 +218,7 @@ def capture(key, columns=0, lines=0, alan_graph=UNSET):
     if key.startswith("alan:"):
         addr = key.removeprefix("alan:")
         kind = addr.split("-", 1)[0]
-        if kind in {"claude", "codex"}:
+        if kind in {"claude", "codex", "grok"}:
             name = "fleet@alan-" + alan.runtime_name(addr)
             session = next((item for item in server().sessions
                             if item.session_name == name), None)
@@ -319,6 +319,7 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     transcript_roots = [path for path in (Path.home() / ".claude/projects",
                                           Path.home() / ".codex/sessions",
+                                          Path.home() / ".grok/sessions",
                                           Path.home() / ".gemini/antigravity-cli/brain")
                         if path.exists()]
     paths = transcript_roots + ([RUNTIME] if RUNTIME.exists() else [])
