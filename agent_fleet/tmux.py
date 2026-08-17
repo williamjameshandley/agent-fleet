@@ -218,7 +218,7 @@ def capture(key, columns=0, lines=0, alan_graph=UNSET):
     if key.startswith("alan:"):
         addr = key.removeprefix("alan:")
         kind = addr.split("-", 1)[0]
-        if kind in {"claude", "codex"}:
+        if kind in {"claude", "codex", "grok"}:
             name = "fleet@alan-" + alan.runtime_name(addr)
             session = next((item for item in server().sessions
                             if item.session_name == name), None)

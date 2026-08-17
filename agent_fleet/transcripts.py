@@ -195,8 +195,9 @@ def resume(agent, session_id, name):
 
 def resume_native(agent, session_id):
     item = verify(agent, session_id)
-    arguments = (["resume", item.session_id] if agent == "codex"
-                 else ["--resume", item.session_id])
+    arguments = {"claude": ["--resume", item.session_id],
+                 "codex": ["resume", item.session_id],
+                 "grok": ["--resume", item.session_id]}[agent]
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "alan/native"
     runtime.mkdir(parents=True, exist_ok=True)
     root = tempfile.mkdtemp(prefix=f"{agent}-", dir=runtime)
