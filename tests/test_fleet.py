@@ -2068,6 +2068,33 @@ class IdentityTests(unittest.TestCase):
                                           "cwd": "/work"}))
         execute.assert_not_awaited()
 
+    def test_daemon_bare_llm_create_does_not_wait_for_provider_attachment(self):
+        host = "lovelace"
+        fleet = Fleet()
+        fleet.unavailable.clear()
+        actor = alan_inventory(host, [{
+            "addr": f"llm-1@{host}", "kind": "llm", "state": "waiting",
+            "created": 1, "human_activity": 0, "cwd": "/work",
+            "active_evaluation": None, "evaluation_started": 0,
+        }])[0]
+
+        async def exercise():
+            with mock.patch("agent_fleet.daemon.hosts", return_value=[host]), \
+                 mock.patch.object(fleet, "authority", return_value={
+                     "source": actor.ref.key}):
+                pending = asyncio.create_task(fleet.action({
+                    "operation": "create", "host": host, "agent": "llm",
+                    "name": "work", "cwd": "/work"}))
+                await asyncio.sleep(0)
+                self.assertFalse(pending.done())
+                fleet.sessions[host] = [actor]
+                fleet.observed += 1
+                async with fleet.changed:
+                    fleet.changed.notify_all()
+                self.assertEqual(await pending, {"source": actor.ref.key})
+
+        asyncio.run(exercise())
+
     def test_daemon_create_waits_on_its_own_observed_generation(self):
         host = "lovelace"
         fleet = Fleet()

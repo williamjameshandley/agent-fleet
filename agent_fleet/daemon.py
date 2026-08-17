@@ -15,6 +15,7 @@ from pathlib import Path
 import networkx as nx
 
 from .config import HUB, KINDS, RUNTIME, hosts, ssh_environment
+from .transcripts import AGENTS
 from .alan import address_identity
 from .protocol import decode_message, decode_observation, encode
 from .model import key_host
@@ -877,7 +878,8 @@ class Fleet:
             key = value["source"]
             await self.wait_for_source(
                 lambda session: session.ref.key == key
-                and session.attachment is not None,
+                and (session.agent not in AGENTS
+                     or session.attachment is not None),
                 f"create {key}")
             return {"source": key}
 
