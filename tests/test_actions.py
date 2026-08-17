@@ -29,12 +29,21 @@ def session(host="lovelace", kind="alan", agent="codex", transcript="thread-1"):
 
 
 def test_authority_create_returns_the_exact_actor_address():
-    with mock.patch("agent_fleet.authority.alan.create",
-                    return_value="codex-full@lovelace") as create:
-        value = authority.execute({"operation": "create", "agent": "codex",
-                                   "name": "work", "cwd": "/work"})
-    assert value == {"source": "alan:codex-full@lovelace"}
-    create.assert_called_once_with("codex", "work", "/work")
+    for agent in ("claude", "codex", "grok", "antigravity", "llm"):
+        with mock.patch("agent_fleet.authority.alan.create",
+                        return_value=f"{agent}-full@lovelace") as create:
+            value = authority.execute({"operation": "create", "agent": agent,
+                                       "name": "work", "cwd": "/work"})
+        assert value == {"source": f"alan:{agent}-full@lovelace"}
+        create.assert_called_once_with(agent, "work", "/work")
+
+    try:
+        authority.execute({"operation": "create", "agent": "python",
+                           "name": "work", "cwd": "/work"})
+    except ValueError as error:
+        assert "language-actor kind" in str(error)
+    else:
+        raise AssertionError("authority created a non-language actor")
 
 
 def test_authority_operations_are_finite_and_direct():

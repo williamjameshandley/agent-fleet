@@ -234,6 +234,10 @@ class ProposalTests(unittest.TestCase):
              "workstation": "boltzmann", "slot": "main"},
             {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
              "host": "newton", "agent": "claude", "name": "work", "cwd": None},
+            {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
+             "host": "newton", "agent": "grok", "name": "work", "cwd": None},
+            {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
+             "host": "newton", "agent": "llm", "name": "work", "cwd": None},
             {"type": "rename", "request_id": "r1", "snapshot_revision": "abc",
              "source": "source-1", "name": "new-name"},
             {"type": "archive", "request_id": "r1", "snapshot_revision": "abc",
@@ -282,6 +286,10 @@ class ProposalTests(unittest.TestCase):
             validate_proposal(bad, self.request)
         bad = {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
                "host": "newton", "agent": "codex", "name": "work", "cwd": "relative"}
+        with self.assertRaises(ValueError):
+            validate_proposal(bad, self.request)
+        bad = {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
+               "host": "newton", "agent": "python", "name": "work", "cwd": None}
         with self.assertRaises(ValueError):
             validate_proposal(bad, self.request)
         bad["cwd"] = "/srv/work"

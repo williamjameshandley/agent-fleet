@@ -14,7 +14,8 @@ from pathlib import Path
 
 import networkx as nx
 
-from .config import HUB, RUNTIME, hosts, ssh_environment
+from .config import HUB, KINDS, RUNTIME, hosts, ssh_environment
+from .transcripts import AGENTS
 from .alan import address_identity
 from .protocol import decode_message, decode_observation, encode
 from .model import key_host
@@ -865,8 +866,8 @@ class Fleet:
         if operation == "create":
             host = request["host"]
             self.available(host)
-            if request["agent"] not in {"claude", "codex"}:
-                raise ValueError("create requires Claude or Codex")
+            if request["agent"] not in KINDS:
+                raise ValueError("create requires a language-actor kind")
             if not isinstance(request["cwd"], str) or not request["cwd"]:
                 raise ValueError("create requires a directory")
             name = self.action_name(request["name"])
@@ -877,7 +878,8 @@ class Fleet:
             key = value["source"]
             await self.wait_for_source(
                 lambda session: session.ref.key == key
-                and session.attachment is not None,
+                and (session.agent not in AGENTS
+                     or session.attachment is not None),
                 f"create {key}")
             return {"source": key}
 

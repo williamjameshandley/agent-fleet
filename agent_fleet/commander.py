@@ -1,5 +1,7 @@
 from pathlib import PurePath
 
+from .config import KINDS
+
 
 FIELDS = {
     "show": {"type", "request_id", "snapshot_revision", "source", "workstation", "slot"},
@@ -42,7 +44,7 @@ def validate_proposal(proposal, request):
         raise ValueError("unknown Fleet history key")
     if operation == "create":
         cwd = proposal["cwd"]
-        if proposal["host"] not in snapshot["hosts"] or proposal["agent"] not in {"claude", "codex"}:
+        if proposal["host"] not in snapshot["hosts"] or proposal["agent"] not in KINDS:
             raise ValueError("invalid create target")
         if not isinstance(proposal["name"], str) or not proposal["name"]:
             raise ValueError("invalid session name")
