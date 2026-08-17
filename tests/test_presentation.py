@@ -73,46 +73,14 @@ def test_disappeared_native_presentation_immediately_removes_language_eligibilit
     assert not presentation.available(actor, descriptor, [])
 
 
-def test_presentation_sends_input_and_renders_its_output(capsys):
-    observations = mock.Mock()
-    with mock.patch.object(presentation.loop, "observe",
-                           return_value=observations) as observe, \
-         mock.patch("builtins.input", side_effect=["inspect", EOFError]), \
-         mock.patch.object(presentation.loop, "send",
-                           return_value={"input": "codex-a@newton#1"}) as send, \
-         mock.patch.object(presentation.alan, "wait_output",
-                           return_value={"status": "ok", "value": "done"}) as wait:
-        presentation.run("codex-a@newton", descriptor())
-
-    observe.assert_called_once_with(stream=True, actor="codex-a@newton")
-    wait.assert_called_once_with("codex-a@newton#1", observations)
-    observations.close.assert_called_once_with()
-    send.assert_called_once_with(
-        "codex-a@newton", {"kind": "prompt", "text": "inspect"})
-    assert capsys.readouterr().out == "done\n\n"
-
-
-def test_interrupt_controls_the_active_actor_then_observes_its_output(capsys):
-    observations = mock.Mock()
-    with mock.patch.object(presentation.loop, "observe",
-                           return_value=observations), \
-         mock.patch("builtins.input", side_effect=["inspect", EOFError]), \
-         mock.patch.object(presentation.loop, "send",
-                           return_value={"input": "codex-a@newton#1"}), \
-         mock.patch.object(presentation.alan, "wait_output",
-                           side_effect=[KeyboardInterrupt, {
-                               "status": "interrupted", "error": "interrupted",
-                           }]) as wait, \
-         mock.patch.object(presentation.loop, "control") as control:
-        presentation.run("codex-a@newton", descriptor())
-
-    control.assert_called_once_with("codex-a@newton", "interrupt")
-    assert wait.call_args_list == [
-        mock.call("codex-a@newton#1", observations),
-        mock.call("codex-a@newton#1", observations),
-    ]
-    observations.close.assert_called_once_with()
-    assert capsys.readouterr().out == "interrupted\n\n"
+def test_run_owns_only_the_python_presentation():
+    for kind in ("llm", "codex", "shell"):
+        try:
+            presentation.run("actor@newton", {"kind": kind})
+        except SystemExit as error:
+            assert "no Fleet-owned presentation" in str(error)
+        else:
+            raise AssertionError("Fleet ran a non-python presentation")
 
 
 def test_python_console_uses_jupyter_existing_mode():
@@ -158,8 +126,7 @@ def test_actor_presentation_is_a_nested_tmux_session():
                   stdout=presentation.subprocess.DEVNULL,
                   stderr=presentation.subprocess.DEVNULL),
         mock.call(["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "fleet@alan-hash",
-                   "-c", "/work",
-                   "/usr/bin/python -c 'import json,sys; from agent_fleet.presentation import run; run(sys.argv[1], json.loads(sys.argv[2]))' llm-a@newton '{\"kind\":\"llm\",\"cwd\":\"/work\"}'"],
+                   "-c", "/work", "/usr/bin/alan llm-a@newton"],
                   check=True),
         mock.call(["/usr/bin/tmux", "-N", "set-option", "-t", "fleet@alan-hash", "mouse", "on"],
                   check=True),
@@ -168,6 +135,24 @@ def test_actor_presentation_is_a_nested_tmux_session():
     ]
     execute.assert_called_once_with(
         "/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", "=fleet@alan-hash"])
+
+
+def test_python_presentation_is_a_nested_jupyter_session():
+    actor = "python-a@newton"
+    details = {"kind": "python", "cwd": "/work"}
+    missing = __import__("subprocess").CompletedProcess([], 1)
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run",
+                           side_effect=[missing, mock.DEFAULT, mock.DEFAULT,
+                                        mock.DEFAULT]) as run, \
+         mock.patch.object(presentation.os, "execvp"):
+        presentation.attach(actor, details)
+
+    assert run.call_args_list[1] == mock.call(
+        ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", "fleet@alan-hash",
+         "-c", "/work",
+         "/usr/bin/python -c 'import json,sys; from agent_fleet.presentation import run; run(sys.argv[1], json.loads(sys.argv[2]))' python-a@newton '{\"kind\":\"python\",\"cwd\":\"/work\"}'"],
+        check=True)
 
 
 def test_existing_actor_presentation_is_reused():

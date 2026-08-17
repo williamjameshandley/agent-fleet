@@ -493,31 +493,6 @@ def label(addr):
     return path.read_text().rstrip("\n") if path.exists() else addr
 
 
-def wait_output(input_reference, observations=None):
-    actor = input_reference.rsplit("#", 1)[0]
-    owned = observations is None
-    if owned:
-        observations = loop.observe(stream=True, actor=actor)
-    try:
-        for graph in observations:
-            stream = sorted(
-                ((reference, operation)
-                 for reference, operation in graph.nodes(data=True)
-                 if operation.get("stream") == actor),
-                key=lambda item: _position(item[0]),
-            )
-            inputs = [reference for reference, operation in stream
-                      if operation["op"] == "input"]
-            ordinal = inputs.index(input_reference)
-            outputs = [operation for _, operation in stream
-                       if operation["op"] == "output"]
-            if len(outputs) > ordinal:
-                return outputs[ordinal]
-    finally:
-        if owned:
-            observations.close()
-
-
 def preview(addr, columns=0, lines=0, graph=None):
     if graph is None:
         graph = loop.observe()

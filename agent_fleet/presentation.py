@@ -55,14 +55,18 @@ def target(actor, descriptor):
             raise RuntimeError(
                 f"{descriptor['kind'].capitalize()} evaluator terminal is unavailable: {actor}"
             )
+        if descriptor["kind"] == "llm":
+            command = shlex.join(["/usr/bin/alan", actor])
+        else:
+            command = shlex.join([
+                "/usr/bin/python", "-c",
+                "import json,sys; from agent_fleet.presentation import run; "
+                "run(sys.argv[1], json.loads(sys.argv[2]))",
+                actor, json.dumps(descriptor, separators=(",", ":")),
+            ])
         subprocess.run(
             ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", name, "-c", descriptor["cwd"],
-             shlex.join([
-                 "/usr/bin/python", "-c",
-                 "import json,sys; from agent_fleet.presentation import run; "
-                 "run(sys.argv[1], json.loads(sys.argv[2]))",
-                 actor, json.dumps(descriptor, separators=(",", ":")),
-             ])],
+             command],
             check=True,
         )
         subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "mouse", "on"],
@@ -91,28 +95,6 @@ def close(actor):
 
 
 def run(actor, descriptor):
-    if descriptor["kind"] == "python":
-        python_console(actor, alan.native_dir(actor) / "kernel.json")
-        return
-    if descriptor["kind"] != "llm":
+    if descriptor["kind"] != "python":
         raise SystemExit(f"{descriptor['kind']} has no Fleet-owned presentation")
-
-    observations = loop.observe(stream=True, actor=actor)
-    try:
-        while True:
-            try:
-                text = input("> ")
-            except EOFError:
-                print()
-                return
-            if not text:
-                continue
-            result = loop.send(actor, {"kind": "prompt", "text": text})
-            try:
-                output = alan.wait_output(result["input"], observations)
-            except KeyboardInterrupt:
-                loop.control(actor, "interrupt")
-                output = alan.wait_output(result["input"], observations)
-            print(output.get("value", output.get("error", output["status"])), flush=True)
-    finally:
-        observations.close()
+    python_console(actor, alan.native_dir(actor) / "kernel.json")
