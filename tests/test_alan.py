@@ -142,7 +142,7 @@ def test_explicit_empty_graph_is_not_replaced_by_a_live_observation():
     observe.assert_not_called()
 
 
-def test_output_is_selected_by_fifo_input_ordinal():
+def test_output_is_selected_by_the_input_its_result_reports_as_delivered():
     current = graph(
         {"op": "create"},
         {"op": "input"},
@@ -152,9 +152,37 @@ def test_output_is_selected_by_fifo_input_ordinal():
         {"op": "evaluation"},
         {"op": "output", "status": "ok", "value": "second"},
     )
+    current.add_node("will@newton#2", stream="will@newton", op="result",
+                     input="codex-a@newton#4")
     with mock.patch.object(
             alan.loop, "observe", return_value=ObservationStream((current,))):
-        assert alan.wait_output("codex-a@newton#4")["value"] == "second"
+        assert alan.wait_output(
+            "codex-a@newton", "will@newton#2")["value"] == "second"
+
+
+def test_delivery_without_an_input_reference_is_a_visible_error():
+    current = graph({"op": "create"})
+    current.add_node("will@newton#2", stream="will@newton", op="result")
+    with mock.patch.object(
+            alan.loop, "observe", return_value=ObservationStream((current,))), \
+         pytest.raises(RuntimeError, match="delivery reported no input: will@newton#2"):
+        alan.wait_output("codex-a@newton", "will@newton#2")
+
+
+def test_output_waits_while_its_input_has_not_been_delivered():
+    delivered = graph(
+        {"op": "create"},
+        {"op": "input"},
+        {"op": "evaluation"},
+        {"op": "output", "status": "ok", "value": "first"},
+    )
+    delivered.add_node("will@newton#2", stream="will@newton", op="result",
+                       input="codex-a@newton#1")
+    with mock.patch.object(
+            alan.loop, "observe",
+            return_value=ObservationStream((graph({"op": "create"}), delivered))):
+        assert alan.wait_output(
+            "codex-a@newton", "will@newton#2")["value"] == "first"
 
 
 def test_preview_is_a_projection_of_input_and_output_operations():

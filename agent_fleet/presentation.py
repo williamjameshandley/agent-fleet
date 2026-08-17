@@ -113,10 +113,10 @@ def run(actor, descriptor):
                 continue
             result = loop.send(actor, {"kind": "prompt", "text": text})
             try:
-                output = alan.wait_output(result["input"], observations)
+                output = alan.wait_output(actor, result["result"], observations)
             except KeyboardInterrupt:
                 loop.control(actor, "interrupt")
-                output = alan.wait_output(result["input"], observations)
+                output = alan.wait_output(actor, result["result"], observations)
             print(output.get("value", output.get("error", output["status"])), flush=True)
     finally:
         observations.close()
