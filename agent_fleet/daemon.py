@@ -823,7 +823,7 @@ class Fleet:
         host = session.ref.server.host
         self.available(host)
         if session.ref.server.kind == "alan":
-            if session.agent not in {"llm", "claude", "codex"}:
+            if session.agent not in {"llm", "claude", "codex", "antigravity"}:
                 raise ValueError("archive requires a language actor")
             if session.attachment:
                 if not session.transcript_id:
@@ -844,8 +844,9 @@ class Fleet:
                              "actor": session.ref.session_id,
                              "agent": session.agent}
         else:
-            if session.agent not in {"claude", "codex"} or not session.transcript_id:
-                raise ValueError("archive requires a durable Claude or Codex identity")
+            if (session.agent not in {"claude", "codex", "antigravity"}
+                    or not session.transcript_id):
+                raise ValueError("archive requires a durable agent transcript identity")
             authority = {"operation": "archive-tmux", "source": key,
                          "agent": session.agent,
                          "transcript": session.transcript_id}
@@ -910,7 +911,7 @@ class Fleet:
             except ValueError:
                 raise ValueError("invalid transcript history identity") from None
             self.available(host)
-            if agent not in {"claude", "codex"} or not transcript:
+            if agent not in {"claude", "codex", "antigravity"} or not transcript:
                 raise ValueError("invalid transcript history identity")
             if any(session.ref.server.host == host and session.agent == agent
                    and session.transcript_id == transcript
@@ -1036,7 +1037,7 @@ class Fleet:
                 native_id = address_identity(actor["addr"], actor.get("kind"))
                 identity = host, actor.get("kind"), native_id
                 retained = (actor.get("kind") == "llm" or
-                            actor.get("kind") in {"claude", "codex"})
+                            actor.get("kind") in {"claude", "codex", "antigravity"})
                 if native_id:
                     claimed.setdefault(identity, []).append(actor["addr"])
                 if retained and actor.get("state") in {"retired", "unavailable"}:

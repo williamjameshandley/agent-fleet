@@ -205,7 +205,7 @@ class ControlClient:
             return [shlex.split(line) for line in self.command(arguments) if line]
         matches = locate()
         if (not matches and descriptor
-                and descriptor["kind"] in {"python", "llm"}):
+                and descriptor["kind"] in {"python", "llm", "antigravity"}):
             presentation.target(actor, descriptor)
             matches = locate()
         if len(matches) != 1 or len(matches[0]) != 4:
@@ -318,7 +318,8 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
                      daemon=True).start()
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     transcript_roots = [path for path in (Path.home() / ".claude/projects",
-                                          Path.home() / ".codex/sessions")
+                                          Path.home() / ".codex/sessions",
+                                          Path.home() / ".gemini/antigravity-cli/brain")
                         if path.exists()]
     paths = transcript_roots + ([RUNTIME] if RUNTIME.exists() else [])
     if paths:
