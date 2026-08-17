@@ -58,6 +58,8 @@ class Session:
         command = self.command.rsplit("/", 1)[-1]
         if command in {"claude", "codex", "gemini"}:
             return command
+        if command == "agy":
+            return "antigravity"
         return "shell"
 
     @property

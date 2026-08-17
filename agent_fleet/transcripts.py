@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import shlex
+import sqlite3
 import subprocess
 import tempfile
 import textwrap
@@ -15,7 +16,8 @@ from pathlib import Path
 
 CLAUDE = Path.home() / ".claude/projects"
 CODEX = Path.home() / ".codex/sessions"
-AGENTS = {"claude", "codex"}
+ANTIGRAVITY = Path.home() / ".gemini/antigravity-cli"
+AGENTS = {"claude", "codex", "antigravity"}
 PRIORITY = {"needs-action": 0, "working": 1, "waiting": 2, "finished": 3}
 PANE_FORMAT = ("name=#{q:session_name} session=#{q:session_id} pid=#{q:pane_pid} "
                "command=#{q:pane_current_command} title=#{q:pane_title}")
@@ -35,6 +37,8 @@ class Transcript:
                     yield json.loads(line)
 
     def cwd(self):
+        if self.agent == "antigravity":
+            return antigravity_workspace(self.session_id)
         for event in self.events():
             if self.agent == "claude" and "cwd" in event:
                 return event["cwd"]
@@ -53,7 +57,29 @@ class Transcript:
 
 def transcript(agent, path):
     path = Path(path)
+    if agent == "antigravity":
+        return Transcript(agent, path.parents[2].name, path, path.stat().st_mtime)
     return Transcript(agent, path.stem[-36:], path, path.stat().st_mtime)
+
+
+def antigravity_transcript_path(conversation):
+    return (ANTIGRAVITY / "brain" / conversation
+            / ".system_generated/logs/transcript_full.jsonl")
+
+
+def antigravity_workspace(conversation):
+    database = ANTIGRAVITY / "conversation_summaries.db"
+    if not database.is_file():
+        return ""
+    with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+        rows = connection.execute(
+            "select workspace_uris from conversation_summaries"
+            " where conversation_id = ?", (conversation,)).fetchall()
+    for (uris,) in rows:
+        for uri in json.loads(uris):
+            if uri.startswith("file://"):
+                return uri.removeprefix("file://")
+    return ""
 
 
 def all_transcripts(agent=None):
@@ -63,6 +89,10 @@ def all_transcripts(agent=None):
     if agent in (None, "codex"):
         found.extend(transcript("codex", path)
                      for path in CODEX.glob("*/*/*/rollout-*.jsonl"))
+    if agent in (None, "antigravity"):
+        found.extend(
+            transcript("antigravity", path) for path in
+            ANTIGRAVITY.glob("brain/*/.system_generated/logs/transcript_full.jsonl"))
     return sorted(found, key=lambda item: item.mtime, reverse=True)
 
 
@@ -144,8 +174,9 @@ def search(query):
 
 def resume(agent, session_id, name):
     item = verify(agent, session_id)
-    command = (["claude", "--resume", item.session_id] if agent == "claude"
-               else ["codex", "resume", item.session_id])
+    command = {"claude": ["claude", "--resume", item.session_id],
+               "codex": ["codex", "resume", item.session_id],
+               "antigravity": ["agy", "--conversation", item.session_id]}[agent]
     subprocess.run(["/usr/bin/tmux", "-N", "new-session", "-d", "-s", name, "-c",
                     item.cwd() or str(Path.home()), *command], check=True)
     subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "status", "on"],
@@ -183,6 +214,15 @@ def event_text(agent, event, role):
         wanted = {"assistant": "agent_message", "user": "user_message"}[role]
         if event["payload"]["type"] == wanted:
             return event["payload"]["message"]
+    if agent == "antigravity":
+        wanted = {"assistant": "PLANNER_RESPONSE", "user": "USER_INPUT"}[role]
+        if event.get("type") == wanted:
+            content = event.get("content", "")
+            if role == "user":
+                match = re.search(r"<USER_REQUEST>\n(.*?)\n</USER_REQUEST>",
+                                  content, re.DOTALL)
+                return match.group(1) if match else content
+            return content
     return ""
 
 
@@ -248,9 +288,12 @@ def last_human_time(item):
                       any(block.get("type") == "text" for block in content)))
         elif item.agent == "codex" and event.get("type") == "event_msg":
             human = event.get("payload", {}).get("type") == "user_message"
-        if human and "timestamp" in event:
+        elif item.agent == "antigravity":
+            human = event.get("type") == "USER_INPUT"
+        stamp = event.get("timestamp") or event.get("created_at")
+        if human and stamp:
             return int(datetime.fromisoformat(
-                event["timestamp"].replace("Z", "+00:00")).timestamp())
+                stamp.replace("Z", "+00:00")).timestamp())
     return 0
 
 
@@ -297,6 +340,37 @@ def codex_state(item):
             elif kind == "agent_message":
                 summary = event["payload"]["message"]
     return ("working" if boundary == "task_started" else "waiting"), summary, updated
+
+
+def antigravity_state(item):
+    last, summary, updated = "", "", 0
+    for event in item.events():
+        if stamp := event.get("created_at"):
+            updated = int(datetime.fromisoformat(
+                stamp.replace("Z", "+00:00")).timestamp())
+        last = event.get("type", "")
+        if last == "PLANNER_RESPONSE":
+            summary = event.get("content", "")
+    return ("waiting" if last == "CHECKPOINT" else "working"), summary, updated
+
+
+def antigravity_candidates(pids):
+    conversations = set()
+    for pid in pids:
+        try:
+            descriptors = list(Path(f"/proc/{pid}/fd").iterdir())
+        except OSError:
+            continue
+        for fd in descriptors:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            match = re.search(
+                r"antigravity-cli/conversations/([0-9a-f-]{36})\.db$", target)
+            if match:
+                conversations.add(match.group(1))
+    return conversations
 
 
 def process_tree():
@@ -379,6 +453,8 @@ def observe(sessions, transcripts=None):
         name, session_id, pid, command, title = (
             field.split("=", 1)[1] for field in shlex.split(line))
         agent = Path(command).name
+        if agent == "agy":
+            agent = "antigravity"
         tree = [int(pid), *descendants(int(pid), children)]
         if name.startswith("fleet@native-"):
             agents = set()
@@ -412,6 +488,23 @@ def observe(sessions, transcripts=None):
                 state = "needs-action"
                 summary = f"Transcript is invalid: {path.name}: {error}"
                 updated = int(path.stat().st_mtime)
+                human_activity = 0
+        elif agent == "antigravity":
+            conversations = antigravity_candidates(tree)
+            if len(conversations) != 1:
+                continue
+            [identity] = conversations
+            path = antigravity_transcript_path(identity)
+            if not path.exists():
+                continue
+            item = transcript("antigravity", path)
+            try:
+                state, summary, updated = antigravity_state(item)
+                human_activity = last_human_time(item)
+            except (json.JSONDecodeError, ValueError) as error:
+                state = "needs-action"
+                summary = f"Transcript is invalid: {item.path.name}: {error}"
+                updated = int(item.mtime)
                 human_activity = 0
         else:
             targets, resumed = codex_candidates(tree)

@@ -54,6 +54,9 @@ def test_presentation_availability_is_derived_from_exact_native_evidence(tmp_pat
         (native / "kernel.json").touch()
         assert presentation.available(
             llm, {"kind": "llm", "cwd": str(tmp_path)}, names)
+        assert presentation.available(
+            "antigravity-a@newton", {"kind": "antigravity", "cwd": str(tmp_path)},
+            names)
         assert not presentation.available(
             "python-gone@newton",
             {"kind": "python", "cwd": str(tmp_path / "gone")}, names)
@@ -243,9 +246,9 @@ def test_close_rejects_non_bare_model_terminals():
             try:
                 presentation.close(actor)
             except RuntimeError as error:
-                assert "bare-model" in str(error)
+                assert "conversational" in str(error)
             else:
-                raise AssertionError("Fleet closed a non-bare-model presentation")
+                raise AssertionError("Fleet closed a non-conversational presentation")
         run.assert_not_called()
 
 
@@ -257,6 +260,10 @@ def test_close_kills_the_exact_bare_model_presentation():
     run.assert_called_once_with(
         ["/usr/bin/tmux", "-N", "kill-session", "-t", "=fleet@alan-hash"], text=True,
         stdout=presentation.subprocess.DEVNULL, stderr=presentation.subprocess.PIPE)
+    with mock.patch.object(presentation.alan, "runtime_name", return_value="hash"), \
+         mock.patch.object(presentation.subprocess, "run", return_value=present) as run:
+        presentation.close("antigravity-a@newton")
+    run.assert_called_once()
 
 
 def test_close_accepts_an_absent_bare_model_presentation():

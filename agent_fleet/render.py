@@ -23,7 +23,8 @@ HOST_COLOUR = {
     "turing": "\033[36m",
     "noether": "\033[32m",
 }
-AGENT_COLOUR = {"claude": "\033[38;5;173m", "codex": "\033[38;5;75m"}
+AGENT_COLOUR = {"claude": "\033[38;5;173m", "codex": "\033[38;5;75m",
+                "antigravity": "\033[38;5;141m"}
 COLUMN_ICONS = {"machine": "", "agent": "", "time": "",
                 "status": "", "title": "", "summary": ""}
 

@@ -37,9 +37,9 @@ def execute(request):
         tmux.mutate(request["source"], "rename", [request["name"]])
         return {"name": request["name"]}
     if operation == "archive-alan":
-        if request["agent"] not in {"llm", "claude", "codex"}:
+        if request["agent"] not in {"llm", "claude", "codex", "antigravity"}:
             raise ValueError("archive requires a language actor")
-        if request["agent"] == "llm":
+        if request["agent"] in {"llm", "antigravity"}:
             presentation.close(request["actor"])
         alan.retire(request["actor"])
         return {}
