@@ -355,10 +355,10 @@ def test_transcript_renders_both_kinds_of_cell_and_marks_a_reset(tmp_path):
         lines = list(presentation.transcript("python-a@newton"))
 
     assert lines == [
-        "In : durable = 7",
+        "In 0: durable = 7",
         "Out[1]: 7",
         "── namespace reset: this kernel replaced the one before it ──",
-        "In : print('hi'); 6 * 7",
+        "In 6: print('hi'); 6 * 7",
         "hi",
         "Out: 42",
     ]
@@ -379,9 +379,9 @@ def test_transcript_renders_evaluations_which_answered_no_requester():
     with mock.patch.object(presentation.loop, "session", return_value=session):
         lines = list(presentation.transcript("python-a@newton"))
 
-    assert lines[0] == 'In : {"kind":"error","of":"python-a@newton#3","reason":"unknown_actor"}'
+    assert lines[0] == 'In 0: {"kind":"error","of":"python-a@newton#3","reason":"unknown_actor"}'
     assert lines[1] == "RuntimeError: unknown_actor"
-    assert lines[2] == "In : 6 * 7"
+    assert lines[2] == "In 3: 6 * 7"
     assert lines[3] == "Out: Out[3]: 42"
 
 
@@ -414,7 +414,7 @@ def test_transcript_is_bounded_and_reports_what_it_elided():
         lines = list(presentation.transcript("python-a@newton", records=3))
 
     assert lines[0] == "[7 earlier operations not shown]"
-    assert lines[1:] == ["In : cell 7", "In : cell 8", "In : cell 9"]
+    assert lines[1:] == ["In 7: cell 7", "In 8: cell 8", "In 9: cell 9"]
 
 
 def test_console_shows_the_past_then_attaches_with_peer_output_included(tmp_path):

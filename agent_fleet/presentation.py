@@ -67,8 +67,10 @@ def transcript(actor, records=TRANSCRIPT_RECORDS):
         yield f"[{start} earlier operations not shown]"
 
     answered = False
-    for record in session[start:total]:
+    for offset, record in enumerate(session[start:total]):
         payload = record.get("payload") or {}
+        # The physical line an input occupies is what `%replay` re-runs.
+        line = start + offset
 
         if record["op"] == "evaluation":
             answered = False
@@ -77,10 +79,10 @@ def transcript(actor, records=TRANSCRIPT_RECORDS):
             yield "── namespace reset: this kernel replaced the one before it ──"
 
         elif record["op"] == "input" and payload.get("kind") == "prompt":
-            yield "In : " + payload["text"]
+            yield f"In {line}: " + payload["text"]
 
         elif record["op"] == "input" and payload.get("kind") == "error":
-            yield "In : " + json.dumps(payload, separators=(",", ":"))
+            yield f"In {line}: " + json.dumps(payload, separators=(",", ":"))
 
         # An Alan-driven cell's rendering travels back to its requester, while a
         # console-entered cell leaves its own evidence for the output to name.
@@ -111,7 +113,8 @@ def transcript(actor, records=TRANSCRIPT_RECORDS):
 def python_console(actor, connection_file):
     for line in transcript(actor):
         print(line, flush=True)
-    print(f"── live: {connection_file} ──", flush=True)
+    print(f"── live: {connection_file} — re-run a cell above with %replay <n> ──",
+          flush=True)
     console = PythonConsole.instance()
     console.actor = actor
     console.initialize([
