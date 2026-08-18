@@ -35,10 +35,93 @@ class PythonConsole(ZMQTerminalIPythonApp):
             super().handle_sigint(*args)
 
 
+# A console shows only what it witnesses, so a session's past arrives as
+# scrollback from its operation stream before the live prompt.
+TRANSCRIPT_RECORDS = 400
+
+
+def cell_record(native):
+    """Resolve a console-entered cell's rendering from the evidence it names.
+
+    An output which claims cell evidence must have it: a reference the file
+    cannot satisfy is drift, not an absent rendering.
+    """
+    cells, line = native.get("cells"), native.get("cell")
+    if cells is None and line is None:
+        return None
+    if cells is None or line is None:
+        raise RuntimeError(f"incomplete cell reference: {native}")
+    with open(cells, encoding="utf-8") as stream:
+        for index, record in enumerate(stream):
+            if index == line:
+                return json.loads(record)
+    raise RuntimeError(f"cell evidence {cells} has no line {line}")
+
+
+def transcript(actor, records=TRANSCRIPT_RECORDS):
+    """Render an actor's past as the lines a console would have shown."""
+    session = loop.session(actor)
+    total = len(session)
+    start = max(0, total - records)
+    if start:
+        yield f"[{start} earlier operations not shown]"
+
+    answered = False
+    for offset, record in enumerate(session[start:total]):
+        payload = record.get("payload") or {}
+        # The physical line an input occupies is what `%replay` re-runs.
+        line = start + offset
+
+        if record["op"] == "evaluation":
+            answered = False
+
+        elif record["op"] == "control" and record.get("operation") == "reset":
+            yield "── namespace reset: this kernel replaced the one before it ──"
+
+        elif record["op"] == "input" and payload.get("kind") == "prompt":
+            yield f"In {line}: " + payload["text"]
+
+        elif record["op"] == "input" and payload.get("kind") == "error":
+            yield f"In {line}: " + json.dumps(payload, separators=(",", ":"))
+
+        # An Alan-driven cell's rendering travels back to its requester, while a
+        # console-entered cell leaves its own evidence for the output to name.
+        elif record["op"] == "send" and record.get("reply"):
+            answered = True
+            yield payload.get("text") or payload.get("error", "")
+
+        elif record["op"] == "output":
+            cell = cell_record(record.get("native") or {})
+            if cell:
+                for stream in ("stdout", "stderr"):
+                    if cell[stream]:
+                        yield cell[stream].rstrip("\n")
+                if cell["result"] is not None:
+                    yield "Out: " + cell["result"]
+                if cell["error"]:
+                    yield cell["error"]
+            # An answered evaluation closes carrying the rendering its reply
+            # already delivered; one with no requester carries it alone.
+            elif answered:
+                pass
+            elif record.get("value") is not None:
+                yield "Out: " + record["value"]
+            elif record.get("error"):
+                yield record["error"]
+
+
 def python_console(actor, connection_file):
+    for line in transcript(actor):
+        print(line, flush=True)
+    print(f"── live: {connection_file} — re-run a cell above with %replay <n> ──",
+          flush=True)
     console = PythonConsole.instance()
     console.actor = actor
-    console.initialize(["--existing", str(connection_file)])
+    console.initialize([
+        "--existing",
+        str(connection_file),
+        "--ZMQTerminalInteractiveShell.include_other_output=True",
+    ])
     console.start()
 
 
