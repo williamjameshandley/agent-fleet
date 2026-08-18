@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from unittest import mock
@@ -127,15 +128,6 @@ def test_run_owns_only_the_python_presentation():
             assert "no Fleet-owned presentation" in str(error)
         else:
             raise AssertionError("Fleet ran a non-python presentation")
-
-
-def test_python_console_uses_jupyter_existing_mode():
-    console = mock.Mock()
-    with mock.patch.object(presentation.PythonConsole, "instance", return_value=console):
-        presentation.python_console("python-a@newton", "/native/kernel.json")
-    assert console.actor == "python-a@newton"
-    console.initialize.assert_called_once_with(["--existing", "/native/kernel.json"])
-    console.start.assert_called_once_with()
 
 
 def test_python_console_interrupts_only_while_jupyter_is_executing():
@@ -328,6 +320,116 @@ def test_close_propagates_other_bare_model_tmux_failures():
             pass
         else:
             raise AssertionError("close hid a tmux failure")
+
+
+def cells_file(tmp_path, records):
+    path = tmp_path / "cells.jsonl"
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    return path
+
+
+def test_transcript_renders_both_kinds_of_cell_and_marks_a_reset(tmp_path):
+    cells = cells_file(tmp_path, [
+        {"execution_count": 1, "status": "ok", "code": "print('hi'); 6 * 7",
+         "stdout": "hi\n", "stderr": "", "result": "42", "error": None},
+    ])
+    # The sequences a Python actor really writes: a requested evaluation answers
+    # its requester and then closes carrying that same rendering.
+    session = [
+        {"op": "input", "payload": {"kind": "prompt", "text": "durable = 7"}},
+        {"op": "evaluation"},
+        {"op": "send", "reply": "will@newton#0",
+         "payload": {"kind": "prompt", "text": "Out[1]: 7"}},
+        {"op": "result", "status": "ok"},
+        {"op": "output", "status": "ok", "value": "Out[1]: 7", "exit_code": 0,
+         "native": {"kind": "ipython", "execution_count": 1}},
+        {"op": "control", "operation": "reset",
+         "native": {"kind": "ipython", "pid": 5}},
+        {"op": "input", "payload": {"kind": "prompt", "text": "print('hi'); 6 * 7"}},
+        {"op": "evaluation"},
+        {"op": "output", "status": "ok",
+         "native": {"kind": "ipython", "cells": str(cells), "cell": 0,
+                    "execution_count": 1}},
+    ]
+    with mock.patch.object(presentation.loop, "session", return_value=session):
+        lines = list(presentation.transcript("python-a@newton"))
+
+    assert lines == [
+        "In : durable = 7",
+        "Out[1]: 7",
+        "── namespace reset: this kernel replaced the one before it ──",
+        "In : print('hi'); 6 * 7",
+        "hi",
+        "Out: 42",
+    ]
+
+
+def test_transcript_renders_evaluations_which_answered_no_requester():
+    session = [
+        {"op": "input", "payload": {"kind": "error", "of": "python-a@newton#3",
+                                    "reason": "unknown_actor"}},
+        {"op": "evaluation"},
+        {"op": "output", "status": "error", "error": "RuntimeError: unknown_actor",
+         "exit_code": 1, "native": {"kind": "ipython", "execution_count": 2}},
+        {"op": "input", "payload": {"kind": "prompt", "text": "6 * 7"}},
+        {"op": "evaluation"},
+        {"op": "output", "status": "ok", "value": "Out[3]: 42", "exit_code": 0,
+         "native": {"kind": "ipython", "execution_count": 3}},
+    ]
+    with mock.patch.object(presentation.loop, "session", return_value=session):
+        lines = list(presentation.transcript("python-a@newton"))
+
+    assert lines[0] == 'In : {"kind":"error","of":"python-a@newton#3","reason":"unknown_actor"}'
+    assert lines[1] == "RuntimeError: unknown_actor"
+    assert lines[2] == "In : 6 * 7"
+    assert lines[3] == "Out: Out[3]: 42"
+
+
+def test_transcript_fails_visibly_when_claimed_cell_evidence_is_missing(tmp_path):
+    cells = cells_file(tmp_path, [
+        {"execution_count": 1, "status": "ok", "code": "1", "stdout": "",
+         "stderr": "", "result": "1", "error": None},
+    ])
+    beyond = [{"op": "output", "native": {"cells": str(cells), "cell": 4}}]
+    absent = [{"op": "output", "native": {"cells": str(tmp_path / "gone.jsonl"),
+                                          "cell": 0}}]
+    partial = [{"op": "output", "native": {"cells": str(cells)}}]
+
+    for session, error in ((beyond, RuntimeError), (absent, OSError),
+                           (partial, RuntimeError)):
+        with mock.patch.object(presentation.loop, "session", return_value=session):
+            try:
+                list(presentation.transcript("python-a@newton"))
+            except error:
+                continue
+            raise AssertionError("cell evidence drift was rendered as absent")
+
+
+def test_transcript_is_bounded_and_reports_what_it_elided():
+    session = [
+        {"op": "input", "payload": {"kind": "prompt", "text": f"cell {index}"}}
+        for index in range(10)
+    ]
+    with mock.patch.object(presentation.loop, "session", return_value=session):
+        lines = list(presentation.transcript("python-a@newton", records=3))
+
+    assert lines[0] == "[7 earlier operations not shown]"
+    assert lines[1:] == ["In : cell 7", "In : cell 8", "In : cell 9"]
+
+
+def test_console_shows_the_past_then_attaches_with_peer_output_included(tmp_path):
+    connection = tmp_path / "kernel.json"
+    console = mock.MagicMock()
+    with mock.patch.object(presentation.loop, "session", return_value=[]), \
+         mock.patch.object(presentation.PythonConsole, "instance",
+                           return_value=console):
+        presentation.python_console("python-a@newton", connection)
+
+    assert console.actor == "python-a@newton"
+    argv = console.initialize.call_args[0][0]
+    assert argv[:2] == ["--existing", str(connection)]
+    assert "--ZMQTerminalInteractiveShell.include_other_output=True" in argv
+    console.start.assert_called_once_with()
 
 
 def test_actor_view_dispatches_python_to_jupyter_console():
