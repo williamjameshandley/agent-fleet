@@ -305,7 +305,8 @@ def last_human_time(item):
         human = False
         if item.agent == "claude" and event.get("type") == "user" and not event.get("isMeta"):
             content = event.get("message", {}).get("content")
-            human = (isinstance(content, str) or
+            human = ((isinstance(content, str) and
+                      not content.startswith(("<command-name>", "<local-command-stdout>"))) or
                      (isinstance(content, list) and
                       any(block.get("type") == "text" for block in content)))
         elif item.agent == "codex" and event.get("type") == "event_msg":

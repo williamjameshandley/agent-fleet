@@ -232,6 +232,20 @@ def test_claude_human_activity_excludes_tool_results_and_meta_events(tmp_path):
     assert last_human_time(transcript("claude", path)) == 1784541600
 
 
+def test_claude_human_activity_excludes_local_command_records(tmp_path):
+    path = tmp_path / "00000000-0000-0000-0000-000000000001.jsonl"
+    events = [
+        {"type": "user", "timestamp": "2026-07-20T10:00:00Z",
+         "message": {"content": "human prompt"}},
+        {"type": "user", "timestamp": "2026-07-20T11:00:00Z",
+         "message": {"content": "<command-name>/mcp</command-name>"}},
+        {"type": "user", "timestamp": "2026-07-20T12:00:00Z",
+         "message": {"content": "<local-command-stdout>reconnected</local-command-stdout>"}},
+    ]
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    assert last_human_time(transcript("claude", path)) == 1784541600
+
+
 def test_codex_human_activity_uses_latest_user_message(tmp_path):
     path = tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
     events = [
