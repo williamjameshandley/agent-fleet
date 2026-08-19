@@ -665,6 +665,8 @@ def fold_adopted(sessions):
                 f"found {len(actors)} and {len(native)}"
             )
         if not native:
+            if actors[0].state == "unavailable":
+                consumed.add(actors[0].ref)
             continue
         actor, provider = actors[0], native[0]
         replacements[actor.ref] = replace(actor, attachment=provider.ref)
