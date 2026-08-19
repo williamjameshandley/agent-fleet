@@ -121,6 +121,16 @@ def test_latest_successful_output_is_the_actor_summary():
     assert current["summary"] == "latest model reply"
 
 
+def test_interruption_preserves_the_latest_meaningful_output():
+    current = alan.actors(graph(
+        {"op": "create"},
+        {"op": "output", "status": "ok", "value": "latest model reply"},
+        {"op": "output", "status": "interrupted", "error": "interrupted"},
+    ))[0]
+
+    assert current["summary"] == "latest model reply"
+
+
 def test_foreign_semantic_endpoint_is_not_mistaken_for_an_observed_operation():
     current = graph({"op": "create"}, {"op": "input"})
     current.add_edge(
@@ -355,6 +365,31 @@ def test_incremental_refresh_does_not_reenter_whole_graph_derivation():
     assert watcher.actors[0]["active_evaluation"] == reference
 
 
+def test_new_actor_delta_reconstructs_operations_already_in_the_graph():
+    watcher = object.__new__(alan.Watcher)
+    watcher.actors = []
+    watcher.graph = nx.MultiDiGraph()
+    watcher.projected = nx.MultiDiGraph()
+    watcher._descriptors = {}
+    watcher.available = True
+    watcher.error = None
+    watcher.initialized = threading.Event()
+    watcher._changed = queue.Queue()
+    watcher._lock = threading.RLock()
+    current = graph(
+        {"op": "create"},
+        {"op": "output", "status": "ok", "value": "restored summary"},
+    )
+
+    watcher.refresh(current, {
+        "kind": "delta", "generation": 1, "revision": 1,
+        "actors": current.graph["actors"], "nodes": [], "edges": [],
+    })
+
+    assert watcher.actors == alan.actors(current)
+    assert watcher.actors[0]["summary"] == "restored summary"
+
+
 @pytest.mark.parametrize("prior", [
     {"status": "ok", "value": "stale summary"},
     {"status": "error", "error": "stale error"},
@@ -386,8 +421,10 @@ def test_incremental_interruption_matches_full_reconstruction(prior):
     })
 
     assert watcher.actors == alan.actors(current)
-    assert "summary" not in watcher.actors[0]
-    assert "last_error" not in watcher.actors[0]
+    if prior["status"] == "ok":
+        assert watcher.actors[0]["summary"] == "stale summary"
+    else:
+        assert watcher.actors[0]["last_error"] == "stale error"
 
 
 def test_watcher_reports_one_loss_and_recovers_with_one_replacement():

@@ -196,7 +196,8 @@ def actor_descriptor(graph, all_descriptors, descriptor, operations):
         elif operation["op"] == "output":
             active = None
             active_started = 0
-            last_output = operation
+            if operation.get("status") == "error" or isinstance(operation.get("value"), str):
+                last_output = operation
             if evidence := operation.get("native"):
                 native = evidence
         elif operation["op"] == "input" and "send" in operation:
@@ -224,8 +225,7 @@ def actor_descriptor(graph, all_descriptors, descriptor, operations):
 
 def update_actor_descriptor(graph, all_descriptors, current, raw, nodes):
     if current is None:
-        operations = [(node["id"], {key: value for key, value in node.items()
-                                     if key != "id"}) for node in nodes]
+        operations = operation_index(graph).get(raw["addr"], ())
         return actor_descriptor(graph, all_descriptors, raw, operations)
     descriptor = {**current, **raw}
     for node in sorted(nodes, key=lambda item: _position(item["id"])):
@@ -236,13 +236,13 @@ def update_actor_descriptor(graph, all_descriptors, current, raw, nodes):
         elif operation == "output":
             descriptor["active_evaluation"] = None
             descriptor["evaluation_started"] = 0
-            descriptor.pop("summary", None)
-            descriptor.pop("last_error", None)
             if evidence := node.get("native"):
                 descriptor["native"] = evidence
             if node.get("status") == "error":
+                descriptor.pop("summary", None)
                 descriptor["last_error"] = node.get("error", "")
             elif isinstance(node.get("value"), str):
+                descriptor.pop("last_error", None)
                 descriptor["summary"] = " ".join(node["value"].split())
         elif operation == "input" and "send" in node:
             source = graph.nodes.get(node["send"], {})
