@@ -3422,6 +3422,13 @@ class IdentityTests(unittest.TestCase):
         self.assertNotIn("▸", child_line)
         self.assertNotIn("▾", child_line)
 
+    def test_rows_render_unavailable_actor_as_unavailable(self):
+        session = replace(self.session("lovelace", "$1"),
+                          reported_state="unavailable")
+        projected = [alan.Projected(session, 0, 0, False)]
+        rendered = render.rows_text(projected, [], 100, now=1)
+        self.assertIn("\033[37;41m?\033[0m", rendered)
+
     def test_rows_size_their_summary_to_the_requested_width(self):
         session = replace(self.session("lovelace", "$1"),
                           summary="s" * 300)
