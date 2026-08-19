@@ -1115,10 +1115,18 @@ class IdentityTests(unittest.TestCase):
             {"addr": "claude-old@newton", "kind": "claude", "state": "retired",
              "cwd": "/work", "created": 1, "human_activity": 0,
              "active_evaluation": None, "evaluation_started": 0},
+            {"addr": "claude-unavailable@newton", "kind": "claude",
+             "evaluator": "native", "state": "unavailable", "cwd": "/work",
+             "created": 1, "human_activity": 0, "active_evaluation": None,
+             "evaluation_started": 0},
+            {"addr": "llm-unavailable@newton", "kind": "llm",
+             "state": "unavailable", "cwd": "/work", "created": 1,
+             "human_activity": 0, "active_evaluation": None,
+             "evaluation_started": 0},
         ]
         projected = alan_inventory("newton", descriptors)
         self.assertEqual([item.ref.session_id for item in projected],
-                         [codex, "python-1@newton"])
+                         [codex, "python-1@newton", "claude-unavailable@newton"])
         self.assertEqual(projected[0].state, "working")
         self.assertEqual(projected[0].transcript_id, identity)
         self.assertEqual(projected[0].transcript_path, "")
@@ -1126,6 +1134,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(projected[0].evaluation_started, 3)
         self.assertEqual(projected[1].transcript_id, "")
         self.assertEqual(projected[1].transcript_path, "")
+        self.assertEqual(projected[2].state, "unavailable")
 
     def test_host_inventory_projects_only_actors_with_current_presentations(self):
         with tempfile.TemporaryDirectory() as cwd:
