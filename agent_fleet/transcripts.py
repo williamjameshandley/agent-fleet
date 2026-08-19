@@ -221,10 +221,17 @@ def event_text(agent, event, role):
             return blocks
         return "\n".join(block["text"] for block in blocks
                          if block.get("type") == "text")
-    if agent == "codex" and event.get("type") == "event_msg":
-        wanted = {"assistant": "agent_message", "user": "user_message"}[role]
-        if event["payload"]["type"] == wanted:
-            return event["payload"]["message"]
+    if agent == "codex":
+        if event.get("type") == "event_msg":
+            wanted = {"assistant": "agent_message", "user": "user_message"}[role]
+            if event["payload"]["type"] == wanted:
+                return event["payload"]["message"]
+        if event.get("type") == "response_item":
+            payload = event["payload"]
+            if payload.get("type") == "message" and payload.get("role") == role:
+                wanted = {"assistant": "output_text", "user": "input_text"}[role]
+                return "\n".join(block["text"] for block in payload["content"]
+                                 if block.get("type") == wanted)
     if agent == "grok" and "session/update" in event.get("method", ""):
         update = event["params"]["update"]
         wanted = {"assistant": "agent_message_chunk",
@@ -308,8 +315,8 @@ def last_human_time(item):
             human = (isinstance(content, str) or
                      (isinstance(content, list) and
                       any(block.get("type") == "text" for block in content)))
-        elif item.agent == "codex" and event.get("type") == "event_msg":
-            human = event.get("payload", {}).get("type") == "user_message"
+        elif item.agent == "codex":
+            human = bool(event_text(item.agent, event, "user"))
         elif item.agent == "grok":
             human = ("session/update" in event.get("method", "")
                      and event["params"]["update"].get("sessionUpdate")

@@ -244,6 +244,23 @@ def test_codex_human_activity_uses_latest_user_message(tmp_path):
     assert last_human_time(transcript("codex", path)) == 1784541600
 
 
+def test_codex_response_items_supply_messages_and_human_activity(tmp_path):
+    path = tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
+    events = [
+        {"type": "response_item", "timestamp": "2026-07-20T10:00:00Z",
+         "payload": {"type": "message", "role": "user", "content": [
+             {"type": "input_text", "text": "human prompt"}]}},
+        {"type": "response_item", "timestamp": "2026-07-20T11:00:00Z",
+         "payload": {"type": "message", "role": "assistant", "content": [
+             {"type": "output_text", "text": "latest\nreply"}]}},
+    ]
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    item = transcript("codex", path)
+
+    assert latest_assistant_text(item) == "latest reply"
+    assert last_human_time(item) == 1784541600
+
+
 def test_latest_assistant_text_reads_backwards_from_native_transcript(tmp_path):
     path = tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
     path.write_text("".join(json.dumps(event) + "\n" for event in [
