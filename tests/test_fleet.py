@@ -1089,7 +1089,9 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(alan.create("claude", "analysis", "/work"),
                              "claude-1@newton")
             self.assertEqual(alan.label("claude-1@newton"), "analysis")
-        spawn.assert_called_once_with({"kind": "claude", "cwd": "/work"})
+        spawn.assert_called_once_with(
+            {"kind": "claude", "cwd": "/work", "name": "analysis"}
+        )
 
         with mock.patch("agent_fleet.alan.loop.control") as control:
             alan.retire("claude-1@newton")
