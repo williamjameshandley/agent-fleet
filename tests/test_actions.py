@@ -6,6 +6,7 @@ import socket
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -207,13 +208,23 @@ def test_composite_archive_removes_provider_before_retire_failure():
     mutate.assert_called_once_with("source", "archive", [])
 
 
-def test_authority_transcript_restore_returns_native_identity():
+@pytest.mark.parametrize("agent", ["claude", "codex", "grok"])
+def test_authority_transcript_restore_returns_native_identity(agent):
+    with mock.patch("agent_fleet.authority.transcripts.resume_native") as resume:
+        value = authority.execute({"operation": "restore-transcript",
+                                   "agent": agent, "transcript": "full-id",
+                                   "name": "work"})
+    assert value == {"agent": agent, "transcript": "full-id"}
+    resume.assert_called_once_with(agent, "full-id")
+
+
+def test_authority_antigravity_transcript_restore_remains_standalone():
     with mock.patch("agent_fleet.authority.transcripts.resume") as resume:
         value = authority.execute({"operation": "restore-transcript",
-                                   "agent": "claude", "transcript": "full-id",
+                                   "agent": "antigravity", "transcript": "full-id",
                                    "name": "work"})
-    assert value == {"agent": "claude", "transcript": "full-id"}
-    resume.assert_called_once_with("claude", "full-id", "work")
+    assert value == {"agent": "antigravity", "transcript": "full-id"}
+    resume.assert_called_once_with("antigravity", "full-id", "work")
 
 
 def test_authority_restores_the_exact_adopted_native_identity():
@@ -386,21 +397,54 @@ def test_workstation_rename_sends_raw_input_and_returns_boundary_normalization()
 def test_daemon_restores_transcript_then_reconciles_exact_native_identity():
     fleet = Fleet()
     fleet.unavailable.clear()
-    restored = session(kind="tmux", agent="codex", transcript="full-id")
+    restored = session(agent="codex", transcript="full-id")
+    restored = replace(
+        restored,
+        ref=SessionRef(restored.ref.server, "codex-full-id@lovelace"),
+        attachment=session(kind="tmux", agent="codex", transcript="full-id").ref,
+    )
+    standalone = session(kind="tmux", agent="codex", transcript="full-id")
+    detached = replace(restored, attachment=None)
+    unnamed = replace(restored, name="codex-full-id")
 
     async def exercise():
-        with mock.patch.object(fleet, "authority", return_value={
-                "agent": "codex", "transcript": "full-id"}) as execute, \
-             mock.patch.object(fleet, "wait_for_source",
-                               return_value=restored.ref.key) as wait:
-            value = await fleet.action({"operation": "restore",
-                                        "history": "lovelace:codex:full-id",
-                                        "name": "work"})
-        assert value == {"source": restored.ref.key}
-        execute.assert_awaited_once_with("lovelace", {
+        renamed = asyncio.Event()
+
+        async def execute(_host, request):
+            if request["operation"] == "rename-alan":
+                renamed.set()
+            return {}
+
+        async def project(value):
+            async with fleet.changed:
+                fleet.sessions = {"lovelace": [value]}
+                fleet.observed += 1
+                fleet.changed.notify_all()
+            await asyncio.sleep(0)
+
+        with mock.patch.object(fleet, "authority", side_effect=execute) as authority:
+            pending = asyncio.create_task(fleet.action({
+                "operation": "restore", "history": "lovelace:codex:full-id",
+                "name": "work"}))
+            await asyncio.sleep(0)
+            await project(standalone)
+            assert not pending.done()
+            await project(detached)
+            assert not pending.done()
+            await project(unnamed)
+            await renamed.wait()
+            await asyncio.sleep(0)
+            assert not pending.done()
+            await project(restored)
+            value = await pending
+
+        source = "alan:codex-full-id@lovelace"
+        assert value == {"source": source}
+        assert authority.await_args_list == [mock.call("lovelace", {
             "operation": "restore-transcript", "agent": "codex",
-            "transcript": "full-id", "name": "work"})
-        wait.assert_awaited_once()
+            "transcript": "full-id", "name": "work"}), mock.call("lovelace", {
+                "operation": "rename-alan", "actor": "codex-full-id@lovelace",
+                "name": "work"})]
 
     asyncio.run(exercise())
 

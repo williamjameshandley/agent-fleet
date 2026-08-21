@@ -69,9 +69,12 @@ def execute(request):
             raise ValueError("actor and transcript identity differ")
         transcripts.resume_native(request["agent"], request["transcript"])
         return {"source": f"alan:{request['actor']}"}
-    transcripts.resume(
-        request["agent"], request["transcript"], request["name"]
-    )
+    if request["agent"] in {"claude", "codex", "grok"}:
+        transcripts.resume_native(request["agent"], request["transcript"])
+    else:
+        transcripts.resume(
+            request["agent"], request["transcript"], request["name"]
+        )
     return {"agent": request["agent"], "transcript": request["transcript"]}
 
 
