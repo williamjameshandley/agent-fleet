@@ -453,7 +453,10 @@ def _outstanding_requests(graph, descriptors):
 
 
 def create(kind, name, cwd):
-    addr = loop.spawn({"kind": kind, "cwd": cwd})
+    spec = {"kind": kind, "cwd": cwd}
+    if kind == "claude":
+        spec["name"] = name
+    addr = loop.spawn(spec)
     rename(addr, name)
     return addr
 
