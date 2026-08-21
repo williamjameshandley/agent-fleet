@@ -921,6 +921,26 @@ class Fleet:
                 "operation": "restore-transcript", "agent": agent,
                 "transcript": transcript, "name": name,
             })
+            if agent in {"claude", "codex", "grok"}:
+                actor = f"{agent}-{transcript}@{host}"
+                source = f"alan:{actor}"
+                await self.wait_for_source(
+                    lambda session: session.ref.key == source
+                    and session.agent == agent
+                    and session.transcript_id == transcript
+                    and session.attachment is not None,
+                    f"restore {key}")
+                await self.authority(host, {
+                    "operation": "rename-alan", "actor": actor, "name": name,
+                })
+                await self.wait_for_source(
+                    lambda session: session.ref.key == source
+                    and session.agent == agent
+                    and session.transcript_id == transcript
+                    and session.attachment is not None
+                    and session.name == name,
+                    f"rename {source}")
+                return {"source": source}
             source = await self.wait_for_source(
                 lambda session: session.ref.server.host == host
                 and session.agent == agent and session.transcript_id == transcript,
