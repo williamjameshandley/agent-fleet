@@ -93,6 +93,8 @@ def execute(request):
                 or session.attachment is None
                 or session.attachment.key != request["source"]):
             raise RuntimeError("native actor attachment identity differs")
+        if session.state != "waiting":
+            raise RuntimeError("native actor or provider is not waiting")
         tmux.mutate(request["source"], "archive", [])
         return {}
     if operation == "restore-alan":

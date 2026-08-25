@@ -272,6 +272,16 @@ def test_close_native_preserves_visible_tmux_failure_without_restore():
     launch.assert_not_called()
 
 
+def test_close_native_refuses_freshly_observed_working_provider():
+    actor, provider = native_pair()
+    provider = replace(provider, reported_state="working")
+    request = {"operation": "close-native", "actor": actor.ref.session_id,
+               "agent": "codex", "transcript": "full-id",
+               "source": provider.ref.key}
+    with pytest.raises(RuntimeError, match="not waiting"):
+        close_native(request, [actor, provider])
+
+
 @pytest.mark.parametrize("agent", ["codex", "claude"])
 def test_authority_composite_archive_orders_each_authoritative_component(agent):
     calls = mock.Mock()
@@ -428,22 +438,369 @@ def test_daemon_rename_revalidates_its_projection():
     asyncio.run(exercise())
 
 
-def test_removed_refresh_is_rejected_without_authority_or_viewer_effects():
-    item = session()
+def refresh_fleet(agent="codex"):
+    actor, provider = native_pair(agent=agent)
+    actor = replace(actor, name="named", cwd="/exact/work")
+    composite = fold_adopted([actor, provider])[0]
+    descriptor = {"addr": actor.ref.session_id, "kind": agent,
+                  "evaluator": "native", "capabilities": "full",
+                  "state": "waiting", "model": "exact-model"}
     fleet = Fleet()
-    fleet.sessions["lovelace"] = [item]
+    fleet.sessions["lovelace"] = [composite]
     fleet.unavailable.clear()
+    graph = daemon.nx.MultiDiGraph()
+    graph.graph["actors"] = [descriptor]
+    fleet.observed = 1
+    fleet._composed = (fleet.observed, graph)
+    return fleet, composite, descriptor
+
+
+async def project_refresh(fleet, sessions, descriptors):
+    graph = daemon.nx.MultiDiGraph()
+    graph.graph["actors"] = descriptors
+    async with fleet.changed:
+        fleet.sessions = {"lovelace": sessions}
+        fleet.observed += 1
+        fleet._composed = (fleet.observed, graph)
+        fleet.changed.notify_all()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex", "grok"])
+def test_refresh_preserves_exact_native_identity_and_reopens_viewers(agent):
+    fleet, composite, descriptor = refresh_fleet(agent)
+    paths = [Path("/run/viewer-main.sock"), Path("/run/viewer-right.sock")]
+    order = []
+
+    async def exercise():
+        async def authority(_host, request):
+            order.append(request["operation"])
+            if request["operation"] == "close-native":
+                await project_refresh(fleet, [], [{**descriptor, "state": "unavailable"}])
+                return {}
+            await project_refresh(fleet, [composite], [descriptor])
+            return {"source": composite.ref.key}
+
+        async def reopen(viewers, message):
+            order.append("reopen")
+            assert viewers == paths
+            assert message == f"OPEN {composite.ref.key}"
+
+        with mock.patch.object(fleet, "authority", side_effect=authority) as execute, \
+             mock.patch.object(fleet, "viewers", return_value=paths) as viewers, \
+             mock.patch.object(fleet, "update_viewers", side_effect=reopen) as update:
+            value = await fleet.action({"operation": "refresh",
+                                        "source": composite.ref.key})
+        assert value == {"source": composite.ref.key}
+        viewers.assert_awaited_once_with(composite.ref.key)
+        update.assert_awaited_once()
+        assert execute.await_args_list == [mock.call("lovelace", {
+            "operation": "close-native", "actor": composite.ref.session_id,
+            "agent": agent, "transcript": "full-id",
+            "source": composite.attachment.key,
+        }), mock.call("lovelace", {
+            "operation": "restore-alan", "actor": composite.ref.session_id,
+        })]
+        assert order == ["close-native", "restore-alan", "reopen"]
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("case", [
+    "standalone", "unsupported", "working", "unattached", "managed", "read",
+    "non-native", "identity", "ambiguous",
+])
+def test_refresh_refuses_ineligible_sources_before_close(case):
+    fleet, composite, descriptor = refresh_fleet()
+    if case == "standalone":
+        composite = session(kind="tmux", agent="codex", transcript="full-id")
+        fleet.sessions["lovelace"] = [composite]
+    elif case == "unsupported":
+        composite = replace(composite, agent_name="antigravity")
+        fleet.sessions["lovelace"] = [composite]
+    elif case == "working":
+        composite = replace(composite, reported_state="working")
+        fleet.sessions["lovelace"] = [composite]
+    elif case == "unattached":
+        composite = replace(composite, attachment=None)
+        fleet.sessions["lovelace"] = [composite]
+    elif case == "managed":
+        descriptor["managed"] = True
+    elif case == "read":
+        descriptor["capabilities"] = "read"
+    elif case == "non-native":
+        descriptor["evaluator"] = "llm"
+    elif case == "identity":
+        composite = replace(composite, transcript_id="other-id")
+        fleet.sessions["lovelace"] = [composite]
+    else:
+        fleet._composed[1].graph["actors"] = [descriptor, dict(descriptor)]
 
     async def exercise():
         with mock.patch.object(fleet, "authority") as execute, \
-             mock.patch.object(fleet, "viewers") as viewers, \
-             mock.patch.object(fleet, "update_viewers") as update:
-            with pytest.raises(ValueError, match="invalid Fleet action"):
+             mock.patch.object(fleet, "viewers") as viewers:
+            with pytest.raises((LookupError, ValueError)):
                 await fleet.action({"operation": "refresh",
-                                    "source": item.ref.key})
+                                    "source": composite.ref.key})
         execute.assert_not_awaited()
         viewers.assert_not_awaited()
+
+    asyncio.run(exercise())
+
+
+def test_refresh_refuses_when_provider_is_working_but_alan_is_waiting():
+    fleet, composite, descriptor = refresh_fleet()
+    provider = replace(session(kind="tmux", agent="codex", transcript="full-id"),
+                       ref=composite.attachment, reported_state="working")
+    actor = replace(composite, attachment=None, reported_state="waiting")
+    fleet.sessions["lovelace"] = fold_adopted([actor, provider])
+    assert fleet.sessions["lovelace"][0].state == "working"
+    assert descriptor["state"] == "waiting"
+
+    async def exercise():
+        with mock.patch.object(fleet, "authority") as authority, \
+             mock.patch.object(fleet, "viewers") as viewers, \
+             pytest.raises(ValueError, match="waiting actor"):
+            await fleet.action({"operation": "refresh", "source": composite.ref.key})
+        authority.assert_not_awaited()
+        viewers.assert_not_awaited()
+
+    asyncio.run(exercise())
+
+
+def test_refresh_close_failure_never_attempts_restore_or_viewer_reopen():
+    fleet, composite, _ = refresh_fleet()
+
+    async def exercise():
+        with mock.patch.object(fleet, "authority",
+                               side_effect=RuntimeError("stale source identity")) as execute, \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
+             mock.patch.object(fleet, "update_viewers") as update, \
+             pytest.raises(RuntimeError, match="stale source identity"):
+            await fleet.action({"operation": "refresh", "source": composite.ref.key})
+        assert len(execute.await_args_list) == 1
+        assert execute.await_args.args[1]["operation"] == "close-native"
         update.assert_not_awaited()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("state", ["retired", "missing"])
+def test_refresh_fails_if_the_actor_does_not_remain_unavailable_after_close(state):
+    fleet, composite, descriptor = refresh_fleet()
+
+    async def exercise():
+        async def authority(_host, request):
+            actors = ([] if state == "missing" else
+                      [{**descriptor, "state": "retired"}])
+            await project_refresh(fleet, [], actors)
+            return {}
+
+        with mock.patch.object(fleet, "authority", side_effect=authority) as execute, \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
+             pytest.raises(RuntimeError, match="disappeared|retired"):
+            await fleet.action({"operation": "refresh", "source": composite.ref.key})
+        assert len(execute.await_args_list) == 1
+
+    asyncio.run(exercise())
+
+
+def test_refresh_never_restores_while_the_old_attachment_survives_close():
+    fleet, composite, descriptor = refresh_fleet()
+    provider = replace(session(kind="tmux", agent="codex", transcript="full-id"),
+                       ref=composite.attachment)
+    real_timeout = asyncio.timeout
+
+    async def exercise():
+        async def authority(_host, _request):
+            await project_refresh(
+                fleet, [provider], [{**descriptor, "state": "unavailable"}])
+            return {}
+
+        with mock.patch.object(fleet, "authority", side_effect=authority) as execute, \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
+             mock.patch("agent_fleet.daemon.asyncio.timeout",
+                        side_effect=lambda _: real_timeout(.01)), \
+             pytest.raises(RuntimeError, match="did not detach"):
+            await fleet.action({"operation": "refresh", "source": composite.ref.key})
+        assert len(execute.await_args_list) == 1
+        assert execute.await_args.args[1]["operation"] == "close-native"
+
+    asyncio.run(exercise())
+
+
+def test_refresh_waits_for_provider_disappearance_after_actor_is_unavailable():
+    fleet, composite, descriptor = refresh_fleet()
+    provider = replace(session(kind="tmux", agent="codex", transcript="full-id"),
+                       ref=composite.attachment)
+    order = []
+
+    async def exercise():
+        async def authority(_host, request):
+            order.append(request["operation"])
+            if request["operation"] == "close-native":
+                await project_refresh(
+                    fleet, [provider], [{**descriptor, "state": "unavailable"}])
+
+                async def disappear():
+                    await asyncio.sleep(0)
+                    order.append("provider-absent")
+                    await project_refresh(
+                        fleet, [], [{**descriptor, "state": "unavailable"}])
+
+                asyncio.create_task(disappear())
+                return {}
+            await project_refresh(fleet, [composite], [descriptor])
+            return {"source": composite.ref.key}
+
+        with mock.patch.object(fleet, "authority", side_effect=authority), \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
+             mock.patch.object(fleet, "update_viewers"):
+            assert await fleet.action({
+                "operation": "refresh", "source": composite.ref.key,
+            }) == {"source": composite.ref.key}
+        assert order == ["close-native", "provider-absent", "restore-alan"]
+
+    asyncio.run(exercise())
+
+
+def test_refresh_restore_failure_leaves_the_same_unavailable_actor():
+    fleet, composite, descriptor = refresh_fleet()
+
+    async def exercise():
+        async def authority(_host, request):
+            if request["operation"] == "close-native":
+                await project_refresh(fleet, [], [{**descriptor, "state": "unavailable"}])
+                return {}
+            raise RuntimeError("restore failed")
+
+        with mock.patch.object(fleet, "authority", side_effect=authority), \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
+             mock.patch.object(fleet, "update_viewers") as update, \
+             pytest.raises(RuntimeError, match="restore failed"):
+            await fleet.action({"operation": "refresh", "source": composite.ref.key})
+        assert fleet._composed[1].graph["actors"] == [
+            {**descriptor, "state": "unavailable"}]
+        assert fleet.sessions["lovelace"] == []
+        update.assert_not_awaited()
+
+        async def restore(_host, request):
+            assert request == {"operation": "restore-alan",
+                               "actor": composite.ref.session_id}
+            await project_refresh(fleet, [composite], [descriptor])
+            return {"source": composite.ref.key}
+
+        with mock.patch.object(fleet, "authority", side_effect=restore):
+            assert await fleet.action({
+                "operation": "restore", "history": composite.ref.key,
+                "name": "",
+            }) == {"source": composite.ref.key}
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("drift", ["name", "cwd", "descriptor", "duplicate"])
+def test_refresh_rejects_restored_identity_drift_before_viewer_reopen(drift):
+    fleet, composite, descriptor = refresh_fleet()
+
+    async def exercise():
+        async def authority(_host, request):
+            if request["operation"] == "close-native":
+                await project_refresh(fleet, [], [{**descriptor, "state": "unavailable"}])
+                return {}
+            restored = composite
+            current = descriptor
+            if drift == "name":
+                restored = replace(restored, name="different")
+            elif drift == "cwd":
+                restored = replace(restored, cwd="/different")
+            elif drift == "descriptor":
+                current = {**descriptor, "model": "different"}
+            sessions = [restored, restored] if drift == "duplicate" else [restored]
+            await project_refresh(fleet, sessions, [current])
+            return {"source": composite.ref.key}
+
+        with mock.patch.object(fleet, "authority", side_effect=authority), \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
+             mock.patch.object(fleet, "update_viewers") as update, \
+             pytest.raises(RuntimeError, match="identity changed|ambiguous"):
+            await fleet.action({"operation": "refresh", "source": composite.ref.key})
+        update.assert_not_awaited()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("failure", ["different-uuid", "missing-attachment"])
+def test_refresh_never_reports_a_wrong_or_missing_restored_attachment(failure):
+    fleet, composite, descriptor = refresh_fleet()
+    real_timeout = asyncio.timeout
+
+    async def exercise():
+        async def authority(_host, request):
+            if request["operation"] == "close-native":
+                await project_refresh(fleet, [], [{**descriptor, "state": "unavailable"}])
+                return {}
+            if failure == "missing-attachment":
+                await project_refresh(
+                    fleet, [replace(composite, attachment=None)], [descriptor])
+            else:
+                other_actor, other_provider = native_pair(identity="other-id")
+                other = fold_adopted([other_actor, other_provider])[0]
+                await project_refresh(fleet, [other], [
+                    {**descriptor, "state": "unavailable"},
+                    {**descriptor, "addr": other.ref.session_id},
+                ])
+            return {"source": composite.ref.key}
+
+        with mock.patch.object(fleet, "authority", side_effect=authority), \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
+             mock.patch.object(fleet, "update_viewers") as update, \
+             mock.patch("agent_fleet.daemon.asyncio.timeout",
+                        side_effect=lambda _: real_timeout(.01)), \
+             pytest.raises(RuntimeError, match="did not restore"):
+            await fleet.action({"operation": "refresh", "source": composite.ref.key})
+        update.assert_not_awaited()
+
+    asyncio.run(exercise())
+
+
+def test_actions_refresh_uses_the_typed_fleet_action():
+    with mock.patch("agent_fleet.actions.fleet_action",
+                    return_value={"source": "alan:codex-1@lovelace"}) as action:
+        assert actions.refresh("alan:codex-1@lovelace") == {
+            "source": "alan:codex-1@lovelace"}
+    action.assert_called_once_with({"operation": "refresh",
+                                    "source": "alan:codex-1@lovelace"})
+
+
+def test_refresh_typed_action_rejects_missing_and_extra_fields():
+    fleet, composite, _ = refresh_fleet()
+
+    async def exercise():
+        for request in ({"operation": "refresh"},
+                        {"operation": "refresh", "source": composite.ref.key,
+                         "fallback": "restore"}):
+            with mock.patch.object(fleet, "authority") as authority, \
+                 pytest.raises(ValueError, match="invalid Fleet action"):
+                await fleet.action(request)
+            authority.assert_not_awaited()
+
+    asyncio.run(exercise())
+
+
+def test_muster_refresh_sends_selected_source_and_view_revision():
+    fleet, composite, _ = refresh_fleet()
+    fleet.muster_generation = ("/tmp/muster", 1, 1, "$1")
+    fleet.view_revision = 7
+    fleet._view_cache = None
+
+    async def exercise():
+        with mock.patch.object(fleet, "action", return_value={
+                "source": composite.ref.key}) as action:
+            transformed = await fleet.mutate_action(
+                f"refresh\t{composite.ref.key}\t7\t100")
+        action.assert_awaited_once_with({"operation": "refresh",
+                                        "source": composite.ref.key})
+        assert transformed.startswith("transform-header(")
 
     asyncio.run(exercise())
 

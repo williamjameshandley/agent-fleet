@@ -345,7 +345,8 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
     )
 
     assert fold_adopted([provider, actor]) == [
-        __import__("dataclasses").replace(actor, attachment=provider.ref)
+        __import__("dataclasses").replace(
+            actor, reported_state="working", attachment=provider.ref)
     ]
 
 

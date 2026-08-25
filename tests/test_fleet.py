@@ -2639,7 +2639,7 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("f\"--bind=p:transform({toggle_python})\"", source)
         self.assertIn("f\"--bind=resize:transform({resize})\"", source)
         self.assertIn("f\"--bind=x:transform({archive})\"", source)
-        self.assertNotIn("--bind=R:", source)
+        self.assertIn("f\"--bind=R:transform({refresh})\"", source)
         self.assertIn("/usr/bin/nc -U", source)
         self.assertNotIn("ui fold", source)
         self.assertNotIn("ui toggle", source)
@@ -3436,7 +3436,8 @@ class IdentityTests(unittest.TestCase):
                         return_value=os.terminal_size((100, 24))):
             self.assertEqual(
                 footer(),
-                "Enter view  c create  r rename  x archive  l open fold  h close fold  p python")
+                "Enter view  c create  r rename  R refresh  x archive  "
+                "l open fold  h close fold  p python")
 
     def test_column_header_renders_the_exact_icon_bytes(self):
         from agent_fleet.render import column_header

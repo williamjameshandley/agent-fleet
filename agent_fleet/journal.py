@@ -17,7 +17,7 @@ VALUES = {
     "stage": {"attach", "daemon", "focus", "resolve", "select", "ssh", "switch",
               "worker"},
     "task": {"archive", "refresh_muster"},
-    "action": {"archive", "create", "rename", "restore"},
+    "action": {"archive", "create", "refresh", "rename", "restore"},
 }
 ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 EVENTS = {

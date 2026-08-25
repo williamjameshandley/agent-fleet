@@ -674,7 +674,9 @@ def fold_adopted(sessions):
         if not native:
             continue
         actor, provider = actors[0], native[0]
-        replacements[actor.ref] = replace(actor, attachment=provider.ref)
+        state = min((actor.state, provider.state), key=PRIORITY.__getitem__)
+        replacements[actor.ref] = replace(
+            actor, reported_state=state, attachment=provider.ref)
         consumed.add(provider.ref)
 
     return [replacements.get(session.ref, session)
