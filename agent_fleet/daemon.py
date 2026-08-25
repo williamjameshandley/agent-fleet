@@ -288,8 +288,9 @@ class Fleet:
                 value = await self.action(decoded)
                 journal.record(
                     "action_completed", action=decoded["operation"],
-                    target=decoded.get("source") or decoded.get("history")
-                    or decoded.get("name") or "")
+                    target=(value["source"] if decoded["operation"] == "create"
+                            else decoded.get("source") or decoded.get("history")
+                            or decoded.get("name") or ""))
                 payload = json.dumps({"ok": True, "value": value},
                                      separators=(",", ":"))
             except (KeyError, LookupError, OSError, RuntimeError, ValueError,

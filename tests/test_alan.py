@@ -245,6 +245,17 @@ class ObservationStream:
         pass
 
 
+class DeltaObservationStream(ObservationStream):
+    def __next__(self):
+        try:
+            value, self.change = next(self.values)
+        except StopIteration:
+            if self.stopped:
+                self.stopped.set()
+            raise
+        return value
+
+
 def test_watcher_consumes_streamed_observations_without_polling():
     stopped = threading.Event()
     changed = queue.Queue()
@@ -284,6 +295,177 @@ def test_watcher_emits_actor_metadata_only_changes():
 
     assert watcher.actors[0]["state"] == "unavailable"
     assert changed.qsize() == 2
+
+
+def test_watcher_retains_viewport_deltas_without_waking_fleet():
+    stopped = threading.Event()
+    changed = queue.Queue()
+    initial = graph({"op": "create"})
+    viewport = initial.copy()
+    viewport.graph.update(initial.graph)
+    node = {
+        "id": "codex-a@newton#1", "stream": "codex-a@newton", "op": "output",
+        "status": "ok", "time": "2026-07-30T12:00:01Z",
+        "native": {"path": "/tmp/viewport"},
+    }
+    viewport.add_node(node["id"], **{key: value for key, value in node.items()
+                                    if key != "id"})
+    observations = DeltaObservationStream((
+        (initial, {"kind": "replace", "graph": {}}),
+        (viewport, {"kind": "delta", "actors": [], "nodes": [node], "edges": []}),
+    ), stopped)
+
+    with mock.patch.object(alan.loop, "observe", return_value=observations), \
+         mock.patch.object(alan.time, "sleep"):
+        watcher = alan.Watcher(changed, stopped)
+        watcher._thread.join(1)
+
+    assert watcher.graph is viewport
+    assert watcher.actors[0]["native"] == {"path": "/tmp/viewport"}
+    assert changed.qsize() == 1
+
+
+def bare_watcher(current):
+    watcher = object.__new__(alan.Watcher)
+    watcher.actors = []
+    watcher.graph = None
+    watcher.projected = None
+    watcher._descriptors = {}
+    watcher.available = False
+    watcher.error = None
+    watcher.initialized = threading.Event()
+    watcher._changed = queue.Queue()
+    watcher._lock = threading.RLock()
+    assert watcher.refresh(current, {"kind": "replace", "graph": {}})
+    return watcher
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("kind", "claude"),
+    ("evaluator", "native"),
+    ("managed", True),
+    ("preset", "commander"),
+])
+def test_watcher_wakes_for_fleet_actor_metadata(field, value):
+    initial = graph({"op": "create"})
+    watcher = bare_watcher(initial)
+    current = initial.copy()
+    current.graph["actors"] = [dict(initial.graph["actors"][0], **{field: value})]
+    change = {"kind": "delta", "actors": current.graph["actors"],
+              "nodes": [], "edges": []}
+
+    assert watcher.refresh(current, change)
+    assert not watcher.refresh(current, change)
+
+
+def test_watcher_wakes_for_session_lifecycle_summary_and_membership():
+    initial = graph({"op": "create"})
+    watcher = bare_watcher(initial)
+    working = initial.copy()
+    working.graph["actors"] = [dict(initial.graph["actors"][0], state="working")]
+    evaluation = {
+        "id": "codex-a@newton#1", "stream": "codex-a@newton", "op": "evaluation",
+        "time": "2026-07-30T12:00:01Z",
+    }
+    working.add_node(evaluation["id"], **{key: value for key, value in evaluation.items()
+                                         if key != "id"})
+    change = {"kind": "delta", "actors": working.graph["actors"],
+              "nodes": [evaluation], "edges": []}
+    assert watcher.refresh(working, change)
+    assert not watcher.refresh(working, change)
+
+    summary = {
+        "id": "codex-a@newton#2", "stream": "codex-a@newton", "op": "output",
+        "status": "ok", "value": "answer", "time": "2026-07-30T12:00:02Z",
+    }
+    working.add_node(summary["id"], **{key: value for key, value in summary.items()
+                                      if key != "id"})
+    assert watcher.refresh(working, {"kind": "delta", "actors": [],
+                                     "nodes": [summary], "edges": []})
+    failure = {
+        "id": "codex-a@newton#3", "stream": "codex-a@newton", "op": "output",
+        "status": "error", "error": "failed", "time": "2026-07-30T12:00:03Z",
+    }
+    working.add_node(failure["id"], **{key: value for key, value in failure.items()
+                                      if key != "id"})
+    assert watcher.refresh(working, {"kind": "delta", "actors": [],
+                                     "nodes": [failure], "edges": []})
+
+    second = dict(initial.graph["actors"][0], addr="codex-b@newton")
+    working.graph["actors"].append(second)
+    assert watcher.refresh(working, {"kind": "delta", "actors": [second],
+                                     "nodes": [], "edges": []})
+    working.graph["actors"] = working.graph["actors"][:1]
+    assert watcher.refresh(working, {"kind": "delta", "actors": [second],
+                                     "nodes": [], "edges": []})
+
+
+def test_watcher_wakes_for_principals_and_semantic_graph_only():
+    initial = graph({"op": "create"})
+    watcher = bare_watcher(initial)
+    current = initial.copy()
+    principal = {"addr": "will@newton", "kind": "principal", "host": "newton"}
+    current.graph["actors"] = [*initial.graph["actors"], principal]
+    change = {"kind": "delta", "actors": [principal], "nodes": [], "edges": []}
+    assert watcher.refresh(current, change)
+    assert not watcher.refresh(current, change)
+    principal["native"] = {"viewport": "changed"}
+    assert not watcher.refresh(current, {"kind": "delta", "actors": [principal],
+                                         "nodes": [], "edges": []})
+    replacement = {"addr": "operator@newton", "kind": "principal"}
+    current.graph["actors"] = [initial.graph["actors"][0], replacement]
+    assert watcher.refresh(current, {"kind": "delta",
+                                     "actors": [principal, replacement],
+                                     "nodes": [], "edges": []})
+    changed_type = {**replacement, "kind": "operator", "state": "waiting",
+                    "cwd": "/work"}
+    current.graph["actors"] = [initial.graph["actors"][0], changed_type]
+    assert watcher.refresh(current, {"kind": "delta",
+                                     "actors": [changed_type],
+                                     "nodes": [], "edges": []})
+
+    send = {"id": "will@newton#1", "stream": "will@newton", "op": "send",
+            "to": "codex-a@newton", "time": "2026-07-30T12:00:01Z",
+            "payload": {"kind": "prompt", "text": "hello"}}
+    current.add_node(send["id"], **{key: value for key, value in send.items()
+                                   if key != "id"})
+    assert watcher.refresh(current, {"kind": "delta", "actors": [],
+                                     "nodes": [send], "edges": []})
+    assert not watcher.refresh(current, {"kind": "delta", "actors": [],
+                                         "nodes": [send], "edges": []})
+    send = {**send, "to": "codex-b@newton"}
+    current.add_node(send["id"], **{key: value for key, value in send.items()
+                                   if key != "id"})
+    assert watcher.refresh(current, {"kind": "delta", "actors": [],
+                                     "nodes": [send], "edges": []})
+
+    unrelated = {"id": "codex-a@newton#9", "stream": "codex-a@newton",
+                 "op": "viewport", "time": "2026-07-30T12:00:09Z"}
+    current.add_node(unrelated["id"], **{key: value for key, value in unrelated.items()
+                                        if key != "id"})
+    assert not watcher.refresh(current, {"kind": "delta", "actors": [],
+                                         "nodes": [unrelated], "edges": []})
+
+
+@pytest.mark.parametrize("relation", ["spawn", "send", "reply"])
+def test_watcher_wakes_for_semantic_edges_but_not_unrelated_edges(relation):
+    current = graph({"op": "create"})
+    watcher = bare_watcher(current)
+    current.add_node("source", stream="will@newton")
+    current.add_node("target", stream="codex-a@newton")
+    current.add_edge("source", "target", key=relation)
+    edge = {"source": "source", "target": "target", "key": relation}
+    assert watcher.refresh(current, {"kind": "delta", "actors": [],
+                                     "nodes": [], "edges": [edge]})
+    assert not watcher.refresh(current, {"kind": "delta", "actors": [],
+                                         "nodes": [], "edges": [edge]})
+    current.nodes["source"]["stream"] = "principal@newton"
+    assert watcher.refresh(current, {"kind": "delta", "actors": [],
+                                     "nodes": [], "edges": [edge]})
+    current.add_edge("source", "target", key="delivery")
+    edge = {"source": "source", "target": "target", "key": "delivery"}
+    assert not watcher.refresh(current, {"kind": "delta", "actors": [],
+                                         "nodes": [], "edges": [edge]})
 
 
 def test_observation_failure_is_visible_and_clears_projection():

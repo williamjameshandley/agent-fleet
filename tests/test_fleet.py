@@ -26,7 +26,7 @@ from agent_fleet.protocol import decode, decode_graph, decode_observation, encod
 from agent_fleet.render import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.transcripts import fold_adopted
 from agent_fleet.tmux import split_key
-from agent_fleet import actions, authority, proc
+from agent_fleet import actions, authority, daemon, proc
 from agent_fleet import alan
 from agent_fleet.config import machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
@@ -462,6 +462,71 @@ class IdentityTests(unittest.TestCase):
             self.assertTrue(writer.closed)
 
         asyncio.run(exercise())
+
+    def test_create_completion_records_the_exact_source_after_projection(self):
+        fleet = Fleet()
+        fleet.unavailable.clear()
+        projected = asyncio.Event()
+        records = []
+        writer = mock.Mock()
+        writer.drain = mock.AsyncMock()
+
+        async def wait_for_source(*_args):
+            await projected.wait()
+            return "alan:codex-full-id@newton"
+
+        async def exercise():
+            reader = asyncio.StreamReader()
+            reader.feed_data(
+                b'{"operation":"create","host":"newton","agent":"codex",'
+                b'"name":"work","cwd":"/work"}\n')
+            reader.feed_eof()
+            with mock.patch.object(
+                    fleet, "authority", mock.AsyncMock(return_value={
+                        "source": "alan:codex-full-id@newton"})), \
+                 mock.patch.object(fleet, "wait_for_source",
+                                   side_effect=wait_for_source), \
+                 mock.patch.object(fleet, "schedule_refresh"), \
+                 mock.patch.object(
+                     daemon.journal, "record",
+                     side_effect=lambda event, **fields:
+                     records.append((event, fields))):
+                pending = asyncio.create_task(fleet.reply(reader, writer))
+                await asyncio.sleep(0)
+                self.assertEqual(records, [])
+                projected.set()
+                await pending
+
+        asyncio.run(exercise())
+        self.assertEqual(records, [("action_completed", {
+            "action": "create", "target": "alan:codex-full-id@newton"})])
+        self.assertEqual(json.loads(writer.write.call_args.args[0]), {
+            "ok": True, "value": {"source": "alan:codex-full-id@newton"}})
+
+    def test_non_create_completion_retains_the_requested_target(self):
+        fleet = Fleet()
+        writer = mock.Mock()
+        writer.drain = mock.AsyncMock()
+        records = []
+
+        async def exercise():
+            reader = asyncio.StreamReader()
+            reader.feed_data(
+                b'{"operation":"rename","source":"alan:codex-old@newton",'
+                b'"name":"new"}\n')
+            reader.feed_eof()
+            with mock.patch.object(
+                    fleet, "action", mock.AsyncMock(return_value={"name": "new"})), \
+                 mock.patch.object(fleet, "schedule_refresh"), \
+                 mock.patch.object(
+                     daemon.journal, "record",
+                     side_effect=lambda event, **fields:
+                     records.append((event, fields))):
+                await fleet.reply(reader, writer)
+
+        asyncio.run(exercise())
+        self.assertEqual(records, [("action_completed", {
+            "action": "rename", "target": "alan:codex-old@newton"})])
 
     def test_daemon_resolves_one_exact_live_descriptor_without_snapshot(self):
         fleet = Fleet()

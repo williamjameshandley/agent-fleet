@@ -14,6 +14,7 @@ import termios
 import threading
 import time
 import unittest
+import networkx as nx
 from pathlib import Path
 from unittest import mock
 
@@ -530,6 +531,138 @@ class ProtocolCorrelationTests(unittest.TestCase):
             changed.put("consumer")
             thread.join(1)
             self.assertTrue(finished.is_set())
+
+    def test_neutral_alan_deltas_do_not_reenter_authoritative_host_scan(self):
+        class ControlledStream:
+            def __init__(self):
+                self.inputs = queue.Queue()
+                self.processed = queue.Queue()
+
+            def next(self, update, lock):
+                item = self.inputs.get()
+                if item is None:
+                    raise StopIteration
+                graph, change = item
+                try:
+                    with lock:
+                        update(graph, change)
+                except Exception as error:
+                    self.processed.put(error)
+                    raise
+                self.processed.put(None)
+
+            def close(self):
+                pass
+
+        changed = queue.Queue()
+        consumer = threading.Event()
+        observations = ControlledStream()
+        watcher = object.__new__(alan.Watcher)
+        watcher.actors = []
+        watcher.graph = None
+        watcher.projected = None
+        watcher._descriptors = {}
+        watcher.available = False
+        watcher.error = None
+        watcher.initialized = threading.Event()
+        watcher._changed = changed
+        watcher._consumer = consumer
+        watcher._lock = threading.RLock()
+        watcher._thread = threading.Thread(target=watcher._run, daemon=True)
+
+        actor = {"addr": "codex-a@fixture", "kind": "codex", "host": "fixture",
+                 "cwd": "/work", "state": "waiting"}
+        current = nx.MultiDiGraph()
+        current.graph["actors"] = [actor]
+        current.add_node("codex-a@fixture#0", stream="codex-a@fixture", op="create",
+                         time="2026-08-24T12:00:00Z")
+        process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
+        process.poll.return_value = None
+        control = mock.Mock(closed=False)
+        tmux = mock.Mock()
+        tmux.has_session.return_value = True
+        baseline = mock.Mock(ref="baseline")
+        relevant = mock.Mock(ref="relevant")
+
+        with mock.patch.object(alan.loop, "observe", return_value=observations), \
+             mock.patch("agent_fleet.tmux.watch_socket"), \
+             mock.patch("agent_fleet.tmux.watch", return_value=iter(())), \
+             mock.patch("agent_fleet.tmux.subprocess.run",
+                        return_value=mock.Mock(returncode=0)), \
+             mock.patch("agent_fleet.tmux.subprocess.Popen", return_value=process), \
+             mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
+             mock.patch("agent_fleet.tmux.server", return_value=tmux), \
+             mock.patch("agent_fleet.tmux.inventory",
+                        side_effect=[[baseline], [relevant]]) as inventory, \
+             mock.patch("agent_fleet.tmux.native_transcripts.catalog",
+                        return_value={}) as catalog, \
+             mock.patch("agent_fleet.tmux.observe",
+                        side_effect=lambda sessions, _catalog: sessions) as observe:
+            watcher._thread.start()
+            observations.inputs.put((current, {"kind": "replace", "graph": {}}))
+            observations.processed.get(timeout=1)
+            self.assertEqual(changed.get(timeout=1), "alan")
+            stream = event_stream("fixture", consumer, changed=changed,
+                                  alan_watcher=watcher)
+            publications = queue.Queue()
+            finish = threading.Event()
+
+            def publish():
+                publications.put(next(stream))
+                publications.put(next(stream))
+                finish.wait()
+                with self.assertRaises(StopIteration):
+                    next(stream)
+
+            publisher = threading.Thread(target=publish, daemon=True)
+            publisher.start()
+            self.assertEqual(publications.get(timeout=1)[0], [baseline])
+
+            for position in range(1, 11):
+                current = current.copy()
+                node = {
+                    "id": f"codex-a@fixture#{position}",
+                    "stream": "codex-a@fixture", "op": "output", "status": "ok",
+                    "time": f"2026-08-24T12:00:{position:02d}Z",
+                    "native": {"viewport": position},
+                }
+                current.add_node(node["id"], **{key: value for key, value in node.items()
+                                                if key != "id"})
+                observations.inputs.put((current, {"kind": "delta", "actors": [],
+                                                    "nodes": [node], "edges": []}))
+                self.assertIsNone(observations.processed.get(timeout=1))
+            observations.inputs.put((current, {"kind": "delta", "actors": [],
+                                                "nodes": [], "edges": []}))
+            self.assertIsNone(observations.processed.get(timeout=1))
+            self.assertTrue(changed.empty())
+            self.assertEqual((inventory.call_count, catalog.call_count,
+                              observe.call_count), (1, 1, 1))
+            self.assertTrue(publications.empty())
+
+            current = current.copy()
+            current.graph["actors"] = [{**actor, "state": "working"}]
+            evaluation = {
+                "id": "codex-a@fixture#11", "stream": "codex-a@fixture",
+                "op": "evaluation", "time": "2026-08-24T12:00:11Z",
+            }
+            current.add_node(evaluation["id"], **{
+                key: value for key, value in evaluation.items() if key != "id"})
+            observations.inputs.put((current, {
+                "kind": "delta", "actors": current.graph["actors"],
+                "nodes": [evaluation], "edges": [],
+            }))
+            self.assertIsNone(observations.processed.get(timeout=1))
+            self.assertEqual(publications.get(timeout=1)[0], [relevant])
+            self.assertEqual((inventory.call_count, catalog.call_count,
+                              observe.call_count), (2, 2, 2))
+
+            consumer.set()
+            changed.put("consumer")
+            finish.set()
+            publisher.join(1)
+            self.assertFalse(publisher.is_alive())
+            observations.inputs.put(None)
+            watcher._thread.join(1)
 
     def test_mismatched_terminal_frame_cannot_acknowledge_command(self):
         lines = queue.Queue()

@@ -49,8 +49,12 @@ class Watcher:
             try:
                 stream = loop.observe(stream=True)
                 while True:
-                    stream.next(self.refresh, self._lock)
-                    self._changed.put("alan")
+                    publish = []
+                    stream.next(
+                        lambda graph, change: publish.append(self.refresh(graph, change)),
+                        self._lock)
+                    if publish == [True]:
+                        self._changed.put("alan")
                     if self._consumer and self._consumer.is_set():
                         return
             except StopIteration:
@@ -68,6 +72,7 @@ class Watcher:
 
     def refresh(self, graph, change):
         with self._lock:
+            previous = fleet_projection(self._descriptors.values(), self.projected)
             if change["kind"] == "replace":
                 self._descriptors = {
                     actor["addr"]: actor for actor in actors(graph)}
@@ -99,7 +104,8 @@ class Watcher:
             self.available = True
             self.error = None
             self.initialized.set()
-            return current, graph
+            return (change["kind"] == "replace"
+                    or previous != fleet_projection(current, self.projected))
 
     def _watch_labels(self):
         directory = _state_dir() / "labels"
@@ -157,6 +163,22 @@ def address_identity(addr, kind):
     if kind not in {"claude", "codex", "grok"}:
         return ""
     return addr.split("-", 1)[1].rsplit("@", 1)[0]
+
+
+def fleet_projection(actor_descriptors, graph):
+    actor_descriptors = list(actor_descriptors)
+    sessions = tuple(inventory("", actor_descriptors))
+    routing = {actor["addr"]: tuple(actor.get(field)
+                                     for field in ("evaluator", "managed", "preset"))
+               for actor in actor_descriptors}
+    if graph is None:
+        return sessions, routing, {}, {}, set()
+    principals = {actor["addr"]: actor.get("kind")
+                  for actor in graph.graph.get("actors", [])
+                  if actor.get("kind") == "principal"}
+    nodes = {reference: dict(node) for reference, node in graph.nodes(data=True)}
+    edges = set(graph.edges(keys=True))
+    return sessions, routing, principals, nodes, edges
 
 
 def actors(graph=None, operations=None):
