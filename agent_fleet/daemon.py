@@ -34,6 +34,18 @@ def remove_viewer_marker(host, owner, slot):
     path.unlink(missing_ok=True)
 
 
+def capture_preview(controls, alan, request):
+    key = request["key"]
+    native = (key.startswith("alan:") and
+              key.removeprefix("alan:").split("-", 1)[0]
+              in {"claude", "codex", "grok"})
+    if not key.startswith("alan:") or native:
+        controls.get()
+        return capture(key, request["columns"], request["lines"])
+    with alan.full_graph() as graph:
+        return capture(key, request["columns"], request["lines"], graph)
+
+
 def events(host):
     """Stream one host's session events and answer preview requests."""
     lock = threading.Lock()
@@ -52,14 +64,7 @@ def events(host):
                 request = json.loads(line)
                 try:
                     if "preview" in request:
-                        key = request["key"]
-                        if (not key.startswith("alan:") or
-                                key.removeprefix("alan:").split("-", 1)[0]
-                                in {"claude", "codex", "grok"}):
-                            controls.get()
-                        with alan.full_graph() as graph:
-                            text = capture(request["key"], request["columns"],
-                                           request["lines"], graph)
+                        text = capture_preview(controls, alan, request)
                         response = {"preview": request["preview"], "text": text}
                     elif "switch" in request:
                         control = controls.get()

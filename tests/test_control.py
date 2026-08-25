@@ -144,6 +144,40 @@ class ResidentControlTests(unittest.TestCase):
         names = self.control.command(["list-sessions", "-F", "#{session_name}"])
         self.assertNotIn("fleet@alan-" + alan.runtime_name(codex["addr"]), names)
 
+    def test_native_preview_does_not_wait_for_alan_graph_lock(self):
+        graph_lock = threading.Lock()
+        graph_lock.acquire()
+        watcher = mock.Mock()
+        watcher.full_graph.side_effect = lambda: graph_lock
+        controls = mock.Mock()
+        request = {"key": "alan:codex-actor@host", "columns": 80, "lines": 20}
+        finished = threading.Event()
+
+        def preview():
+            daemon.capture_preview(controls, watcher, request)
+            finished.set()
+
+        with mock.patch.object(daemon, "capture", return_value="screen") as capture:
+            thread = threading.Thread(target=preview)
+            thread.start()
+            self.assertTrue(finished.wait(1))
+            thread.join()
+        controls.get.assert_called_once_with()
+        watcher.full_graph.assert_not_called()
+        capture.assert_called_once_with("alan:codex-actor@host", 80, 20)
+        graph_lock.release()
+
+    def test_graph_preview_uses_coherent_alan_graph(self):
+        graph = object()
+        watcher = mock.Mock()
+        watcher.full_graph.return_value = contextlib.nullcontext(graph)
+        controls = mock.Mock()
+        request = {"key": "alan:llm-actor@host", "columns": 80, "lines": 20}
+        with mock.patch.object(daemon, "capture", return_value="screen") as capture:
+            self.assertEqual(daemon.capture_preview(controls, watcher, request), "screen")
+        controls.get.assert_not_called()
+        capture.assert_called_once_with("alan:llm-actor@host", 80, 20, graph)
+
     def test_disconnect_fails_an_outstanding_command(self):
         self.process.terminate()
         self.process.wait()
