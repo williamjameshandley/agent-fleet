@@ -66,6 +66,14 @@ def test_authority_operations_are_finite_and_direct():
     retire.assert_called_once_with("codex-1@lovelace")
     close.assert_not_called()
 
+    with mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         mock.patch("agent_fleet.authority.presentation.close") as close:
+        assert authority.execute({"operation": "archive-alan",
+                                  "actor": "python-1@lovelace",
+                                  "agent": "python"}) == {}
+    retire.assert_called_once_with("python-1@lovelace")
+    close.assert_not_called()
+
     with mock.patch("agent_fleet.authority.alan.retire"), \
          mock.patch("agent_fleet.authority.presentation.close") as close:
         authority.execute({"operation": "archive-alan",
@@ -255,9 +263,9 @@ def test_authority_rejects_generic_or_extra_operations():
                 authority.execute(request)
         retire.assert_not_called()
         resume.assert_not_called()
-    with pytest.raises(ValueError, match="language actor"):
-        authority.execute({"operation": "archive-alan", "actor": "python-a",
-                           "agent": "python"})
+    with pytest.raises(ValueError, match="Alan actor"):
+        authority.execute({"operation": "archive-alan", "actor": "shell-a",
+                           "agent": "shell"})
 
 
 def test_daemon_rename_revalidates_its_projection():
@@ -323,6 +331,17 @@ def test_composite_archive_keeps_bare_actor_and_raw_provider_operations():
     assert fleet.archive_authority(provider.ref.key)[2] == {
         "operation": "archive-tmux", "source": provider.ref.key,
         "agent": "codex", "transcript": "thread-1"}
+
+
+def test_daemon_archives_bare_python_through_alan_authority():
+    actor = session(agent="python", transcript="")
+    fleet = Fleet()
+    fleet.sessions = {"lovelace": [actor]}
+    fleet.unavailable.clear()
+
+    assert fleet.archive_authority(actor.ref.key)[2] == {
+        "operation": "archive-alan", "actor": "python-1@lovelace",
+        "agent": "python"}
 
 
 def test_composite_archive_projection_leaves_no_actor_or_raw_provider():

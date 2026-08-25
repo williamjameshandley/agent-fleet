@@ -828,8 +828,8 @@ class Fleet:
         host = session.ref.server.host
         self.available(host)
         if session.ref.server.kind == "alan":
-            if session.agent not in {"llm", "claude", "codex", "grok", "antigravity"}:
-                raise ValueError("archive requires a language actor")
+            if session.agent not in {"llm", "claude", "codex", "grok", "antigravity", "python"}:
+                raise ValueError("archive requires an Alan actor")
             if session.attachment:
                 if not session.transcript_id:
                     if session.worked:
