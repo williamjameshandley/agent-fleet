@@ -1,6 +1,7 @@
 """Finite source-authority mutations for the Fleet action boundary."""
 
 import json
+import os
 
 from . import alan, presentation, tmux, transcripts
 from .config import KINDS
@@ -14,6 +15,7 @@ FIELDS = {
     "archive-composite": {"operation", "actor", "agent", "source", "transcript"},
     "archive-pristine": {"operation", "actor", "agent", "source"},
     "archive-tmux": {"operation", "source", "agent", "transcript"},
+    "close-native": {"operation", "actor", "agent", "transcript", "source"},
     "restore-alan": {"operation", "actor"},
     "restore-native": {"operation", "actor", "agent", "transcript"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
@@ -60,6 +62,37 @@ def execute(request):
         return {}
     if operation == "archive-tmux":
         transcripts.verify(request["agent"], request["transcript"])
+        tmux.mutate(request["source"], "archive", [])
+        return {}
+    if operation == "close-native":
+        if request["agent"] not in {"claude", "codex", "grok"}:
+            raise ValueError("close requires a natively adopted agent")
+        if (alan.address_identity(request["actor"], request["agent"])
+                != request["transcript"]):
+            raise ValueError("actor and transcript identity differ")
+        transcripts.verify(request["agent"], request["transcript"])
+        actors = alan.actors()
+        matches = [actor for actor in actors
+                   if actor["addr"] == request["actor"]]
+        if len(matches) != 1:
+            raise RuntimeError("native actor is unavailable or ambiguous")
+        [actor] = matches
+        if (actor.get("evaluator") != "native"
+                or actor.get("capabilities") != "full"
+                or actor.get("managed", False)):
+            raise RuntimeError("actor is not an adopted full native session")
+        sessions = tmux.inventory(os.uname().nodename, actors)
+        sessions = transcripts.observe(sessions, transcripts.catalog())
+        selected = [session for session in sessions
+                    if session.ref.key == f"alan:{request['actor']}"]
+        if len(selected) != 1:
+            raise RuntimeError("native actor is unavailable or ambiguous")
+        [session] = selected
+        if (session.agent != request["agent"]
+                or session.transcript_id != request["transcript"]
+                or session.attachment is None
+                or session.attachment.key != request["source"]):
+            raise RuntimeError("native actor attachment identity differs")
         tmux.mutate(request["source"], "archive", [])
         return {}
     if operation == "restore-alan":

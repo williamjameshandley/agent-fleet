@@ -128,6 +128,150 @@ def test_authority_archive_verifies_recovery_before_exact_tmux_kill():
     ]
 
 
+def native_pair(agent="codex", identity="full-id", session_id="$1"):
+    actor = session(agent=agent, transcript=identity)
+    actor = replace(actor, ref=SessionRef(
+        actor.ref.server, f"{agent}-{identity}@lovelace"))
+    provider = session(kind="tmux", agent=agent, transcript=identity)
+    provider = replace(provider, ref=SessionRef(provider.ref.server, session_id))
+    return actor, provider
+
+
+def close_native(request, sessions):
+    actors = [{"addr": request["actor"], "kind": request["agent"],
+               "evaluator": "native", "capabilities": "full"}]
+    with mock.patch("agent_fleet.authority.transcripts.verify") as verified, \
+         mock.patch("agent_fleet.authority.alan.actors", return_value=actors) as observed, \
+         mock.patch("agent_fleet.authority.tmux.inventory",
+                    return_value=sessions) as inventoried, \
+         mock.patch("agent_fleet.authority.transcripts.catalog",
+                    return_value={}) as catalog, \
+         mock.patch("agent_fleet.authority.transcripts.observe",
+                    side_effect=lambda current, _catalog: fold_adopted(current)) as projected, \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate:
+        try:
+            value = authority.execute(request)
+        except Exception:
+            mutate.assert_not_called()
+            raise
+    verified.assert_called_once_with(request["agent"], request["transcript"])
+    observed.assert_called_once_with()
+    inventoried.assert_called_once_with(os.uname().nodename, actors)
+    catalog.assert_called_once_with()
+    projected.assert_called_once_with(sessions, {})
+    return value, mutate
+
+
+def test_close_native_schema_is_exact_and_rejects_generic_requests():
+    request = {"operation": "close-native",
+               "actor": "codex-full-id@lovelace", "agent": "codex",
+               "transcript": "full-id", "source": "source"}
+    for invalid in ({key: value for key, value in request.items() if key != "source"},
+                    {**request, "fallback": "source"},
+                    {**request, "operation": "close"}):
+        with mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+             pytest.raises(ValueError, match="invalid authority action"):
+            authority.execute(invalid)
+        mutate.assert_not_called()
+
+
+def test_close_native_rejects_actor_transcript_mismatch_without_mutation():
+    with mock.patch("agent_fleet.authority.alan.actors") as observed, \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         pytest.raises(ValueError, match="actor and transcript identity differ"):
+        authority.execute({"operation": "close-native",
+                           "actor": "codex-other-id@lovelace", "agent": "codex",
+                           "transcript": "full-id", "source": "source"})
+    observed.assert_not_called()
+    mutate.assert_not_called()
+
+
+def test_close_native_rejects_a_missing_transcript_without_mutation():
+    with mock.patch("agent_fleet.authority.transcripts.verify",
+                    side_effect=LookupError("missing")), \
+         mock.patch("agent_fleet.authority.alan.actors") as observed, \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         pytest.raises(LookupError, match="missing"):
+        authority.execute({"operation": "close-native",
+                           "actor": "codex-full-id@lovelace", "agent": "codex",
+                           "transcript": "full-id", "source": "source"})
+    observed.assert_not_called()
+    mutate.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("evaluator", "llm"), ("capabilities", "read"), ("managed", True),
+])
+def test_close_native_rejects_an_ineligible_actor_without_mutation(field, value):
+    actor = {"addr": "codex-full-id@lovelace", "kind": "codex",
+             "evaluator": "native", "capabilities": "full",
+             field: value}
+    with mock.patch("agent_fleet.authority.transcripts.verify"), \
+         mock.patch("agent_fleet.authority.alan.actors", return_value=[actor]), \
+         mock.patch("agent_fleet.authority.tmux.inventory") as inventory, \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         pytest.raises(RuntimeError, match="not an adopted full native session"):
+        authority.execute({"operation": "close-native",
+                           "actor": actor["addr"], "agent": "codex",
+                           "transcript": "full-id", "source": "source"})
+    inventory.assert_not_called()
+    mutate.assert_not_called()
+
+
+def test_close_native_rejects_stale_or_mismatched_live_source_without_mutation():
+    actor, provider = native_pair()
+    source = provider.ref.key
+    request = {"operation": "close-native", "actor": actor.ref.session_id,
+               "agent": "codex", "transcript": "full-id", "source": source}
+    for wrong in ("lovelace:/tmp/tmux/default:12:10:$stale",
+                  native_pair(identity="other-id", session_id="$2")[1].ref.key):
+        with pytest.raises(RuntimeError, match="attachment identity differs"):
+            close_native({**request, "source": wrong},
+                         [actor, provider,
+                          native_pair(identity="other-id", session_id="$2")[1]])
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex", "grok"])
+def test_close_native_kills_only_the_exact_joined_tmux_session(agent):
+    actor, provider = native_pair(agent=agent)
+    request = {"operation": "close-native", "actor": actor.ref.session_id,
+               "agent": agent, "transcript": "full-id",
+               "source": provider.ref.key}
+    with mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         mock.patch("agent_fleet.authority.alan.resume") as resume, \
+         mock.patch("agent_fleet.authority.transcripts.resume_native") as launch:
+        value, mutate = close_native(request, [actor, provider])
+    assert value == {}
+    mutate.assert_called_once_with(provider.ref.key, "archive", [])
+    retire.assert_not_called()
+    resume.assert_not_called()
+    launch.assert_not_called()
+
+
+def test_close_native_preserves_visible_tmux_failure_without_restore():
+    actor, provider = native_pair()
+    request = {"operation": "close-native", "actor": actor.ref.session_id,
+               "agent": "codex", "transcript": "full-id",
+               "source": provider.ref.key}
+    with mock.patch("agent_fleet.authority.alan.actors",
+                    return_value=[{"addr": actor.ref.session_id, "kind": "codex",
+                                   "evaluator": "native", "capabilities": "full"}]), \
+         mock.patch("agent_fleet.authority.transcripts.verify"), \
+         mock.patch("agent_fleet.authority.tmux.inventory",
+                    return_value=[actor, provider]), \
+         mock.patch("agent_fleet.authority.transcripts.catalog", return_value={}), \
+         mock.patch("agent_fleet.authority.transcripts.observe",
+                    return_value=fold_adopted([actor, provider])), \
+         mock.patch("agent_fleet.authority.tmux.mutate",
+                    side_effect=RuntimeError("tmux failed")), \
+         mock.patch("agent_fleet.authority.alan.resume") as resume, \
+         mock.patch("agent_fleet.authority.transcripts.resume_native") as launch, \
+         pytest.raises(RuntimeError, match="tmux failed"):
+        authority.execute(request)
+    resume.assert_not_called()
+    launch.assert_not_called()
+
+
 @pytest.mark.parametrize("agent", ["codex", "claude"])
 def test_authority_composite_archive_orders_each_authoritative_component(agent):
     calls = mock.Mock()
