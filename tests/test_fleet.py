@@ -3151,6 +3151,17 @@ class IdentityTests(unittest.TestCase):
         self.assertLess(inert, register)
         self.assertLess(register, live)
 
+    def test_muster_disables_wrapping_without_enabling_horizontal_scroll(self):
+        with mock.patch.object(ui, "prepare_socket"), \
+             mock.patch.object(ui, "header", return_value="header"), \
+             mock.patch.object(ui, "footer", return_value="footer"), \
+             mock.patch.object(ui.os, "execvp", side_effect=RuntimeError) as execute, \
+             self.assertRaises(RuntimeError):
+            ui.muster()
+        command = execute.call_args.args[1]
+        self.assertIn("--no-wrap", command)
+        self.assertIn("--no-hscroll", command)
+
     def test_ui_register_sends_the_complete_text_generation(self):
         result = mock.Mock(stdout="/tmp/tmux.sock\t123\t$4\n")
         with mock.patch.object(ui.subprocess, "run", return_value=result) as run, \

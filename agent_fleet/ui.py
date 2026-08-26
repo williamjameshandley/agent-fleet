@@ -61,7 +61,7 @@ def muster():
         "fzf", "--listen", str(sock), "--track", "--disabled", "--no-input", "--ansi",
         f"--color={FZF_COLOUR}",
         "--no-unicode", "--pointer=>", "--gutter= ",
-        "--no-scrollbar", "--no-hscroll",
+        "--no-scrollbar", "--no-hscroll", "--no-wrap",
         "--delimiter=\t", "--with-nth=4..", "--id-nth=1",
         "--layout=reverse", "--no-sort", "--no-multi", "--info=inline", "--border=none",
         f"--header={header()}",
