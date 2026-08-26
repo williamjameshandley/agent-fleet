@@ -247,6 +247,19 @@ def test_codex_human_activity_uses_latest_user_message(tmp_path):
     assert last_human_time(transcript("codex", path)) == 1784541600
 
 
+def test_codex_human_activity_uses_compacted_replacement_history(tmp_path):
+    path = tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
+    event = {
+        "type": "compacted", "timestamp": "2026-07-20T10:00:00Z",
+        "payload": {"message": "", "replacement_history": [{
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "human prompt"}],
+        }]},
+    }
+    path.write_text(json.dumps(event) + "\n")
+    assert last_human_time(transcript("codex", path)) == 1784541600
+
+
 def test_codex_response_items_supply_messages_and_human_activity(tmp_path):
     path = tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
     events = [

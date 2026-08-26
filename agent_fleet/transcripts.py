@@ -318,7 +318,15 @@ def last_human_time(item):
                      (isinstance(content, list) and
                       any(block.get("type") == "text" for block in content)))
         elif item.agent == "codex":
-            human = bool(event_text(item.agent, event, "user"))
+            human = bool(event_text(item.agent, event, "user")) or (
+                event.get("type") == "compacted" and any(
+                    message.get("type") == "message"
+                    and message.get("role") == "user"
+                    and any(block.get("type") == "input_text"
+                            for block in message.get("content", []))
+                    for message in event["payload"]["replacement_history"]
+                )
+            )
         elif item.agent == "grok":
             human = ("session/update" in event.get("method", "")
                      and event["params"]["update"].get("sessionUpdate")
