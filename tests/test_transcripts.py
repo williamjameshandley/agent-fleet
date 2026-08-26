@@ -379,6 +379,58 @@ def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
     assert projected.transcript_id == identity
 
 
+def test_pristine_native_codex_joins_by_its_published_actor_socket(tmp_path,
+                                                                  monkeypatch):
+    identity = "00000000-0000-0000-0000-000000000001"
+    actor_address = f"codex-{identity}@newton"
+    alan_server = ServerRef("newton", "", 0, 0, "alan")
+    tmux_server = ServerRef("newton", "/tmp/tmux", 1, 1)
+    actor = Session(
+        SessionRef(alan_server, actor_address), "Analysis", 1, 0, 0, 1,
+        "alan", "", "/work", "codex", "waiting", transcript_id=identity,
+        worked=False,
+    )
+    provider = Session(
+        SessionRef(tmux_server, "$7"), "fleet@native-test", 1, 2, 1, 1,
+        "python3", "will", "/work",
+    )
+    root = tmp_path / "codex-root"
+    root.mkdir()
+    (root / "loop.sock").symlink_to(
+        tmp_path / "actors" / transcripts.runtime_name(actor_address) / "loop.sock")
+    unrelated = tmp_path / "rollout-00000000-0000-0000-0000-000000000002.jsonl"
+    real_readlink = transcripts.os.readlink
+
+    def run(arguments, **_kwargs):
+        if arguments[:2] == ["claude", "agents"]:
+            return type("Result", (), {"stdout": "[]", "returncode": 0})()
+        if arguments[:3] == ["/usr/bin/tmux", "-N", "list-panes"]:
+            output = ("name=fleet@native-test session=$7 pid=100 "
+                      "command=python3 title=will\n")
+            return type("Result", (), {"stdout": output, "returncode": 0})()
+        assert arguments == ["/usr/bin/tmux", "-N", "show-environment",
+                             "-t", "$7", "ALAN_NATIVE_ROOT"]
+        return type("Result", (), {
+            "stdout": f"ALAN_NATIVE_ROOT={root}\n", "returncode": 0})()
+
+    monkeypatch.setattr(transcripts.subprocess, "run", run)
+    monkeypatch.setattr(transcripts, "process_tree", lambda: {100: [101]})
+    monkeypatch.setattr(
+        transcripts.os, "readlink",
+        lambda path: "/usr/bin/codex" if path == "/proc/101/exe"
+        else real_readlink(path),
+    )
+    monkeypatch.setattr(
+        transcripts, "codex_candidates", lambda _tree: ([str(unrelated)], set()))
+
+    [projected] = transcripts.observe([provider, actor], {})
+
+    assert projected.ref == actor.ref
+    assert projected.name == "Analysis"
+    assert projected.transcript_id == identity
+    assert projected.attachment == provider.ref
+
+
 def test_invalid_provider_transcript_isolated_to_its_session(tmp_path, monkeypatch):
     identity = "00000000-0000-0000-0000-000000000001"
     path = tmp_path / f"rollout-{identity}.jsonl"

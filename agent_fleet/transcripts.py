@@ -13,6 +13,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
+from .alan import runtime_name
+
 
 CLAUDE = Path.home() / ".claude/projects"
 CODEX = Path.home() / ".codex/sessions"
@@ -510,8 +512,28 @@ def indexed_claude_agents(output):
     return {item["pid"]: item for item in json.loads(output) if item.get("pid") is not None}
 
 
+def _native_owner(session_id, owners):
+    result = subprocess.run(
+        ["/usr/bin/tmux", "-N", "show-environment", "-t", session_id,
+         "ALAN_NATIVE_ROOT"], text=True, capture_output=True)
+    if result.returncode or not result.stdout.startswith("ALAN_NATIVE_ROOT="):
+        return None
+    root = Path(result.stdout.rstrip("\n").split("=", 1)[1])
+    try:
+        target = os.readlink(root / "loop.sock")
+    except OSError:
+        return None
+    return owners.get(Path(target).parent.name)
+
+
 def observe(sessions, transcripts=None):
     sessions = project_native(sessions, transcripts)
+    owners = {
+        runtime_name(session.ref.session_id): session
+        for session in sessions
+        if session.ref.server.kind == "alan"
+        and session.agent in {"claude", "codex", "grok"}
+    }
     claude = indexed_claude_agents(subprocess.run(
         ["claude", "agents", "--json"], text=True, capture_output=True,
         check=True).stdout)
@@ -595,6 +617,16 @@ def observe(sessions, transcripts=None):
                 human_activity = 0
         else:
             targets, resumed = codex_candidates(tree)
+            owner = (_native_owner(session_id, owners)
+                     if owners and name.startswith("fleet@native-") else None)
+            if owner is not None and owner.agent == "codex":
+                identity = owner.transcript_id
+                targets = [target for target in dict.fromkeys(targets)
+                           if Path(target).stem[-36:] == identity]
+                if not targets:
+                    rows.append((session_id, agent, "waiting", "", 0,
+                                 identity, 0))
+                    continue
             try:
                 item = transcript("codex", select_codex(targets, resumed))
             except RuntimeError:
