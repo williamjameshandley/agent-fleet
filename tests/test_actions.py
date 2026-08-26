@@ -284,12 +284,155 @@ def test_daemon_rename_revalidates_its_projection():
     asyncio.run(exercise())
 
 
-def test_authority_close_native_mutates_only_the_exact_tagged_source():
-    source = "lovelace:/tmp/tmux/native:44:12:$9"
-    with mock.patch("agent_fleet.authority.tmux.mutate") as mutate:
-        assert authority.execute({"operation": "close-native",
-                                  "source": source}) == {}
-    mutate.assert_called_once_with(source, "archive", [])
+def native_pair(agent="codex", identity="full-id", session_id="$9"):
+    actor = session(agent=agent, transcript=identity)
+    actor = replace(actor, ref=SessionRef(
+        actor.ref.server, f"{agent}-{identity}@lovelace"))
+    provider = session(kind="tmux", agent=agent, transcript=identity)
+    provider = replace(provider, ref=SessionRef(
+        ServerRef("lovelace", "/tmp/tmux/native", 44, 12), session_id))
+    return actor, provider
+
+
+def close_native(request, sessions):
+    actors = [{"addr": request["actor"], "kind": request["agent"],
+               "evaluator": "native", "capabilities": "full"}]
+    with mock.patch("agent_fleet.authority.transcripts.verify"), \
+         mock.patch("agent_fleet.authority.alan.actors", return_value=actors), \
+         mock.patch("agent_fleet.authority.tmux.inventory",
+                    return_value=sessions), \
+         mock.patch("agent_fleet.authority.transcripts.catalog", return_value={}), \
+         mock.patch("agent_fleet.authority.transcripts.observe",
+                    return_value=fold_adopted(sessions)), \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate:
+        try:
+            value = authority.execute(request)
+        except Exception:
+            mutate.assert_not_called()
+            raise
+    return value, mutate
+
+
+def test_close_native_schema_is_exact():
+    request = {"operation": "close-native",
+               "actor": "codex-full-id@lovelace", "agent": "codex",
+               "transcript": "full-id", "source": "source"}
+    for invalid in ({key: value for key, value in request.items()
+                     if key != "source"},
+                    {**request, "fallback": "source"},
+                    {**request, "operation": "close"}):
+        with mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+             pytest.raises(ValueError, match="invalid authority action"):
+            authority.execute(invalid)
+        mutate.assert_not_called()
+
+
+def test_close_native_rejects_actor_transcript_mismatch():
+    with mock.patch("agent_fleet.authority.alan.actors") as observed, \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         pytest.raises(ValueError, match="actor and transcript identity differ"):
+        authority.execute({"operation": "close-native",
+                           "actor": "codex-other-id@lovelace", "agent": "codex",
+                           "transcript": "full-id", "source": "source"})
+    observed.assert_not_called()
+    mutate.assert_not_called()
+
+
+def test_close_native_rejects_missing_transcript():
+    with mock.patch("agent_fleet.authority.transcripts.verify",
+                    side_effect=LookupError("missing")), \
+         mock.patch("agent_fleet.authority.alan.actors") as observed, \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         pytest.raises(LookupError, match="missing"):
+        authority.execute({"operation": "close-native",
+                           "actor": "codex-full-id@lovelace", "agent": "codex",
+                           "transcript": "full-id", "source": "source"})
+    observed.assert_not_called()
+    mutate.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("evaluator", "llm"), ("capabilities", "read"), ("managed", True),
+])
+def test_close_native_rejects_ineligible_actor(field, value):
+    actor = {"addr": "codex-full-id@lovelace", "kind": "codex",
+             "evaluator": "native", "capabilities": "full", field: value}
+    with mock.patch("agent_fleet.authority.transcripts.verify"), \
+         mock.patch("agent_fleet.authority.alan.actors", return_value=[actor]), \
+         mock.patch("agent_fleet.authority.tmux.inventory") as inventory, \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         pytest.raises(RuntimeError, match="not an adopted full native session"):
+        authority.execute({"operation": "close-native", "actor": actor["addr"],
+                           "agent": "codex", "transcript": "full-id",
+                           "source": "source"})
+    inventory.assert_not_called()
+    mutate.assert_not_called()
+
+
+def test_close_native_rejects_a_different_live_adopted_attachment():
+    actor, provider = native_pair()
+    other_actor, other_provider = native_pair(identity="other-id", session_id="$10")
+    actors = [{"addr": actor.ref.session_id, "kind": "codex",
+               "evaluator": "native", "capabilities": "full"}]
+    request = {"operation": "close-native", "actor": actor.ref.session_id,
+               "agent": "codex", "transcript": "full-id",
+               "source": other_provider.ref.key}
+    sessions = [actor, provider, other_actor, other_provider]
+    with mock.patch("agent_fleet.authority.transcripts.verify"), \
+         mock.patch("agent_fleet.authority.alan.actors", return_value=actors), \
+         mock.patch("agent_fleet.authority.tmux.inventory", return_value=sessions), \
+         mock.patch("agent_fleet.authority.transcripts.catalog", return_value={}), \
+         mock.patch("agent_fleet.authority.transcripts.observe",
+                    return_value=fold_adopted(sessions)), \
+         mock.patch("agent_fleet.authority.tmux.mutate") as mutate, \
+         pytest.raises(RuntimeError, match="attachment identity differs"):
+        authority.execute(request)
+    mutate.assert_not_called()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_close_native_kills_only_the_exact_joined_session(agent):
+    actor, provider = native_pair(agent=agent)
+    request = {"operation": "close-native", "actor": actor.ref.session_id,
+               "agent": agent, "transcript": "full-id",
+               "source": provider.ref.key}
+    value, mutate = close_native(request, [actor, provider])
+    assert value == {}
+    mutate.assert_called_once_with(provider.ref.key, "archive", [])
+
+
+def test_close_native_rejects_freshly_observed_working_provider():
+    actor, provider = native_pair()
+    provider = replace(provider, reported_state="working")
+    request = {"operation": "close-native", "actor": actor.ref.session_id,
+               "agent": "codex", "transcript": "full-id",
+               "source": provider.ref.key}
+    with pytest.raises(RuntimeError, match="not waiting"):
+        close_native(request, [actor, provider])
+
+
+def test_close_native_preserves_tmux_failure_without_restore_or_launch():
+    actor, provider = native_pair()
+    actors = [{"addr": actor.ref.session_id, "kind": "codex",
+               "evaluator": "native", "capabilities": "full"}]
+    request = {"operation": "close-native", "actor": actor.ref.session_id,
+               "agent": "codex", "transcript": "full-id",
+               "source": provider.ref.key}
+    with mock.patch("agent_fleet.authority.transcripts.verify"), \
+         mock.patch("agent_fleet.authority.alan.actors", return_value=actors), \
+         mock.patch("agent_fleet.authority.tmux.inventory",
+                    return_value=[actor, provider]), \
+         mock.patch("agent_fleet.authority.transcripts.catalog", return_value={}), \
+         mock.patch("agent_fleet.authority.transcripts.observe",
+                    return_value=fold_adopted([actor, provider])), \
+         mock.patch("agent_fleet.authority.tmux.mutate",
+                    side_effect=RuntimeError("tmux failed")), \
+         mock.patch("agent_fleet.authority.alan.resume") as resume, \
+         mock.patch("agent_fleet.authority.transcripts.resume_native") as launch, \
+         pytest.raises(RuntimeError, match="tmux failed"):
+        authority.execute(request)
+    resume.assert_not_called()
+    launch.assert_not_called()
 
 
 def test_actions_refresh_uses_the_typed_fleet_action():
@@ -338,10 +481,31 @@ def test_muster_refresh_dispatches_the_selected_exact_row():
     asyncio.run(exercise())
 
 
-async def project_refresh(fleet, actor, sessions, state):
+def refresh_descriptor(item, state="waiting", **changes):
+    descriptor = {
+        "addr": item.ref.session_id, "kind": item.agent,
+        "host": item.ref.server.host, "cwd": item.cwd,
+        "capabilities": "full", "preset": None, "instructions": None,
+        "routing": None, "model": "exact-model", "name": item.name,
+        "evaluator": "native", "managed": False, "state": state,
+    }
+    descriptor.update(changes)
+    return descriptor
+
+
+def prepare_refresh(fleet, item):
     graph = daemon.nx.MultiDiGraph()
-    graph.graph["actors"] = [{"addr": actor, "kind": "codex",
-                              "state": state}]
+    graph.graph["actors"] = [refresh_descriptor(item)]
+    fleet._composed = (fleet.observed, graph)
+
+
+async def project_refresh(fleet, actor, sessions, state, **changes):
+    graph = daemon.nx.MultiDiGraph()
+    [descriptor] = [current for current in
+                    fleet.composed_graph().graph.get("actors", [])
+                    if current["addr"] == actor]
+    descriptor = {**descriptor, "state": state, **changes}
+    graph.graph["actors"] = [descriptor]
     async with fleet.changed:
         fleet.sessions["lovelace"] = sessions
         fleet.observed += 1
@@ -360,13 +524,16 @@ def test_refresh_waits_for_same_uuid_on_a_new_attachment_and_reopens_viewers(age
     fleet = Fleet()
     fleet.sessions["lovelace"] = [item]
     fleet.unavailable.clear()
+    prepare_refresh(fleet, item)
     viewers = [Path("/run/viewer-main.sock"), Path("/run/viewer-right.sock")]
 
     async def exercise():
         async def refresh(_host, request):
             if request["operation"] == "close-native":
-                assert request == {"operation": "close-native",
-                                   "source": old.key}
+                assert request == {
+                    "operation": "close-native", "actor": item.ref.session_id,
+                    "agent": agent, "transcript": "full-id", "source": old.key,
+                }
                 await project_refresh(
                     fleet, item.ref.session_id, [], "unavailable")
             else:
@@ -384,8 +551,10 @@ def test_refresh_waits_for_same_uuid_on_a_new_attachment_and_reopens_viewers(age
                                        "source": item.ref.key}) == {
                                            "source": item.ref.key}
         assert execute.await_args_list == [
-            mock.call("lovelace", {"operation": "close-native",
-                                    "source": old.key}),
+            mock.call("lovelace", {
+                "operation": "close-native", "actor": item.ref.session_id,
+                "agent": agent, "transcript": "full-id", "source": old.key,
+            }),
             mock.call("lovelace", {"operation": "restore-alan",
                                     "actor": item.ref.session_id}),
         ]
@@ -405,6 +574,7 @@ def test_refresh_requires_attachment_absence_and_actor_unavailability(first):
     fleet = Fleet()
     fleet.sessions["lovelace"] = [item]
     fleet.unavailable.clear()
+    prepare_refresh(fleet, item)
 
     async def exercise():
         async def authority_call(_host, request):
@@ -448,6 +618,7 @@ def test_refresh_close_failure_neither_restores_nor_reopens():
     fleet = Fleet()
     fleet.sessions["lovelace"] = [item]
     fleet.unavailable.clear()
+    prepare_refresh(fleet, item)
 
     async def exercise():
         with mock.patch.object(fleet, "authority",
@@ -472,6 +643,7 @@ def test_refresh_restore_failure_does_not_reopen():
     fleet = Fleet()
     fleet.sessions["lovelace"] = [item]
     fleet.unavailable.clear()
+    prepare_refresh(fleet, item)
 
     async def exercise():
         async def authority_call(_host, request):
@@ -495,6 +667,45 @@ def test_refresh_restore_failure_does_not_reopen():
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("failure", ["missing", "retired", "ambiguous"])
+def test_refresh_exposes_actor_lifecycle_failure_after_close(failure):
+    item = session(agent="codex", transcript="full-id")
+    item = replace(
+        item, ref=SessionRef(item.ref.server, "codex-full-id@lovelace"),
+        attachment=SessionRef(
+            ServerRef("lovelace", "/tmp/tmux/native", 44, 12), "$9"))
+    fleet = Fleet()
+    fleet.sessions["lovelace"] = [item]
+    fleet.unavailable.clear()
+    prepare_refresh(fleet, item)
+
+    async def exercise():
+        async def close(_host, _request):
+            descriptor = refresh_descriptor(item, "retired")
+            actors = ([] if failure == "missing" else
+                      [descriptor, descriptor] if failure == "ambiguous" else
+                      [descriptor])
+            graph = daemon.nx.MultiDiGraph()
+            graph.graph["actors"] = actors
+            async with fleet.changed:
+                fleet.sessions["lovelace"] = []
+                fleet.observed += 1
+                fleet._composed = (fleet.observed, graph)
+                fleet.changed.notify_all()
+            return {}
+
+        with mock.patch.object(fleet, "authority", side_effect=close) as execute, \
+             mock.patch.object(fleet, "viewers", return_value=[]), \
+             mock.patch.object(fleet, "update_viewers") as reopen, \
+             pytest.raises(RuntimeError, match="disappeared|ambiguous|retired"):
+            await fleet.action({"operation": "refresh", "source": item.ref.key})
+        assert [call.args[1]["operation"]
+                for call in execute.await_args_list] == ["close-native"]
+        reopen.assert_not_awaited()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("failure", ["wrong-uuid", "missing-attachment"])
 def test_refresh_does_not_complete_without_same_uuid_on_a_new_attachment(failure):
     item = session(agent="codex", transcript="full-id")
@@ -505,6 +716,7 @@ def test_refresh_does_not_complete_without_same_uuid_on_a_new_attachment(failure
     fleet = Fleet()
     fleet.sessions["lovelace"] = [item]
     fleet.unavailable.clear()
+    prepare_refresh(fleet, item)
 
     async def exercise():
         async def authority_call(_host, request):
@@ -623,7 +835,7 @@ def test_refresh_refuses_either_observably_working_side_before_closure(
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("drift", ["name", "cwd"])
+@pytest.mark.parametrize("drift", ["name", "cwd", "descriptor"])
 def test_refresh_rejects_presentation_identity_drift_before_reopening_viewers(drift):
     item = session(agent="codex", transcript="full-id")
     old = SessionRef(ServerRef("lovelace", "/tmp/tmux/native", 44, 12), "$9")
@@ -634,6 +846,7 @@ def test_refresh_rejects_presentation_identity_drift_before_reopening_viewers(dr
     fleet = Fleet()
     fleet.sessions["lovelace"] = [item]
     fleet.unavailable.clear()
+    prepare_refresh(fleet, item)
 
     async def exercise():
         async def refresh(_host, request):
@@ -642,11 +855,12 @@ def test_refresh_rejects_presentation_identity_drift_before_reopening_viewers(dr
                     fleet, item.ref.session_id, [], "unavailable")
             else:
                 changes = ({"name": "different"} if drift == "name" else
-                           {"cwd": "/different"})
+                           {"cwd": "/different"} if drift == "cwd" else {})
                 await project_refresh(
                     fleet, item.ref.session_id,
                     [replace(item, attachment=new, **changes)],
-                    "waiting")
+                    "waiting", **({"model": "different"}
+                                   if drift == "descriptor" else {}))
             return {}
 
         with mock.patch.object(fleet, "authority", side_effect=refresh), \
