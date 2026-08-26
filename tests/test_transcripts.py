@@ -357,12 +357,13 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
         "/work",
         "codex",
         "working",
+        recency=20,
         transcript_id=identity,
     )
 
     assert fold_adopted([provider, actor]) == [
         __import__("dataclasses").replace(
-            actor, reported_state="working", attachment=provider.ref)
+            actor, reported_state="working", recency=20, attachment=provider.ref)
     ]
 
     assert fold_adopted([
@@ -370,7 +371,7 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
         __import__("dataclasses").replace(actor, reported_state="working"),
     ]) == [
         __import__("dataclasses").replace(
-            actor, reported_state="working", attachment=provider.ref)
+            actor, reported_state="working", recency=20, attachment=provider.ref)
     ]
 
 

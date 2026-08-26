@@ -729,7 +729,8 @@ def fold_adopted(sessions):
         actor, provider = actors[0], native[0]
         state = min((actor.state, provider.state), key=PRIORITY.__getitem__)
         replacements[actor.ref] = replace(
-            actor, reported_state=state, attachment=provider.ref)
+            actor, reported_state=state, recency=max(actor.recency, provider.recency),
+            attachment=provider.ref)
         consumed.add(provider.ref)
 
     return [replacements.get(session.ref, session)

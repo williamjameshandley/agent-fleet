@@ -2442,19 +2442,19 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "native identity changed"):
                 actions.open_history("alan:codex-1@lovelace")
 
-    def test_working_recency_is_human_activity(self):
+    def test_model_output_advances_displayed_recency(self):
         working = Session(**{**self.session("newton").__dict__,
                              "reported_state": "working", "recency": 20,
                              "human_activity": 10})
         waiting = Session(**{**working.__dict__, "reported_state": "waiting"})
-        self.assertEqual(recency(working), 10)
-        self.assertEqual(recency(waiting), 10)
+        self.assertEqual(recency(working), 20)
+        self.assertEqual(recency(waiting), 20)
 
-    def test_working_without_observed_human_activity_uses_creation_not_output(self):
+    def test_model_output_is_displayed_without_observed_human_activity(self):
         working = Session(**{**self.session("newton").__dict__,
                              "reported_state": "working", "recency": 20,
                              "human_activity": 0})
-        self.assertEqual(recency(working), working.created)
+        self.assertEqual(recency(working), 20)
 
     def test_tmux_inventory_does_not_promote_client_activity_to_human_activity(self):
         source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()

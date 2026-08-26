@@ -31,7 +31,7 @@ COLUMN_ICONS = {"machine": "", "agent": "", "time": "",
 
 
 def recency(session):
-    return session.human_activity or session.created
+    return session.recency or session.human_activity or session.created
 
 
 def order(sessions, unavailable, graph, expanded=(), show_python=False):
