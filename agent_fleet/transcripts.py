@@ -619,17 +619,30 @@ def observe(sessions, transcripts=None):
             targets, resumed = codex_candidates(tree)
             owner = (_native_owner(session_id, owners)
                      if owners and name.startswith("fleet@native-") else None)
-            if owner is not None and owner.agent == "codex":
+            if owner is not None and owner.agent != "codex":
+                rows.append((session_id, agent, "needs-action",
+                             f"Codex provider is attached to {owner.agent} actor",
+                             0, "", 0))
+                continue
+            if owner is not None:
                 identity = owner.transcript_id
                 targets = [target for target in dict.fromkeys(targets)
                            if Path(target).stem[-36:] == identity]
                 if not targets:
-                    rows.append((session_id, agent, "waiting", "", 0,
-                                 identity, 0))
+                    state = "needs-action" if owner.worked else "waiting"
+                    summary = ("Codex transcript is missing for worked actor"
+                               if owner.worked else "")
+                    provider_identity = "" if owner.worked else identity
+                    rows.append((session_id, agent, state, summary, 0,
+                                 provider_identity, 0))
                     continue
             try:
                 item = transcript("codex", select_codex(targets, resumed))
-            except RuntimeError:
+            except RuntimeError as error:
+                if owner is not None:
+                    rows.append((session_id, agent, "needs-action",
+                                 f"Codex transcript selection failed: {error}",
+                                 0, "", 0))
                 continue
             except (json.JSONDecodeError, ValueError) as error:
                 identity = ""

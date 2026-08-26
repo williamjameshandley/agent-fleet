@@ -1,4 +1,6 @@
+import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -7,6 +9,7 @@ from agent_fleet.transcripts import (PANE_FORMAT, indexed_claude_agents, last_hu
                                     latest_assistant_text, fold_adopted, preview,
                                     project_native, select_codex, transcript, verify)
 from agent_fleet.model import ServerRef, Session, SessionRef
+from agent_fleet.daemon import Fleet
 
 
 def rollout(path, identity, source="cli", parent_thread_id=None):
@@ -399,6 +402,9 @@ def test_pristine_native_codex_joins_by_its_published_actor_socket(tmp_path,
     (root / "loop.sock").symlink_to(
         tmp_path / "actors" / transcripts.runtime_name(actor_address) / "loop.sock")
     unrelated = tmp_path / "rollout-00000000-0000-0000-0000-000000000002.jsonl"
+    rollout(unrelated, "00000000-0000-0000-0000-000000000002")
+    current = tmp_path / f"rollout-{identity}.jsonl"
+    candidates = [str(unrelated)]
     real_readlink = transcripts.os.readlink
 
     def run(arguments, **_kwargs):
@@ -421,7 +427,7 @@ def test_pristine_native_codex_joins_by_its_published_actor_socket(tmp_path,
         else real_readlink(path),
     )
     monkeypatch.setattr(
-        transcripts, "codex_candidates", lambda _tree: ([str(unrelated)], set()))
+        transcripts, "codex_candidates", lambda _tree: (candidates, set()))
 
     [projected] = transcripts.observe([provider, actor], {})
 
@@ -429,6 +435,98 @@ def test_pristine_native_codex_joins_by_its_published_actor_socket(tmp_path,
     assert projected.name == "Analysis"
     assert projected.transcript_id == identity
     assert projected.attachment == provider.ref
+
+    async def create_from_projection():
+        fleet = Fleet()
+        fleet.unavailable.clear()
+        with mock.patch("agent_fleet.daemon.hosts", return_value=["newton"]), \
+             mock.patch.object(fleet, "authority", return_value={
+                 "source": actor.ref.key}):
+            pending = asyncio.create_task(fleet.action({
+                "operation": "create", "host": "newton", "agent": "codex",
+                "name": "Analysis", "cwd": "/work"}))
+            await asyncio.sleep(0)
+            assert not pending.done()
+            fleet.sessions = {"newton": [projected]}
+            fleet.observed += 1
+            async with fleet.changed:
+                fleet.changed.notify_all()
+            assert await pending == {"source": actor.ref.key}
+
+    asyncio.run(create_from_projection())
+
+    current.write_text(
+        json.dumps({"type": "session_meta", "timestamp": "2026-08-26T09:00:00Z",
+                    "payload": {"id": identity, "cwd": "/work"}}) + "\n" +
+        json.dumps({"type": "event_msg", "timestamp": "2026-08-26T09:00:01Z",
+                    "payload": {"type": "agent_message", "message": "ready"}}) + "\n")
+    candidates[:] = [str(unrelated), str(current)]
+
+    [worked] = transcripts.observe(
+        [provider, replace(actor, worked=True)],
+        {("codex", identity): transcript("codex", current)},
+    )
+
+    assert worked.ref == actor.ref
+    assert worked.summary == "ready"
+    assert worked.attachment == provider.ref
+
+    candidates[:] = [str(unrelated)]
+    mismatch = transcripts.observe([provider, replace(actor, worked=True)], {})
+
+    bare_actor = next(item for item in mismatch if item.ref == actor.ref)
+    mismatched = next(item for item in mismatch if item.ref == provider.ref)
+    assert bare_actor.attachment is None
+    assert mismatched.reported_state == "needs-action"
+    assert mismatched.summary == "Codex transcript is missing for worked actor"
+    assert mismatched.transcript_id == ""
+
+
+def test_native_provider_kind_mismatch_is_visible(tmp_path, monkeypatch):
+    identity = "00000000-0000-0000-0000-000000000001"
+    actor_address = f"claude-{identity}@newton"
+    actor = Session(
+        SessionRef(ServerRef("newton", "", 0, 0, "alan"), actor_address),
+        "Analysis", 1, 0, 0, 1, "alan", "", "/work", "claude", "waiting",
+        transcript_id=identity, worked=False,
+    )
+    provider = Session(
+        SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$7"),
+        "fleet@native-test", 1, 2, 1, 1, "python3", "will", "/work",
+    )
+    root = tmp_path / "codex-root"
+    root.mkdir()
+    (root / "loop.sock").symlink_to(
+        tmp_path / "actors" / transcripts.runtime_name(actor_address) / "loop.sock")
+    real_readlink = transcripts.os.readlink
+
+    def run(arguments, **_kwargs):
+        if arguments[:2] == ["claude", "agents"]:
+            return type("Result", (), {"stdout": "[]", "returncode": 0})()
+        if arguments[:3] == ["/usr/bin/tmux", "-N", "list-panes"]:
+            output = ("name=fleet@native-test session=$7 pid=100 "
+                      "command=python3 title=will\n")
+            return type("Result", (), {"stdout": output, "returncode": 0})()
+        return type("Result", (), {
+            "stdout": f"ALAN_NATIVE_ROOT={root}\n", "returncode": 0})()
+
+    monkeypatch.setattr(transcripts.subprocess, "run", run)
+    monkeypatch.setattr(transcripts, "process_tree", lambda: {100: [101]})
+    monkeypatch.setattr(
+        transcripts.os, "readlink",
+        lambda path: "/usr/bin/codex" if path == "/proc/101/exe"
+        else real_readlink(path),
+    )
+    monkeypatch.setattr(transcripts, "codex_candidates", lambda _tree: ([], set()))
+
+    projected = transcripts.observe([provider, actor], {})
+
+    assert actor in projected
+    mismatch = next(item for item in projected if item.ref == provider.ref)
+    assert mismatch.agent == "codex"
+    assert mismatch.reported_state == "needs-action"
+    assert mismatch.summary == "Codex provider is attached to claude actor"
+    assert mismatch.transcript_id == ""
 
 
 def test_invalid_provider_transcript_isolated_to_its_session(tmp_path, monkeypatch):
