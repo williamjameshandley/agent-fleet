@@ -964,8 +964,8 @@ class Fleet:
         if operation == "refresh":
             if session.ref.server.kind != "alan":
                 raise ValueError("refresh requires an Alan actor")
-            if session.agent not in {"claude", "codex", "grok"}:
-                raise ValueError("refresh requires a native language actor")
+            if session.agent not in {"claude", "codex"}:
+                raise ValueError("refresh requires a Claude or Codex actor")
             if session.state != "waiting":
                 raise ValueError(f"refresh requires a waiting actor: {session.ref.session_id}")
             if session.attachment is None or not session.transcript_id:
@@ -973,94 +973,53 @@ class Fleet:
             actor = session.ref.session_id
             if address_identity(actor, session.agent) != session.transcript_id:
                 raise ValueError("actor and transcript identity differ")
-            descriptors = [item for item in self.composed_graph().graph.get("actors", [])
-                           if item["addr"] == actor]
-            if len(descriptors) != 1:
-                raise LookupError(f"actor is unavailable or ambiguous: {actor}")
-            descriptor = dict(descriptors[0])
-            if (descriptor.get("evaluator") != "native"
-                    or descriptor.get("capabilities") != "full"
-                    or descriptor.get("managed", False)):
-                raise ValueError("refresh requires an unmanaged full native actor")
-            descriptor_fields = (
-                "kind", "host", "cwd", "capabilities", "preset", "instructions",
-                "routing", "model", "name", "evaluator", "managed",
-            )
-            retained = {field: descriptor.get(field) for field in descriptor_fields}
             viewers = await self.viewers(key)
-            attachment = session.attachment.key
+            old_attachment = session.attachment
             name, cwd = session.name, session.cwd
             await self.authority(host, {
-                "operation": "close-native", "actor": actor,
-                "agent": session.agent, "transcript": session.transcript_id,
-                "source": attachment,
+                "operation": "close-native", "source": old_attachment.key,
             })
             try:
                 async with asyncio.timeout(30):
                     while True:
                         async with self.changed:
-                            self.available(host)
-                            current = [item for item in
-                                       self.composed_graph().graph.get("actors", [])
-                                       if item["addr"] == actor]
-                            if len(current) != 1:
-                                raise RuntimeError(
-                                    f"refreshed actor disappeared or became ambiguous: {actor}")
-                            if current[0].get("state") == "retired":
-                                raise RuntimeError(f"refreshed actor retired: {actor}")
-                            if current[0].get("state") == "unavailable":
-                                providers = [item for group in self.sessions.values()
-                                             for item in group
-                                             if (item.ref.key == attachment
-                                                 or (item.ref.server.host == host
-                                                     and item.agent == session.agent
-                                                     and item.transcript_id
-                                                     == session.transcript_id))]
-                                if not providers:
-                                    break
-                            generation = self.observed
-                            await self.changed.wait_for(
-                                lambda: self.observed != generation)
-            except TimeoutError:
-                raise RuntimeError(
-                    f"Fleet projection did not detach {key}") from None
-            await self.authority(host, {"operation": "restore-alan",
-                                        "actor": actor})
-            try:
-                async with asyncio.timeout(30):
-                    while True:
-                        async with self.changed:
-                            self.available(host)
-                            current = [item for item in
-                                       self.composed_graph().graph.get("actors", [])
-                                       if item["addr"] == actor]
-                            if len(current) != 1:
-                                raise RuntimeError(
-                                    f"refreshed actor disappeared or became ambiguous: {actor}")
-                            if current[0].get("state") == "retired":
-                                raise RuntimeError(f"refreshed actor retired: {actor}")
-                            matches = [item for group in self.sessions.values()
-                                       for item in group if item.ref.key == key]
-                            if len(matches) > 1:
-                                raise RuntimeError(
-                                    f"refreshed session became ambiguous: {key}")
-                            if matches and matches[0].attachment is not None:
-                                [restored] = matches
-                                current_retained = {field: current[0].get(field)
-                                                    for field in descriptor_fields}
-                                if (current_retained != retained
-                                        or restored.agent != session.agent
-                                        or restored.transcript_id != session.transcript_id
-                                        or restored.name != name or restored.cwd != cwd):
-                                    raise RuntimeError(
-                                        f"refreshed session identity changed: {key}")
+                            rows = [current for group in self.sessions.values()
+                                    for current in group]
+                            attached = any(
+                                current.ref == old_attachment
+                                or current.attachment == old_attachment
+                                for current in rows)
+                            descriptors = [
+                                current for current in
+                                self.composed_graph().graph.get("actors", [])
+                                if current["addr"] == actor]
+                            if (not attached and len(descriptors) == 1
+                                    and descriptors[0].get("state")
+                                    == "unavailable"):
                                 break
                             generation = self.observed
                             await self.changed.wait_for(
                                 lambda: self.observed != generation)
             except TimeoutError:
                 raise RuntimeError(
-                    f"Fleet projection did not restore {key}") from None
+                    f"Fleet projection did not detach {key}") from None
+            await self.authority(host, {
+                "operation": "restore-alan", "actor": actor,
+            })
+            await self.wait_for_source(
+                lambda current: current.ref.key == key
+                and current.agent == session.agent
+                and current.transcript_id == session.transcript_id
+                and current.attachment is not None
+                and current.attachment != old_attachment,
+                f"refresh {key}")
+            current = self.source(key)
+            if (current.agent != session.agent
+                    or current.transcript_id != session.transcript_id
+                    or current.name != name or current.cwd != cwd
+                    or current.attachment is None
+                    or current.attachment == old_attachment):
+                raise RuntimeError(f"refreshed session identity changed: {key}")
             await self.update_viewers(viewers, f"OPEN {key}")
             return {"source": key}
         if operation == "archive":

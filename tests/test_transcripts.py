@@ -352,6 +352,14 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
             actor, reported_state="working", attachment=provider.ref)
     ]
 
+    assert fold_adopted([
+        __import__("dataclasses").replace(provider, reported_state="waiting"),
+        __import__("dataclasses").replace(actor, reported_state="working"),
+    ]) == [
+        __import__("dataclasses").replace(
+            actor, reported_state="working", attachment=provider.ref)
+    ]
+
 
 def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
     identity = "00000000-0000-0000-0000-000000000001"
