@@ -242,6 +242,12 @@ class Fleet:
             self.refresh_pending = True
             self.own_task(asyncio.create_task(self.refresh_muster()), "refresh_muster")
 
+    async def refresh_clock(self):
+        while True:
+            await asyncio.sleep(60 - time.time() % 60)
+            self._view_cache = None
+            self.schedule_refresh()
+
     async def refresh_muster(self):
         try:
             await asyncio.sleep(.03)
@@ -1170,6 +1176,7 @@ class Fleet:
             async with server:
                 async with asyncio.TaskGroup() as group:
                     group.create_task(server.serve_forever())
+                    group.create_task(self.refresh_clock())
                     for host in configured:
                         group.create_task(self.collect(host))
         finally:

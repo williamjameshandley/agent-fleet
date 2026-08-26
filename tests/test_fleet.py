@@ -910,6 +910,32 @@ class IdentityTests(unittest.TestCase):
 
         self.assertFalse(fleet.refresh_pending)
 
+    def test_wall_minute_refresh_invalidates_cached_age_and_schedules_publication(self):
+        fleet = Fleet()
+        fleet.sessions = {
+            "newton": [replace(self.session("newton"), recency=60)]
+        }
+        fleet.unavailable.discard("newton")
+        with mock.patch("agent_fleet.render.time.time", return_value=119):
+            before = fleet.view(100)[1]
+        self.assertIn("  0m ", before)
+
+        async def tick():
+            with mock.patch("agent_fleet.daemon.time.time", return_value=119), \
+                    mock.patch("agent_fleet.daemon.asyncio.sleep",
+                               new_callable=mock.AsyncMock,
+                               side_effect=[None, asyncio.CancelledError]) as sleep, \
+                    mock.patch.object(fleet, "schedule_refresh") as refresh:
+                with self.assertRaises(asyncio.CancelledError):
+                    await fleet.refresh_clock()
+            sleep.assert_any_await(1)
+            refresh.assert_called_once_with()
+
+        asyncio.run(tick())
+        with mock.patch("agent_fleet.render.time.time", return_value=120):
+            after = fleet.view(100)[1]
+        self.assertIn("  1m ", after)
+
     def test_real_muster_input_survives_reload_after_an_alan_watch_update(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
