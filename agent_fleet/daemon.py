@@ -454,8 +454,10 @@ class Fleet:
         header_path.write_text(header + "\n")
         rows_command = shlex.join(("/usr/bin/cat", str(rows_path)))
         header_command = shlex.join(("/usr/bin/cat", str(header_path)))
-        rows_remove = shlex.join(("/usr/bin/rm", "-f", str(rows_path)))
-        header_remove = shlex.join(("/usr/bin/rm", "-f", str(header_path)))
+        rows_remove = shlex.join(("/usr/bin/rm", "-f",
+                                  *map(str, sorted(RUNTIME.glob("muster-view-*.rows")))))
+        header_remove = shlex.join(("/usr/bin/rm", "-f",
+                                    *map(str, sorted(RUNTIME.glob("muster-view-*.header")))))
         action = (f"transform-header({header_command}; {header_remove})"
                   f"+reload-sync({rows_command}; {rows_remove})")
         return action, (rows_path, header_path)

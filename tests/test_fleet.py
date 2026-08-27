@@ -3156,6 +3156,51 @@ class IdentityTests(unittest.TestCase):
                 subprocess.run(["tmux", "kill-server"], env=environment,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    def test_newer_stock_fzf_projection_acknowledges_a_dropped_publication(self):
+        fleet, _, _, _ = self.fold_fleet()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            runtime = directory / "runtime"
+            runtime.mkdir()
+            tmux_runtime = directory / "tmux"
+            tmux_runtime.mkdir()
+            muster_socket = runtime / "muster.sock"
+            environment = {**without_tmux_client(),
+                           "TMUX_TMPDIR": str(tmux_runtime)}
+            subprocess.run(
+                ["tmux", "new-session", "-d", "-s", "fleet@muster",
+                 f"printf 'old\\n' | exec fzf --listen {muster_socket}"],
+                check=True, env=environment)
+            try:
+                for _ in range(100):
+                    if muster_socket.exists():
+                        break
+                    time.sleep(.01)
+                with mock.patch("agent_fleet.daemon.RUNTIME", runtime):
+                    _, dropped = fleet.publish_view(100)
+                    fleet.sessions["lovelace"].append(self.session("lovelace", "$99"))
+                    fleet.view_revision += 1
+                    fleet._view_cache = None
+                    action, current = fleet.publish_view(100)
+                    subprocess.run(
+                        ["curl", "-fsS", "--unix-socket", str(muster_socket),
+                         "-XPOST", "-d", action, "http://localhost"],
+                        check=True, stdout=subprocess.DEVNULL)
+                for _ in range(100):
+                    state = json.loads(subprocess.run(
+                        ["curl", "-fsS", "--unix-socket", str(muster_socket),
+                         "http://localhost?limit=1000"], check=True, text=True,
+                        capture_output=True).stdout)
+                    if (len(state["matches"]) == 2 and
+                            all(not path.exists() for path in (*dropped, *current))):
+                        break
+                    time.sleep(.01)
+                self.assertEqual(len(state["matches"]), 2)
+                self.assertTrue(all(not path.exists() for path in (*dropped, *current)))
+            finally:
+                subprocess.run(["tmux", "kill-server"], env=environment,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     def test_stock_fzf_x_sends_the_displayed_identity_and_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
