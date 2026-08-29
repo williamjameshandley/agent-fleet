@@ -116,9 +116,13 @@ def preview(key, columns=0, lines=0):
 
 
 def history():
-    entries = json.loads(history_projection())
-    return [tuple(item[key] for key in ("key", "host", "agent", "name", "cwd"))
-            for item in sorted(entries, key=lambda row: row["mtime"], reverse=True)]
+    value = history_projection()
+    rows = [(f"error:{host}", host, "", f"history unavailable: {error}", "")
+            for host, error in sorted(value["errors"].items())]
+    rows.extend(tuple(item[key] for key in ("key", "host", "agent", "name", "cwd"))
+                for item in sorted(value["entries"],
+                                   key=lambda row: row["mtime"], reverse=True))
+    return rows
 
 
 def open_history(key):

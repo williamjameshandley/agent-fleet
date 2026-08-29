@@ -29,7 +29,8 @@ class CommanderContextTests(unittest.TestCase):
         })
         with mock.patch("agent_fleet.daemon.hosts",
                         return_value=["lovelace", "noether"]):
-            self.assertEqual(asyncio.run(fleet.history()), [])
+            self.assertEqual(asyncio.run(fleet.history()),
+                             {"entries": [], "errors": {}})
         fleet.history_observation.assert_awaited_once_with("lovelace")
 
     def test_one_disconnected_history_host_does_not_erase_other_hosts(self):
@@ -48,11 +49,14 @@ class CommanderContextTests(unittest.TestCase):
         fleet.history_observation = history
         with mock.patch("agent_fleet.daemon.hosts",
                         return_value=["lovelace", "noether"]):
-            self.assertEqual(asyncio.run(fleet.history()), [{
-                "key": "lovelace:codex:thread", "host": "lovelace",
-                "agent": "codex", "name": "retained", "cwd": "/work",
-                "mtime": 1,
-            }])
+            self.assertEqual(asyncio.run(fleet.history()), {
+                "entries": [{
+                    "key": "lovelace:codex:thread", "host": "lovelace",
+                    "agent": "codex", "name": "retained", "cwd": "/work",
+                    "mtime": 1,
+                }],
+                "errors": {"noether": "connection closed"},
+            })
 
     def context(self, unavailable=(), profile_suffix="", transcript_name="old", sessions=()):
         fleet = Fleet()
