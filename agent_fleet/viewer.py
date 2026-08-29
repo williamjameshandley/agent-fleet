@@ -559,8 +559,8 @@ class Attachment:
             if not dead:
                 try:
                     dead = self.ui_value(entry.window, "#{pane_dead}") == "1"
-                except RuntimeError:
-                    dead = True
+                except RuntimeError as error:
+                    return f"Viewer attachment check failed: {error}"
             if master_dead or dead:
                 status = signal = ""
                 if dead:
