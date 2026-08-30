@@ -16,7 +16,7 @@ VALUES = {
     "route": {"local", "remote"},
     "stage": {"attach", "daemon", "focus", "resolve", "select", "ssh", "switch",
               "worker"},
-    "task": {"archive", "refresh_muster"},
+    "task": {"archive", "refresh_muster", "restore"},
     "action": {"archive", "create", "rename", "restore"},
 }
 ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")

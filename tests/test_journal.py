@@ -6,9 +6,11 @@ import threading
 import time
 from unittest import mock
 
+import networkx
 import pytest
 
 from agent_fleet import daemon, journal, viewer
+from agent_fleet.model import ServerRef, Session, SessionRef
 
 
 def test_event_supplies_fixed_native_fields(monkeypatch):
@@ -166,6 +168,35 @@ def test_archive_task_failure_is_retrieved_and_recorded_once(monkeypatch):
     asyncio.run(exercise())
     assert records == [("daemon_task_failed", {
         "task": "archive", "error_type": "RuntimeError"})]
+
+
+def test_restore_task_failure_is_recorded_without_source_content(monkeypatch):
+    sent = []
+    monkeypatch.setattr(journal, "_send", lambda **fields: sent.append(fields))
+    actor = "codex-full-id@lovelace"
+    session = Session(
+        SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+        "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
+        "full-id")
+
+    async def exercise():
+        fleet = daemon.Fleet()
+        fleet.sessions = {"lovelace": [session]}
+        fleet.unavailable.clear()
+        graph = networkx.MultiDiGraph()
+        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]
+        fleet._composed = (fleet.observed, graph)
+        fleet.restore_native = mock.AsyncMock(
+            side_effect=RuntimeError("content must not enter the event"))
+        with pytest.raises(RuntimeError):
+            await fleet.ensure_attachment(session.ref.key)
+        await asyncio.sleep(0)
+        assert not fleet.background_tasks
+        assert not fleet.task_names
+
+    asyncio.run(exercise())
+    assert [entry["FLEET_TASK"] for entry in sent] == ["restore"]
 
 
 def test_connected_host_requires_owned_process_evidence(monkeypatch):
