@@ -15,7 +15,7 @@ from watchfiles import watch
 
 from .model import ServerRef, Session, SessionRef
 from .agent import observe
-from .config import RUNTIME
+from .config import RUNTIME, tmux_command
 from .alan import Watcher as AlanWatcher, inventory as alan_inventory
 from . import alan, presentation, transcripts as native_transcripts
 
@@ -32,8 +32,9 @@ SESSION_FORMAT = (
 
 
 def server():
-    return Server(tmux_bin=os.environ.get(
-        "FLEET_TMUX", "/usr/lib/agent-fleet/fleet-tmux"))
+    return Server(socket_path=os.environ.get("FLEET_TMUX_SOCKET") or None,
+                  tmux_bin=os.environ.get(
+                      "FLEET_TMUX", "/usr/lib/agent-fleet/fleet-tmux"))
 
 
 class ControlSlot:
@@ -60,12 +61,13 @@ class ControlSlot:
 
 def split_key(key):
     host_socket, pid, started, session_id = key.rsplit(":", 3)
-    host, socket = host_socket.split(":", 1)
-    return host, socket, int(pid), int(started), session_id
+    source, socket = host_socket.split(":", 1)
+    return source, socket, int(pid), int(started), session_id
 
 
 def mutate(key, operation, arguments):
-    host, socket, pid, started, session_id = split_key(key)
+    source, socket, pid, started, session_id = split_key(key)
+    host = source.rsplit("@", 1)[-1]
     if host != os.uname().nodename:
         raise ValueError(f"identity is for {host}, not {os.uname().nodename}")
     if operation == "rename":
@@ -231,7 +233,8 @@ def capture(key, columns=0, lines=0, alan_graph=UNSET):
             raise RuntimeError("Alan observation is unavailable")
         return alan.preview(addr, columns, lines,
                             None if alan_graph is UNSET else alan_graph)
-    host, socket, pid, started, session_id = split_key(key)
+    source, socket, pid, started, session_id = split_key(key)
+    host = source.rsplit("@", 1)[-1]
     if host != os.uname().nodename:
         raise RuntimeError(f"identity is for {host}, not {os.uname().nodename}")
     tmux = server()
@@ -254,7 +257,7 @@ def capture_pane(session, columns=0, lines=0):
     return result.stdout
 
 
-def inventory(host, actor_descriptors):
+def inventory(host, actor_descriptors, runtime=""):
     tmux = server()
     sessions = []
     names = []
@@ -266,7 +269,7 @@ def inventory(host, actor_descriptors):
         if (name.startswith("fleet@")
                 and not name.startswith("fleet@native-")):
             continue
-        source = ServerRef(host, socket, int(pid), int(started))
+        source = ServerRef(host, socket, int(pid), int(started), runtime=runtime)
         sessions.append(Session(
             SessionRef(source, session_id), name, int(created), int(activity),
             int(attached), int(windows), command, title, path,
@@ -274,7 +277,7 @@ def inventory(host, actor_descriptors):
     actors = [actor for actor in actor_descriptors
               if actor.get("evaluator") == "native"
               or presentation.available(actor["addr"], actor, names)]
-    return sessions + alan_inventory(host, actors)
+    return sessions + alan_inventory(host, actors, runtime)
 
 
 def watched_event(path, transcript_roots, quota_path):
@@ -287,6 +290,8 @@ def watched_event(path, transcript_roots, quota_path):
 
 
 def default_socket():
+    if socket := os.environ.get("FLEET_TMUX_SOCKET"):
+        return Path(socket)
     root = Path(os.environ.get("TMUX_TMPDIR", "/tmp"))
     return root / f"tmux-{os.getuid()}" / "default"
 
@@ -305,7 +310,8 @@ def watch_socket(changed, consumer):
                 break
 
 
-def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=None):
+def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=None,
+                 runtime=""):
     changed = changed or queue.Queue()
     alan = alan_watcher or AlanWatcher(changed, consumer)
     if consumer:
@@ -357,20 +363,20 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
                 force = True
             if control is None:
                 probe = subprocess.run(
-                    ["/usr/bin/tmux", "-N", "list-sessions"],
+                    tmux_command("list-sessions"),
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 if not probe.returncode:
                     tmux = server()
                     if not tmux.has_session("fleet@events"):
                         created = subprocess.run(
-                            ["/usr/bin/tmux", "-N", "new-session", "-d", "-s",
-                             "fleet@events", "sleep infinity"],
+                            tmux_command("new-session", "-d", "-s", "fleet@events",
+                                    "sleep infinity"),
                             text=True, capture_output=True)
                         if created.returncode:
                             raise RuntimeError(created.stderr.strip())
                     process = subprocess.Popen(
-                        ["/usr/bin/tmux", "-N", "-C", "attach-session", "-f",
-                         "ignore-size", "-t", "fleet@events"],
+                        tmux_command("-C", "attach-session", "-f", "ignore-size", "-t",
+                                "fleet@events"),
                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE, text=True, bufsize=1)
                     assert process.stdout and process.stdin
@@ -383,12 +389,13 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
             alan_error = alan.error
             with alan.snapshot() as (actors, graph):
                 try:
-                    current = inventory(host, actors) if control is not None else []
+                    current = (inventory(host, actors, runtime) if runtime
+                               else inventory(host, actors)) if control is not None else []
                 except (subprocess.CalledProcessError, LibTmuxException) as error:
                     if control is None:
                         raise
                     probe = subprocess.run(
-                        ["/usr/bin/tmux", "-N", "list-sessions"],
+                        tmux_command("list-sessions"),
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     if not probe.returncode:
                         raise error
@@ -401,7 +408,7 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
                         agent_cache = {session.ref: session for session in current}
                     except subprocess.CalledProcessError as error:
                         probe = subprocess.run(
-                            ["/usr/bin/tmux", "-N", "list-sessions"],
+                            tmux_command("list-sessions"),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         if probe.returncode:
                             discard_control()

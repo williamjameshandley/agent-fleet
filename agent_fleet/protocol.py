@@ -9,7 +9,8 @@ def encode(sessions, usage=None, unavailable=None, graph=None):
     items = [{
         "server": {"host": s.ref.server.host, "socket": s.ref.server.socket,
                    "pid": s.ref.server.pid, "started": s.ref.server.started,
-                   "kind": s.ref.server.kind},
+                   "kind": s.ref.server.kind,
+                   "runtime": s.ref.server.runtime},
         "id": s.ref.session_id, "name": s.name, "created": s.created,
         "activity": s.activity, "attached": s.attached, "windows": s.windows,
         "command": s.command, "title": s.title, "cwd": s.cwd,
@@ -28,6 +29,7 @@ def encode(sessions, usage=None, unavailable=None, graph=None):
                 "pid": s.attachment.server.pid,
                 "started": s.attachment.server.started,
                 "kind": s.attachment.server.kind,
+                "runtime": s.attachment.server.runtime,
             },
             "id": s.attachment.session_id,
         } if s.attachment else None),
@@ -65,11 +67,13 @@ def decode_value(message):
                     attachment_server["pid"],
                     attachment_server["started"],
                     attachment_server["kind"],
+                    attachment_server.get("runtime", ""),
                 ),
                 attachment["id"],
             )
         ref = SessionRef(
-            ServerRef(raw["host"], raw["socket"], raw["pid"], raw["started"], kind),
+            ServerRef(raw["host"], raw["socket"], raw["pid"], raw["started"], kind,
+                      raw.get("runtime", "")),
             sid,
         )
         sessions.append(Session(ref=ref, attachment=attachment, **item))

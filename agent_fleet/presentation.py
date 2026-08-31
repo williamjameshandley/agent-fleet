@@ -8,6 +8,7 @@ import loop
 from jupyter_console.app import ZMQTerminalIPythonApp
 
 from . import alan
+from .config import tmux_command
 
 
 def available(actor, descriptor, session_names):
@@ -129,7 +130,7 @@ def target(actor, descriptor):
     name = "fleet@alan-" + alan.runtime_name(actor)
     exact = "=" + name
     exists = subprocess.run(
-        ["/usr/bin/tmux", "-N", "has-session", "-t", exact],
+        tmux_command("has-session", "-t", exact),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -148,20 +149,21 @@ def target(actor, descriptor):
                 actor, json.dumps(descriptor, separators=(",", ":")),
             ])
         subprocess.run(
-            ["/usr/bin/tmux", "-N", "new-session", "-d", "-s", name, "-c", descriptor["cwd"],
-             command],
+            tmux_command("new-session", "-d", "-s", name, "-c", descriptor["cwd"],
+                         command),
             check=True,
         )
-        subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "mouse", "on"],
+        subprocess.run(tmux_command("set-option", "-t", name, "mouse", "on"),
                        check=True)
-    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "status", "on"],
+    subprocess.run(tmux_command("set-option", "-t", name, "status", "on"),
                    check=True)
     return exact
 
 
 def attach(actor, descriptor):
     exact = target(actor, descriptor)
-    os.execvp("/usr/bin/tmux", ["/usr/bin/tmux", "-N", "attach-session", "-t", exact])
+    command = tmux_command("attach-session", "-t", exact)
+    os.execvp(command[0], command)
 
 
 def close(actor):
@@ -170,7 +172,7 @@ def close(actor):
     name = "fleet@alan-" + alan.runtime_name(actor)
     target = "=" + name
     result = subprocess.run(
-        ["/usr/bin/tmux", "-N", "kill-session", "-t", target], text=True,
+        tmux_command("kill-session", "-t", target), text=True,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
     if result.returncode and result.stderr.strip() != f"can't find session: {name}":

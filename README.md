@@ -304,6 +304,14 @@ socket from `LOOP_SOCKET` or the user's XDG state directory. An unavailable
 Alan socket removes Alan rows but does not invalidate healthy tmux inventory on
 the same host.
 
+Multiple Alan runtimes on one physical host are listed in
+`~/.config/agent-fleet/runtime-sources.json`. Each closed entry names `host`,
+`principal`, `public_socket`, `home`, and `tmux_socket` with absolute paths.
+Fleet starts one existing collector per entry and qualifies its disposable
+session and graph identities by `<principal>@<host>`; the files and sockets
+remain authoritative, and ordinary Unix access failures remain visible. When
+the file is absent, the `hosts` file retains the single-runtime-per-host shape.
+
 Fleet displays direct-root Alan actors by default. Spawned actors form recursive
 folds beneath their nearest visible creator; each visible actor folds
 independently. Python remains hidden unless its global presentation toggle is

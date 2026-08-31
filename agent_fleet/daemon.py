@@ -14,7 +14,7 @@ from pathlib import Path
 
 import networkx as nx
 
-from .config import HUB, KINDS, RUNTIME, hosts, ssh_environment
+from .config import HUB, KINDS, RUNTIME, RuntimeSource, hosts, runtime_sources, ssh_environment
 from .alan import address_identity
 from .protocol import decode_message, decode_observation, encode
 from .model import key_host
@@ -34,8 +34,13 @@ def remove_viewer_marker(host, owner, slot):
     path.unlink(missing_ok=True)
 
 
-def events(host):
+def events(raw_source):
     """Stream one host's session events and answer preview requests."""
+    source = (RuntimeSource(**json.loads(raw_source))
+              if isinstance(raw_source, str) and raw_source.startswith("{")
+              else RuntimeSource(raw_source, ""))
+    os.environ.update(source.environment())
+    host = source.host
     lock = threading.Lock()
     consumer = threading.Event()
     controls = ControlSlot()
@@ -85,9 +90,34 @@ def events(host):
 
     threading.Thread(target=requests, daemon=True).start()
     for sessions, graph, available in event_stream(
-            host, consumer, controls, changes, alan_watcher=alan):
-        usage = quota_read() if host == hosts()[0] else {}
-        emit(encode(sessions, usage, [] if available else [host], graph=graph))
+            host, consumer, controls, changes, alan_watcher=alan,
+            runtime=source.principal):
+        usage = quota_read() if source == runtime_sources()[0] else {}
+        emit(encode(sessions, usage, [] if available else [source.key], graph=graph))
+
+
+def qualify_graph(graph, source):
+    """Namespace one runtime's disposable graph while retaining raw actor identity."""
+    prefix = source.key
+    references = {reference: f"{prefix}|{reference}" for reference in graph.nodes}
+    qualified = nx.relabel_nodes(graph, references, copy=True)
+
+    def actor(addr):
+        return f"alan:{prefix}:{addr}"
+
+    for _reference, operation in qualified.nodes(data=True):
+        for field in ("stream", "to"):
+            if field in operation:
+                operation[field] = actor(operation[field])
+        for field in ("send", "reply", "input", "evaluation"):
+            if operation.get(field) in references:
+                operation[field] = references[operation[field]]
+    qualified.graph["actors"] = [
+        {**descriptor, "actor": descriptor["addr"], "addr": actor(descriptor["addr"]),
+         "runtime": source.principal}
+        for descriptor in graph.graph.get("actors", [])
+    ]
+    return qualified
 
 
 class Fleet:
@@ -97,7 +127,8 @@ class Fleet:
         self.observed = 0
         self._composed = (None, nx.MultiDiGraph())
         self.usage = {}
-        self.unavailable = set(hosts())
+        self.sources = {source.key: source for source in runtime_sources()}
+        self.unavailable = set(self.sources)
         self.tmux_unavailable = set()
         self.refresh_pending = False
         self.processes = {}
@@ -122,17 +153,27 @@ class Fleet:
         self.background_tasks = set()
         self.task_names = {}
 
-    async def collect(self, host):
+    async def collect(self, source):
+        if isinstance(source, str):
+            source = self.sources.get(source, RuntimeSource(source, ""))
+        source_key = source.key
+        host = source_key
+        serialized = json.dumps({
+            "host": source.host, "principal": source.principal,
+            "public_socket": source.public_socket, "home": source.home,
+            "tmux_socket": source.tmux_socket,
+        }, separators=(",", ":"))
         python = (sys.executable, "-c",
                   "import sys; from agent_fleet.daemon import events; events(sys.argv[1])",
-                  host)
-        command = (list(python) if host == os.uname().nodename else
-                   ["ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(python)])
+                  serialized)
+        command = (list(python) if source.host == os.uname().nodename else
+                   ["ssh", "-T", "-o", "BatchMode=yes", source.host,
+                    shlex.join(python)])
         while True:
             process = await asyncio.create_subprocess_exec(*command,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, limit=sys.maxsize)
-            self.processes[host] = process
+            self.processes[source_key] = process
             errors = []
 
             async def stderr():
@@ -146,8 +187,8 @@ class Fleet:
                 assert process.stdout
                 async for raw in process.stdout:
                     if raw.startswith(b'{"version":'):
-                        self.update_host(host, raw)
-                    elif self.host_reply(json.loads(raw)):
+                        self.update_source(source, raw)
+                    elif self.host_reply(source_key, json.loads(raw)):
                         continue
                     else:
                         raise ValueError("invalid host response")
@@ -161,23 +202,29 @@ class Fleet:
                     await process.wait()
                 if not drain.done():
                     drain.cancel()
-                await self.host_disconnected(host, process.pid, process.returncode)
+                await self.source_disconnected(source_key, process.pid, process.returncode)
             self.schedule_refresh()
             await asyncio.sleep(1)
 
     def update_host(self, host, raw):
+        source = self.sources.get(host, RuntimeSource(host, ""))
+        return self.update_source(source, raw)
+
+    def update_source(self, source, raw):
         sessions, usage, unavailable, graph = decode_observation(raw)
-        connected = host in self.unavailable
-        self.sessions[host] = sessions
-        self.graphs[host] = graph
-        self.unavailable.discard(host)
-        if host in unavailable:
-            self.tmux_unavailable.add(host)
+        key = source.key
+        connected = key in self.unavailable
+        self.sessions[key] = sessions
+        self.graphs[key] = (qualify_graph(graph, source)
+                            if graph is not None and source.principal else graph)
+        self.unavailable.discard(key)
+        if key in unavailable:
+            self.tmux_unavailable.add(key)
         else:
-            self.tmux_unavailable.discard(host)
+            self.tmux_unavailable.discard(key)
         if connected:
-            journal.record("host_connected", host=host, pid=self.processes[host].pid)
-        if host == hosts()[0] and usage:
+            journal.record("host_connected", host=source.host, pid=self.processes[key].pid)
+        if source == next(iter(self.sources.values())) and usage:
             self.usage = usage
         self.observed += 1
         self.view_revision += 1
@@ -186,7 +233,9 @@ class Fleet:
     def presentation_unavailable(self):
         return self.unavailable | self.tmux_unavailable
 
-    def host_reply(self, message):
+    def host_reply(self, source, message=None):
+        if message is None:
+            message = source
         if "preview" in message:
             _, future = self.previews.pop(message["preview"])
             if "error" in message:
@@ -210,17 +259,19 @@ class Fleet:
             return True
         return False
 
-    async def host_disconnected(self, host, pid=None, status=None):
-        connected = host not in self.unavailable
+    async def source_disconnected(self, source, pid=None, status=None):
+        connected = source not in self.unavailable
         if connected and (pid is None or status is None):
             raise RuntimeError("connected host disconnect requires process identity and status")
-        self.processes.pop(host, None)
-        self.sessions.pop(host, None)
-        self.graphs.pop(host, None)
-        self.unavailable.add(host)
-        self.tmux_unavailable.discard(host)
+        self.processes.pop(source, None)
+        self.sessions.pop(source, None)
+        self.graphs.pop(source, None)
+        self.unavailable.add(source)
+        self.tmux_unavailable.discard(source)
         if connected:
-            journal.record("host_disconnected", host=host, pid=pid, status=status)
+            journal.record("host_disconnected",
+                           host=self.sources.get(source, RuntimeSource(source, "")).host,
+                           pid=pid, status=status)
         self.observed += 1
         self.view_revision += 1
         self._view_cache = None
@@ -228,9 +279,12 @@ class Fleet:
             self.changed.notify_all()
         for pending in (self.previews, self.switches, self.cleanups):
             for number, (owner, future) in list(pending.items()):
-                if owner == host:
-                    future.set_exception(RuntimeError(f"{host} disconnected"))
+                if owner == source:
+                    future.set_exception(RuntimeError(f"{source} disconnected"))
                     del pending[number]
+
+    async def host_disconnected(self, host, pid=None, status=None):
+        return await self.source_disconnected(host, pid, status)
 
     def schedule_refresh(self):
         if not self.refresh_pending:
@@ -310,6 +364,9 @@ class Fleet:
                          "cwd": session.cwd,
                          "attachment": session.attachment.key
                          if session.attachment else ""}
+                if session.ref.server.runtime:
+                    value["tmux_socket"] = self.sources[
+                        session.ref.server.source].tmux_socket
             except (LookupError, OSError, RuntimeError, ValueError) as error:
                 value = {"error": str(error)}
             payload = json.dumps(value, separators=(",", ":"))
@@ -484,7 +541,8 @@ class Fleet:
                 [item] = matches
                 if item.session.ref.server.kind != "alan" or not item.child_count:
                     raise ValueError("fold requires an Alan parent with children")
-                actor = item.session.ref.session_id
+                actor = (item.session.ref.key if item.session.ref.server.runtime
+                         else item.session.ref.session_id)
                 changed = (actor not in self.expanded if operation == "open" else
                            actor in self.expanded)
                 if operation == "open":
@@ -678,21 +736,24 @@ class Fleet:
         return composed
 
     async def commander_context(self):
+        self.configured_sources()
         sessions = sorted(
             ({"source": session.ref.key, "host": session.ref.server.host,
+              **({"runtime_source": session.ref.server.source}
+                 if getattr(session.ref.server, "runtime", "") else {}),
               "name": session.name, "agent": session.agent, "state": session.state,
               "summary": session.summary, "recency": session.human_activity,
               "transcript_id": session.transcript_id, "worked": session.worked}
              for group in self.sessions.values() for session in group),
             key=lambda item: item["source"])
-        source_hosts = sorted(hosts())
+        source_hosts = sorted(self.sources)
         observations = await asyncio.gather(
             *(self.remote_json(
                 host, sys.executable, "-c",
                 "import json; from agent_fleet.actions import context; print(json.dumps(context()))",
               )
               for host in ("boltzmann", "noether", "newton")),
-            *(self.history_observation(host) for host in source_hosts))
+            *(self.history_observation(source) for source in source_hosts))
         workstations = {
             host: {key: observation[key] for key in ("profile", "unavailable", "slots")}
             for host, observation in zip(("boltzmann", "noether", "newton"), observations[:3])
@@ -707,14 +768,16 @@ class Fleet:
         return {**body, "revision": hashlib.sha256(canonical).hexdigest()}
 
     async def history(self):
-        source_hosts = sorted(set(hosts()) - self.unavailable)
+        self.configured_sources()
+        source_hosts = sorted(set(self.sources) - self.unavailable)
         sessions = [
-            {"host": session.ref.server.host, "agent": session.agent,
+            {"host": session.ref.server.host, "runtime": session.ref.server.runtime,
+             "source": session.ref.server.source, "agent": session.agent,
              "transcript_id": session.transcript_id}
             for group in self.sessions.values() for session in group
         ]
         results = await asyncio.gather(
-            *(self.history_observation(host) for host in source_hosts),
+            *(self.history_observation(source) for source in source_hosts),
             return_exceptions=True)
         observed = [(host, result) for host, result in zip(source_hosts, results)
                     if not isinstance(result, Exception)]
@@ -729,15 +792,31 @@ class Fleet:
         if len(matches) != 1:
             raise LookupError(f"source is not in the current projection: {key}")
         session = matches[0]
-        if session.ref.server.host in self.unavailable:
+        if session.ref.server.source in self.unavailable:
             raise RuntimeError(
-                f"{session.ref.server.host} is disconnected; refusing action"
+                f"{session.ref.server.source} is disconnected; refusing action"
             )
         return session
 
-    def available(self, host):
-        if host not in hosts() or host in self.unavailable:
-            raise RuntimeError(f"{host} is disconnected; refusing action")
+    def source_key(self, value):
+        if value in self.sources:
+            return value
+        if value in self.sessions or value in self.processes:
+            return value
+        matches = [source.key for source in self.sources.values()
+                   if source.host == value]
+        if len(matches) != 1:
+            raise LookupError(f"runtime source is unavailable or ambiguous: {value}")
+        return matches[0]
+
+    def configured_sources(self):
+        if all(not source.principal for source in self.sources.values()):
+            self.sources = {host: RuntimeSource(host, "") for host in hosts()}
+        return self.sources
+
+    def available(self, source):
+        if source not in self.sources or source in self.unavailable:
+            raise RuntimeError(f"{source} is disconnected; refusing action")
 
     async def wait_for_source(self, predicate, description):
         try:
@@ -774,10 +853,10 @@ class Fleet:
             raise ValueError("session name is required")
         return value
 
-    async def authority(self, host, request):
-        self.available(host)
+    async def authority(self, source, request):
+        self.available(source)
         return await self.remote_json(
-            host, sys.executable, "-c",
+            source, sys.executable, "-c",
             "import sys; from agent_fleet.authority import execute_json; "
             "print(execute_json(sys.argv[1]))",
             json.dumps(request, separators=(",", ":")))
@@ -821,8 +900,8 @@ class Fleet:
 
     def archive_authority(self, key):
         session = self.source(key)
-        host = session.ref.server.host
-        self.available(host)
+        source = session.ref.server.source
+        self.available(source)
         if session.ref.server.kind == "alan":
             if session.agent not in {"llm", "claude", "codex", "grok", "antigravity"}:
                 raise ValueError("archive requires a language actor")
@@ -851,7 +930,7 @@ class Fleet:
             authority = {"operation": "archive-tmux", "source": key,
                          "agent": session.agent,
                          "transcript": session.transcript_id}
-        return session, host, authority
+        return session, source, authority
 
     async def action(self, request):
         operation = request.get("operation")
@@ -867,17 +946,20 @@ class Fleet:
             raise ValueError("invalid Fleet action")
         if operation == "create":
             host = request["host"]
-            self.available(host)
+            source_key = self.source_key(host)
+            self.available(source_key)
             if request["agent"] not in KINDS:
                 raise ValueError("create requires a language-actor kind")
             if not isinstance(request["cwd"], str) or not request["cwd"]:
                 raise ValueError("create requires a directory")
             name = self.action_name(request["name"])
-            value = await self.authority(host, {
+            value = await self.authority(source_key, {
                 "operation": "create", "agent": request["agent"],
                 "name": name, "cwd": request["cwd"],
             })
             key = value["source"]
+            if self.sources[source_key].principal:
+                key = f"alan:{source_key}:{key.removeprefix('alan:')}"
             await self.wait_for_source(
                 lambda session: session.ref.key == key
                 and (session.agent not in {"claude", "codex", "grok"}
@@ -888,51 +970,60 @@ class Fleet:
         if operation == "restore":
             key = request["history"]
             if key.startswith("alan:"):
-                actor = key.removeprefix("alan:")
+                identity = key.removeprefix("alan:")
+                candidate, separator, actor = identity.partition(":")
+                if not separator or candidate not in self.sources:
+                    actor = identity
+                    source_key = self.source_key(actor.rsplit("@", 1)[-1])
+                else:
+                    source_key = candidate
                 if actor.count("@") != 1 or not all(actor.split("@", 1)):
                     raise ValueError("invalid Alan history identity")
-                host = actor.rsplit("@", 1)[1]
-                self.available(host)
+                self.available(source_key)
                 descriptors = [
                     item for item in self.composed_graph().graph.get("actors", [])
-                    if item["addr"] == actor]
+                    if item["addr"] == key.removeprefix("alan:")
+                    or (item.get("actor", item["addr"]) == actor
+                        and item.get("runtime", "") == self.sources[source_key].principal)]
                 if len(descriptors) != 1:
                     raise LookupError(f"actor disappeared: {actor}")
                 native = (descriptors[0].get("evaluator") == "native"
                           and not descriptors[0].get("managed", False))
-                await self.authority(host, {"operation": "restore-alan",
-                                            "actor": actor})
+                await self.authority(source_key, {"operation": "restore-alan",
+                                                  "actor": actor})
                 await self.wait_for_source(
                     lambda session: session.ref.key == key
                     and (not native or session.attachment is not None),
                     f"restore {key}")
                 return {"source": key}
             try:
-                host, agent, transcript = key.split(":", 2)
+                source_key, agent, transcript = key.split(":", 2)
             except ValueError:
                 raise ValueError("invalid transcript history identity") from None
-            self.available(host)
+            self.available(source_key)
+            host = self.sources[source_key].host
             if agent not in {"claude", "codex", "grok", "antigravity"} or not transcript:
                 raise ValueError("invalid transcript history identity")
-            if any(session.ref.server.host == host and session.agent == agent
+            if any(session.ref.server.source == source_key and session.agent == agent
                    and session.transcript_id == transcript
                    for group in self.sessions.values() for session in group):
                 raise ValueError("that transcript already has a live session")
             name = self.action_name(request["name"])
-            await self.authority(host, {
+            await self.authority(source_key, {
                 "operation": "restore-transcript", "agent": agent,
                 "transcript": transcript, "name": name,
             })
             if agent in {"claude", "codex", "grok"}:
                 actor = f"{agent}-{transcript}@{host}"
-                source = f"alan:{actor}"
+                source = (f"alan:{source_key}:{actor}"
+                          if self.sources[source_key].principal else f"alan:{actor}")
                 await self.wait_for_source(
                     lambda session: session.ref.key == source
                     and session.agent == agent
                     and session.transcript_id == transcript
                     and session.attachment is not None,
                     f"restore {key}")
-                await self.authority(host, {
+                await self.authority(source_key, {
                     "operation": "rename-alan", "actor": actor, "name": name,
                 })
                 await self.wait_for_source(
@@ -944,14 +1035,14 @@ class Fleet:
                     f"rename {source}")
                 return {"source": source}
             source = await self.wait_for_source(
-                lambda session: session.ref.server.host == host
+                lambda session: session.ref.server.source == source_key
                 and session.agent == agent and session.transcript_id == transcript,
                 f"restore {key}")
             return {"source": source}
 
         key = request["source"]
         session = self.source(key)
-        host = session.ref.server.host
+        source_key = session.ref.server.source
         if operation == "archive":
             viewers = await self.viewers()
         else:
@@ -963,20 +1054,24 @@ class Fleet:
                          if session.ref.server.kind == "alan" else
                          {"operation": "rename-tmux", "source": key,
                           "name": name})
-            return await self.authority(host, authority)
-        _, host, authority = self.archive_authority(key)
+            return await self.authority(source_key, authority)
+        _, source_key, authority = self.archive_authority(key)
         self.pending_archives.add(key)
         try:
             await self.update_viewers(viewers, f"CLEAR {key}")
-            await self.authority(host, authority)
+            await self.authority(source_key, authority)
             await self.wait_for_absence(key)
         finally:
             self.pending_archives.discard(key)
         return {}
 
-    async def remote_json(self, host, *command):
+    async def remote_json(self, source_key, *command):
+        source = self.sources.get(source_key, RuntimeSource(source_key, ""))
+        host = source.host
+        assignments = tuple(f"{name}={value}"
+                            for name, value in source.environment().items())
         target = ("/usr/bin/env", "-u", "LOOP_SOCKET", "-u", "LOOP_CAPABILITIES",
-                  *command)
+                  *assignments, *command)
         argv = list(target) if host == os.uname().nodename.split(".", 1)[0] else [
             "ssh", "-T", "-o", "BatchMode=yes", host, shlex.join(target)]
         environment = ssh_environment()
@@ -990,20 +1085,24 @@ class Fleet:
             raise RuntimeError(stderr.decode().strip() or f"{host}: {' '.join(command)} failed")
         return json.loads(stdout)
 
-    async def history_observation(self, host):
-        graph = self.graphs.get(host)
+    async def history_observation(self, source):
+        graph = self.graphs.get(source)
         actors = [] if graph is None else graph.graph.get("actors", [])
         transcripts = await self.remote_json(
-            host, sys.executable, "-c",
+            source, sys.executable, "-c",
             "import json; from agent_fleet.transcripts import history; "
             "print(json.dumps(history(100)))",
         )
-        return {"host": host, "actors": actors, "transcripts": transcripts}
+        value = {"host": self.sources.get(source, RuntimeSource(source, "")).host,
+                 "actors": actors, "transcripts": transcripts}
+        if self.sources.get(source, RuntimeSource(source, "")).principal:
+            value["source"] = source
+        return value
 
-    async def search_observation(self, host, query):
-        graph = self.graphs.get(host)
+    async def search_observation(self, source, query):
+        graph = self.graphs.get(source)
         hits = await self.remote_json(
-            host, sys.executable, "-c",
+            source, sys.executable, "-c",
             "import json,sys; from agent_fleet.transcripts import search; "
             "print(json.dumps(search(sys.argv[1])))",
             query,
@@ -1012,13 +1111,15 @@ class Fleet:
                 "hits": hits}
 
     async def search_history(self, query):
+        self.configured_sources()
         if not isinstance(query, str) or not query:
             raise ValueError("history search query is required")
-        source_hosts = sorted(set(hosts()) - self.unavailable)
+        source_hosts = sorted(set(self.sources) - self.unavailable)
         observations = await asyncio.gather(
-            *(self.search_observation(host, query) for host in source_hosts))
+            *(self.search_observation(source, query) for source in source_hosts))
         rows = []
-        for host, observation in zip(source_hosts, observations):
+        for source, observation in zip(source_hosts, observations):
+            host = self.sources[source].host
             owners = {}
             for actor in observation["actors"]:
                 if actor.get("kind") not in {"claude", "codex", "grok"}:
@@ -1035,28 +1136,32 @@ class Fleet:
                     )
                 if matches:
                     actor = matches[0]
-                    source = f"alan:{actor['addr']}"
+                    row_source = actor["addr"] if actor["addr"].startswith("alan:") else f"alan:{actor['addr']}"
                     name = actor.get("label") or actor["addr"]
                     lifecycle = actor.get("state") or ""
                 else:
-                    source = f"{host}:{hit['agent']}:{hit['session_id']}"
+                    row_source = f"{source}:{hit['agent']}:{hit['session_id']}"
                     name = Path(hit["cwd"]).name or hit["agent"]
                     lifecycle = "standalone"
-                rows.append({**hit, "host": host, "source": source,
+                rows.append({**hit, "host": host,
+                             **({"runtime_source": source} if "@" in source else {}),
+                             "source": row_source,
                              "name": name, "lifecycle": lifecycle})
         return rows
 
     @staticmethod
     def history_entries(sessions, source_hosts, observations):
-        live = {(item["host"], item["agent"], item.get("transcript_id"))
+        live = {(item.get("runtime_source", item["host"]), item["agent"],
+                 item.get("transcript_id"))
                 for item in sessions if item.get("transcript_id")}
         authorities = set(live)
         entries = []
-        for host, observation in zip(source_hosts, observations):
+        for source, observation in zip(source_hosts, observations):
+            host = observation.get("host", source.rsplit("@", 1)[-1])
             claimed = {}
             for actor in observation["actors"]:
                 native_id = address_identity(actor["addr"], actor.get("kind"))
-                identity = host, actor.get("kind"), native_id
+                identity = source, actor.get("kind"), native_id
                 retained = (actor.get("kind") == "llm" or
                             actor.get("kind") in {"claude", "codex", "grok", "antigravity"})
                 if native_id:
@@ -1064,7 +1169,10 @@ class Fleet:
                 if retained and actor.get("state") in {"retired", "unavailable"}:
                     if native_id:
                         authorities.add(identity)
-                    entries.append({"key": f'alan:{actor["addr"]}', "host": host,
+                    actor_key = (actor["addr"] if actor["addr"].startswith("alan:")
+                                 else f'alan:{actor["addr"]}')
+                    entries.append({"key": actor_key, "host": host,
+                                    **({"runtime_source": source} if "@" in source else {}),
                                     "agent": actor["kind"],
                                     "name": actor.get("label") or actor["addr"],
                                     "cwd": actor.get("cwd") or "",
@@ -1079,29 +1187,33 @@ class Fleet:
                     + ", ".join(sorted(addresses)))
             authorities.update(claimed)
             for item in observation["transcripts"]:
-                if (host, item["agent"], item["session_id"]) not in authorities:
-                    entries.append({"key": f'{host}:{item["agent"]}:{item["session_id"]}',
-                                    "host": host, "agent": item["agent"],
+                if (source, item["agent"], item["session_id"]) not in authorities:
+                    entries.append({"key": f'{source}:{item["agent"]}:{item["session_id"]}',
+                                    "host": host,
+                                    **({"runtime_source": source} if "@" in source else {}),
+                                    "agent": item["agent"],
                                     "name": item["name"], "cwd": item["cwd"],
                                     "mtime": item["mtime"]})
         return sorted(entries, key=lambda item: item["key"])
 
     async def serve(self):
+        self.configured_sources()
         RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = RUNTIME / "fleet.sock"
         path.unlink(missing_ok=True)
         server = await asyncio.start_unix_server(self.reply, path)
         os.chmod(path, 0o600)
         await self.register_existing_muster()
-        configured = hosts()
-        fields = {"socket": str(path), "hosts_text": " ".join(configured)}
+        configured = list(self.sources.values())
+        fields = {"socket": str(path),
+                  "hosts_text": " ".join(source.key for source in configured)}
         journal.record("daemon_ready", **fields)
         try:
             async with server:
                 async with asyncio.TaskGroup() as group:
                     group.create_task(server.serve_forever())
-                    for host in configured:
-                        group.create_task(self.collect(host))
+                    for source in configured:
+                        group.create_task(self.collect(source))
         finally:
             journal.record("daemon_stopping", **fields)
             for task in tuple(self.background_tasks):
@@ -1113,18 +1225,20 @@ class Fleet:
                         if session.ref.key == key), None)
         if session is None:
             raise RuntimeError(f"source is not in the current projection: {key}")
-        host = key_host(key)
-        if host in self.unavailable:
-            raise RuntimeError(f"{host} is disconnected; refusing action")
-        if host in self.tmux_unavailable and not key.startswith("alan:"):
-            raise RuntimeError(f"{host} tmux server is unavailable")
-        process = self.processes[host]
+        source_key = session.ref.server.source
+        if source_key in self.unavailable:
+            raise RuntimeError(f"{source_key} is disconnected; refusing action")
+        if source_key in self.tmux_unavailable and not key.startswith("alan:"):
+            raise RuntimeError(f"{source_key} tmux server is unavailable")
+        process = self.processes[source_key]
         assert process.stdin
         self.next_preview += 1
         number = self.next_preview
         future = asyncio.get_running_loop().create_future()
-        self.previews[number] = (host, future)
-        source = session.attachment.key if session.attachment else key
+        self.previews[number] = (source_key, future)
+        source = (session.attachment.key if session.attachment else
+                  f"alan:{session.ref.session_id}"
+                  if session.ref.server.kind == "alan" else key)
         process.stdin.write((json.dumps({"preview": number, "key": source,
                                          "columns": columns, "lines": lines}) + "\n").encode())
         await process.stdin.drain()
@@ -1132,23 +1246,23 @@ class Fleet:
 
     async def switch(self, key, client):
         session = await self.ensure_attachment(key)
-        host = key_host(key)
-        if host in self.tmux_unavailable:
-            raise RuntimeError(f"{host} tmux server is unavailable")
+        source_key = session.ref.server.source
+        if source_key in self.tmux_unavailable:
+            raise RuntimeError(f"{source_key} tmux server is unavailable")
         self.next_switch += 1
         number = self.next_switch
         future = asyncio.get_running_loop().create_future()
-        self.switches[number] = (host, future)
+        self.switches[number] = (source_key, future)
         payload = {"switch": number, "client": client}
         if session.attachment:
             payload["target"] = split_key(session.attachment.key)[1:]
         elif key.startswith("alan:"):
-            payload["actor"] = key.removeprefix("alan:")
+            payload["actor"] = session.ref.session_id
             payload["agent"] = session.agent
             payload["cwd"] = session.cwd
         else:
             payload["target"] = split_key(key)[1:]
-        process = self.processes[host]
+        process = self.processes[source_key]
         assert process.stdin
         process.stdin.write((json.dumps(payload) + "\n").encode())
         await process.stdin.drain()
@@ -1157,12 +1271,13 @@ class Fleet:
 
     async def ensure_attachment(self, key):
         session = self.source(key)
-        host = session.ref.server.host
-        if host in self.presentation_unavailable():
-            raise RuntimeError(f"{host} presentation is unavailable; refusing action")
+        source_key = session.ref.server.source
+        if source_key in self.presentation_unavailable():
+            raise RuntimeError(f"{source_key} presentation is unavailable; refusing action")
         descriptors = [
             item for item in self.composed_graph().graph.get("actors", [])
-            if item["addr"] == session.ref.session_id]
+            if item.get("actor", item["addr"]) == session.ref.session_id
+            and item.get("runtime", "") == session.ref.server.runtime]
         native = (len(descriptors) == 1
                   and descriptors[0].get("evaluator") == "native"
                   and not descriptors[0].get("managed", False))
@@ -1183,7 +1298,7 @@ class Fleet:
         return session
 
     async def restore_native(self, session):
-        await self.authority(session.ref.server.host, {
+        await self.authority(session.ref.server.source, {
             "operation": "restore-native",
             "actor": session.ref.session_id,
             "agent": session.agent,
@@ -1195,13 +1310,14 @@ class Fleet:
             f"restore {session.ref.key}")
 
     async def cleanup(self, host, owner, slot):
-        if host in self.unavailable:
-            raise RuntimeError(f"{host} is disconnected; refusing cleanup")
+        source_key = self.source_key(host)
+        if source_key in self.unavailable:
+            raise RuntimeError(f"{source_key} is disconnected; refusing cleanup")
         self.next_cleanup += 1
         number = self.next_cleanup
         future = asyncio.get_running_loop().create_future()
-        self.cleanups[number] = (host, future)
-        process = self.processes[host]
+        self.cleanups[number] = (source_key, future)
+        process = self.processes[source_key]
         assert process.stdin
         process.stdin.write((json.dumps({"cleanup": number, "owner": owner,
                                          "slot": slot}) + "\n").encode())

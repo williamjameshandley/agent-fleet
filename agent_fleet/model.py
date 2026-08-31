@@ -8,12 +8,17 @@ class ServerRef:
     pid: int
     started: int
     kind: str = "tmux"
+    runtime: str = ""
+
+    @property
+    def source(self):
+        return f"{self.runtime}@{self.host}" if self.runtime else self.host
 
     @property
     def key(self):
         if self.kind == "alan":
-            return f"alan:{self.host}"
-        return f"{self.host}:{self.socket}:{self.pid}:{self.started}"
+            return f"alan:{self.source}"
+        return f"{self.source}:{self.socket}:{self.pid}:{self.started}"
 
 
 @dataclass(frozen=True, order=True)
@@ -24,7 +29,8 @@ class SessionRef:
     @property
     def key(self):
         if self.server.kind == "alan":
-            return f"alan:{self.session_id}"
+            return (f"alan:{self.server.source}:{self.session_id}"
+                    if self.server.runtime else f"alan:{self.session_id}")
         return f"{self.server.key}:{self.session_id}"
 
 
@@ -80,4 +86,15 @@ class Session:
 
 
 def key_host(key):
-    return key.rsplit("@", 1)[1] if key.startswith("alan:") else key.split(":", 1)[0]
+    source = key.removeprefix("alan:").split(":", 1)[0]
+    return source.rsplit("@", 1)[-1]
+
+
+def key_source(key):
+    return key.removeprefix("alan:").split(":", 1)[0]
+
+
+def key_actor(key):
+    value = key.removeprefix("alan:")
+    source, separator, actor = value.partition(":")
+    return actor if separator and "@" in source else value
