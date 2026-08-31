@@ -377,6 +377,7 @@ def test_inactive_adopted_actor_folds_only_while_its_provider_is_present():
         [folded] = fold_adopted([actor, provider])
         assert folded.ref == actor.ref
         assert folded.attachment == provider.ref
+        assert folded.state == "waiting"
 
 
 def test_multiple_provider_presentations_retain_every_session_without_native_names():

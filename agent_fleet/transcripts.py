@@ -729,7 +729,10 @@ def fold_adopted(sessions):
                              f"{actor.ref.session_id}"))
             continue
         [provider] = native
-        replacements[actor.ref] = replace(actor, attachment=provider.ref)
+        replacements[actor.ref] = replace(
+            actor, attachment=provider.ref,
+            reported_state=(provider.state if actor.state in {"retired", "unavailable"}
+                            else actor.reported_state))
         consumed.add(provider.ref)
 
     return [replacements.get(session.ref, session)
