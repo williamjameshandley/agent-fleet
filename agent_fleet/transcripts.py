@@ -735,5 +735,6 @@ def fold_adopted(sessions):
     return [replacements.get(session.ref, session)
             for session in sessions
             if session.ref not in consumed
-            and not (session.ref.server.kind == "alan" and session.state == "retired"
+            and not (session.ref.server.kind == "alan"
+                     and session.state in {"retired", "unavailable"}
                      and session.ref not in replacements)]

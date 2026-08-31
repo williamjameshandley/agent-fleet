@@ -362,20 +362,21 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
     ]
 
 
-def test_retired_adopted_actor_folds_only_while_its_provider_is_present():
+def test_inactive_adopted_actor_folds_only_while_its_provider_is_present():
     identity = "00000000-0000-0000-0000-000000000001"
     alan_server = ServerRef("newton", "", 0, 0, "alan")
-    actor = Session(SessionRef(alan_server, f"codex-{identity}@newton"), "actor",
-                    1, 0, 0, 1, "alan", "", "/work", "codex", "retired",
-                    transcript_id=identity)
     provider = Session(SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$7"),
                        "fleet@native-test", 1, 0, 0, 1, "codex", "", "/work",
                        "codex", "waiting", transcript_id=identity)
 
-    assert fold_adopted([actor]) == []
-    [folded] = fold_adopted([actor, provider])
-    assert folded.ref == actor.ref
-    assert folded.attachment == provider.ref
+    for state in ("retired", "unavailable"):
+        actor = Session(SessionRef(alan_server, f"codex-{identity}@newton"), "actor",
+                        1, 0, 0, 1, "alan", "", "/work", "codex", state,
+                        transcript_id=identity)
+        assert fold_adopted([actor]) == []
+        [folded] = fold_adopted([actor, provider])
+        assert folded.ref == actor.ref
+        assert folded.attachment == provider.ref
 
 
 def test_multiple_provider_presentations_retain_every_session_without_native_names():
