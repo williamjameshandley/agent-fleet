@@ -513,13 +513,36 @@ def indexed_claude_agents(output):
     return {item["pid"]: item for item in json.loads(output) if item.get("pid") is not None}
 
 
+def native_actor(pids):
+    actors = set()
+    for pid in pids:
+        try:
+            environment = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        roots = [value.split(b"=", 1)[1] for value in environment
+                 if value.startswith(b"ALAN_NATIVE_ROOT=")]
+        for root in roots:
+            try:
+                actors.add((Path(os.fsdecode(root)) / "actor").read_text().strip())
+            except OSError:
+                continue
+    actors.discard("")
+    if len(actors) > 1:
+        raise RuntimeError("provider process tree carries multiple Alan actors: "
+                           + ", ".join(sorted(actors)))
+    return next(iter(actors), "")
+
+
 def observe(sessions, transcripts=None):
+    transcripts = catalog() if transcripts is None else transcripts
     sessions = project_native(sessions, transcripts)
     claude = indexed_claude_agents(subprocess.run(
         ["claude", "agents", "--json"], text=True, capture_output=True,
         check=True).stdout)
     children = process_tree()
     rows = []
+    sessions_by_id = {session.ref.session_id: session for session in sessions}
     panes = subprocess.run(["/usr/bin/tmux", "-N", "list-panes", "-a", "-F", PANE_FORMAT],
                            text=True, capture_output=True, check=True).stdout
     for line in panes.splitlines():
@@ -543,16 +566,30 @@ def observe(sessions, transcripts=None):
             [agent] = agents
         elif agent not in AGENTS or "@" in name:
             continue
+        actor = native_actor(tree)
+        expected = f"{agent}-"
+        suffix = f"@{sessions_by_id[session_id].ref.server.host}"
+        if actor and (not actor.startswith(expected) or not actor.endswith(suffix)):
+            rows.append((session_id, agent, "needs-action",
+                         f"native actor does not match provider presentation: {actor}",
+                         0, "", 0))
+            continue
+        actor_identity = actor[len(expected):-len(suffix)] if actor else ""
         if agent == "claude":
             entry = next((claude[item] for item in tree if item in claude), None)
-            if entry is None:
+            if entry is None and not actor_identity:
                 continue
-            identity = entry["sessionId"]
-            state = ("needs-action" if entry.get("state") == "blocked" else
-                     "waiting" if entry.get("status") == "idle" or title.startswith("✳") else
-                     "working")
-            path = CLAUDE / entry["cwd"].replace("/", "-").replace(".", "-") / f"{identity}.jsonl"
-            item = transcript("claude", path) if path.exists() else None
+            identity = actor_identity or entry["sessionId"]
+            if entry is not None and actor_identity and entry["sessionId"] != actor_identity:
+                rows.append((session_id, agent, "needs-action",
+                             "Claude registry identity does not match Alan actor", 0,
+                             actor_identity, 0))
+                continue
+            state = ("needs-action" if entry and entry.get("state") == "blocked" else
+                     "waiting" if (entry and entry.get("status") == "idle")
+                     or title.startswith("✳") else "working")
+            item = transcripts.get(("claude", identity))
+            path = item.path if item else None
             try:
                 updated = last_event_time(path) if item else 0
                 human_activity = last_human_time(item) if item else 0
@@ -612,6 +649,11 @@ def observe(sessions, transcripts=None):
                              identity, human_activity))
                 continue
             identity = item.session_id
+            if actor_identity and identity != actor_identity:
+                rows.append((session_id, agent, "needs-action",
+                             "Codex rollout identity does not match Alan actor", 0,
+                             actor_identity, 0))
+                continue
             try:
                 state, summary, updated = codex_state(item)
                 human_activity = last_human_time(item)
@@ -620,8 +662,10 @@ def observe(sessions, transcripts=None):
                 summary = f"Transcript is invalid: {item.path.name}: {error}"
                 updated = int(item.mtime)
                 human_activity = 0
-        rows.append((session_id, agent, state, " ".join(summary.split()), updated, identity,
-                     human_activity))
+        projection_identity = (actor_identity if name.startswith("fleet@native-")
+                               else identity)
+        rows.append((session_id, agent, state, " ".join(summary.split()), updated,
+                     projection_identity, human_activity))
 
     by_session, counts = {}, {}
     for row in rows:
@@ -669,16 +713,27 @@ def fold_adopted(sessions):
     consumed = set()
     for identity, actors in alan.items():
         native = providers.get(identity, [])
-        if len(actors) > 1 or len(native) > 1:
+        if len(actors) > 1:
             raise RuntimeError(
                 f"expected at most one Alan actor and provider session for {identity}, "
                 f"found {len(actors)} and {len(native)}"
             )
         if not native:
             continue
-        actor, provider = actors[0], native[0]
+        actor = actors[0]
+        if len(native) > 1:
+            for provider in native:
+                replacements[provider.ref] = replace(
+                    provider, name=actor.name, reported_state="needs-action",
+                    summary=(f"{len(native)} provider presentations share "
+                             f"{actor.ref.session_id}"))
+            continue
+        [provider] = native
         replacements[actor.ref] = replace(actor, attachment=provider.ref)
         consumed.add(provider.ref)
 
     return [replacements.get(session.ref, session)
-            for session in sessions if session.ref not in consumed]
+            for session in sessions
+            if session.ref not in consumed
+            and not (session.ref.server.kind == "alan" and session.state == "retired"
+                     and session.ref not in replacements)]

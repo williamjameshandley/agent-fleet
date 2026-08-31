@@ -26,6 +26,17 @@ def test_stopped_claude_agents_without_pids_are_ignored():
     assert indexed_claude_agents(json.dumps([live, stopped])) == {42: live}
 
 
+def test_native_actor_is_derived_from_the_published_runtime_identity(tmp_path, monkeypatch):
+    root = tmp_path / "native"
+    root.mkdir()
+    (root / "actor").write_text("claude-session@lovelace\n")
+    monkeypatch.setattr(Path, "read_bytes", lambda path: (
+        f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
+        else b""))
+
+    assert transcripts.native_actor([42]) == "claude-session@lovelace"
+
+
 def test_claude_observe_accepts_optional_status(monkeypatch):
     cases = [
         ({}, "✳ waiting", "waiting"),
@@ -351,6 +362,45 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
     ]
 
 
+def test_retired_adopted_actor_folds_only_while_its_provider_is_present():
+    identity = "00000000-0000-0000-0000-000000000001"
+    alan_server = ServerRef("newton", "", 0, 0, "alan")
+    actor = Session(SessionRef(alan_server, f"codex-{identity}@newton"), "actor",
+                    1, 0, 0, 1, "alan", "", "/work", "codex", "retired",
+                    transcript_id=identity)
+    provider = Session(SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$7"),
+                       "fleet@native-test", 1, 0, 0, 1, "codex", "", "/work",
+                       "codex", "waiting", transcript_id=identity)
+
+    assert fold_adopted([actor]) == []
+    [folded] = fold_adopted([actor, provider])
+    assert folded.ref == actor.ref
+    assert folded.attachment == provider.ref
+
+
+def test_multiple_provider_presentations_retain_every_session_without_native_names():
+    identity = "00000000-0000-0000-0000-000000000001"
+    actor = Session(SessionRef(ServerRef("newton", "", 0, 0, "alan"),
+                               f"claude-{identity}@newton"),
+                    "historic name", 1, 0, 0, 1, "alan", "", "/work",
+                    "claude", "waiting", transcript_id=identity)
+    providers = [
+        Session(SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), f"${number}"),
+                f"fleet@native-{number}", 1, 0, 0, 1, "claude", "", "/work",
+                "claude", "waiting", transcript_id=identity)
+        for number in (7, 8)
+    ]
+
+    projected = fold_adopted([actor, *providers])
+
+    assert projected[0] == actor
+    assert [session.ref for session in projected[1:]] == [item.ref for item in providers]
+    assert [session.name for session in projected[1:]] == ["historic name"] * 2
+    assert all(session.state == "needs-action" for session in projected[1:])
+    assert all("2 provider presentations share" in session.summary
+               for session in projected[1:])
+
+
 def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
     identity = "00000000-0000-0000-0000-000000000001"
     session = Session(
@@ -368,6 +418,8 @@ def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
     monkeypatch.setattr(transcripts, "process_tree", lambda: {100: [101]})
     monkeypatch.setattr(transcripts.os, "readlink", lambda path: (
         "/usr/bin/codex" if path == "/proc/101/exe" else "/usr/bin/python3"))
+    monkeypatch.setattr(transcripts, "native_actor",
+                        lambda _tree: f"codex-{identity}@newton")
     monkeypatch.setattr(transcripts, "codex_candidates", lambda _tree: (["rollout.jsonl"], set()))
     monkeypatch.setattr(transcripts, "transcript", lambda _agent, _path: item)
     monkeypatch.setattr(transcripts, "codex_state",
