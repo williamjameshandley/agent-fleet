@@ -380,7 +380,12 @@ class Fleet:
             payload = json.dumps(await self.commander_context(), sort_keys=True,
                                  separators=(",", ":"))
         elif request == "history":
-            payload = json.dumps(await self.history(), separators=(",", ":"))
+            try:
+                value = {"ok": True, "value": await self.history()}
+            except (KeyError, LookupError, OSError, RuntimeError, ValueError,
+                    json.JSONDecodeError) as error:
+                value = {"ok": False, "error": str(error)}
+            payload = json.dumps(value, separators=(",", ":"))
         elif request.startswith("history-search "):
             try:
                 query = json.loads(request.removeprefix("history-search "))
@@ -718,8 +723,11 @@ class Fleet:
             return_exceptions=True)
         observed = [(host, result) for host, result in zip(source_hosts, results)
                     if not isinstance(result, Exception)]
-        return self.history_entries(sessions, [host for host, _ in observed],
-                                    [result for _, result in observed])
+        errors = {host: str(result) for host, result in zip(source_hosts, results)
+                  if isinstance(result, Exception)}
+        entries = self.history_entries(sessions, [host for host, _ in observed],
+                                       [result for _, result in observed])
+        return {"entries": entries, "errors": errors}
 
     def source(self, key):
         if key in self.pending_archives:
@@ -1244,7 +1252,12 @@ def commander_context():
 
 
 def history():
-    return request("history")
+    response = json.loads(request("history"))
+    if set(response) == {"ok", "error"} and response["ok"] is False:
+        raise RuntimeError(response["error"])
+    if set(response) != {"ok", "value"} or response["ok"] is not True:
+        raise RuntimeError("invalid Fleet history response")
+    return response["value"]
 
 
 def history_search(query):

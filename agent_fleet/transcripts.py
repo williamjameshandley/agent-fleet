@@ -598,11 +598,11 @@ def observe(sessions, transcripts=None):
                 human_activity = 0
         else:
             targets, resumed = codex_candidates(tree)
+            if not targets:
+                continue
             try:
                 item = transcript("codex", select_codex(targets, resumed))
-            except RuntimeError:
-                continue
-            except (json.JSONDecodeError, ValueError) as error:
+            except (RuntimeError, json.JSONDecodeError, ValueError) as error:
                 identity = ""
                 state = "needs-action"
                 summary = f"Codex transcript selection failed: {error}"

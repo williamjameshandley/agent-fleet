@@ -82,8 +82,10 @@ def muster():
         f"--bind=right:transform({fold_open})",
         f"--bind=left:transform({fold_close})",
         f"--bind=p:transform({toggle_python})",
-        "--bind=tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history)",
-        "--bind=shift-tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history)",
+        "--bind=tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history"
+        " \\; send-keys -t fleet@muster:history C-r)",
+        "--bind=shift-tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:history"
+        " \\; send-keys -t fleet@muster:history C-r)",
     ]
     os.execvp(command[0], command)
 
@@ -122,6 +124,7 @@ def history():
         "--id-nth=1", "--layout=reverse", "--no-sort", "--no-multi",
         "--header=History  Enter open  s search  Tab live",
         "--bind=enter:execute-silent(/usr/lib/agent-fleet/ui open-history {1})+reload-sync(/usr/lib/agent-fleet/ui history-rows)",
+        "--bind=ctrl-r:reload-sync(/usr/lib/agent-fleet/ui history-rows)",
         "--bind=s:execute(/usr/lib/agent-fleet/ui search-history)",
         "--bind=tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:live)",
         "--bind=shift-tab:execute-silent(/usr/bin/tmux -N select-window -t fleet@muster:live)",

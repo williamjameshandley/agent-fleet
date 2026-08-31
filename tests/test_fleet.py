@@ -2281,7 +2281,7 @@ class IdentityTests(unittest.TestCase):
             "key": "alan:codex-1@lovelace", "host": "lovelace",
             "agent": "codex", "name": "work", "cwd": "/work", "mtime": 20}]}
         with mock.patch("agent_fleet.actions.history_projection",
-                        return_value=json.dumps(context["history"])):
+                        return_value={"entries": context["history"], "errors": {}}):
             rows = actions.history()
         self.assertEqual(rows, [
             ("alan:codex-1@lovelace", "lovelace", "codex", "work", "/work")])
@@ -2291,7 +2291,7 @@ class IdentityTests(unittest.TestCase):
             "key": "alan:llm-1@lovelace", "host": "lovelace",
             "agent": "llm", "name": "review", "cwd": "/work", "mtime": 20}]}
         with mock.patch("agent_fleet.actions.history_projection",
-                        return_value=json.dumps(context["history"])):
+                        return_value={"entries": context["history"], "errors": {}}):
             rows = actions.history()
         self.assertEqual(rows, [
             ("alan:llm-1@lovelace", "lovelace", "llm", "review", "/work")])
@@ -2301,9 +2301,22 @@ class IdentityTests(unittest.TestCase):
             "key": "alan:codex-1@lovelace", "host": "lovelace",
             "agent": "codex", "name": "work", "cwd": "/work", "mtime": 20}]}
         with mock.patch("agent_fleet.actions.history_projection",
-                        return_value=json.dumps(context["history"])):
+                        return_value={"entries": context["history"], "errors": {}}):
             rows = actions.history()
         self.assertEqual(rows, [
+            ("alan:codex-1@lovelace", "lovelace", "codex", "work", "/work")])
+
+    def test_history_shows_a_failed_host_before_the_entries(self):
+        context = {"history": [{
+            "key": "alan:codex-1@lovelace", "host": "lovelace",
+            "agent": "codex", "name": "work", "cwd": "/work", "mtime": 20}]}
+        with mock.patch("agent_fleet.actions.history_projection",
+                        return_value={"entries": context["history"],
+                                      "errors": {"newton": "connection closed"}}):
+            rows = actions.history()
+        self.assertEqual(rows, [
+            ("error:newton", "newton", "",
+             "history unavailable: connection closed", ""),
             ("alan:codex-1@lovelace", "lovelace", "codex", "work", "/work")])
 
     def test_history_open_retries_the_same_alan_address(self):
