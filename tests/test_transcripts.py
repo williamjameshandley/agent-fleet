@@ -195,7 +195,8 @@ def test_native_resume_launches_the_integrated_provider_without_attaching(monkey
                                    "cwd": lambda self: "/work"})()
     monkeypatch.setattr(transcripts, "find", lambda session_id, agent: item)
     with mock.patch.dict("agent_fleet.transcripts.os.environ",
-                         {"HOME": "/home/will", "XDG_RUNTIME_DIR": "/run/user/1000"}), \
+                         {"HOME": "/home/will", "XDG_RUNTIME_DIR": "/run/user/1000",
+                          "XDG_STATE_HOME": "/state"}), \
          mock.patch("agent_fleet.transcripts.tempfile.mkdtemp",
                     return_value="/run/user/1000/alan/native/codex-root") as temporary, \
          mock.patch("agent_fleet.transcripts.secrets.token_hex",
@@ -209,6 +210,7 @@ def test_native_resume_launches_the_integrated_provider_without_attaching(monkey
             "fleet@native-0123456789abcdef", "-c", "/work",
             "-e", "ALAN_NATIVE_INNER=1", "-e",
             "ALAN_NATIVE_ROOT=/run/user/1000/alan/native/codex-root",
+            "-e", "LOOP_PUBLIC_SOCKET=/state/alan/loop.sock",
             "/usr/lib/alan/alan-native-session", "codex", "resume", "full-codex-id",
         ], check=True),
         mock.call(["/usr/bin/tmux", "-N", "set-option", "-t",
