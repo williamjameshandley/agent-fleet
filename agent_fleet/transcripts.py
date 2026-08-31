@@ -195,6 +195,8 @@ def resume(agent, session_id, name):
 
 def resume_native(agent, session_id):
     item = verify(agent, session_id)
+    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    public = state / "alan" / "loop.sock"
     arguments = {"claude": ["--resume", item.session_id],
                  "codex": ["resume", item.session_id],
                  "grok": ["--resume", item.session_id]}[agent]
@@ -206,6 +208,7 @@ def resume_native(agent, session_id):
         "/usr/bin/tmux", "-N", "new-session", "-d", "-s", name,
         "-c", item.cwd() or str(Path.home()),
         "-e", "ALAN_NATIVE_INNER=1", "-e", f"ALAN_NATIVE_ROOT={root}",
+        "-e", f"LOOP_PUBLIC_SOCKET={public}",
         "/usr/lib/alan/alan-native-session", agent, *arguments,
     ], check=True)
     subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name,
