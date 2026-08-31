@@ -433,6 +433,10 @@ def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
     assert projected.agent == "codex"
     assert projected.transcript_id == identity
 
+    monkeypatch.setattr(transcripts, "native_actor", lambda _tree: "")
+    [historic] = transcripts.observe([session], {})
+    assert historic.transcript_id == identity
+
 
 def test_invalid_provider_transcript_isolated_to_its_session(tmp_path, monkeypatch):
     identity = "00000000-0000-0000-0000-000000000001"

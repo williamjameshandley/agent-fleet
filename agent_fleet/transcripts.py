@@ -662,7 +662,7 @@ def observe(sessions, transcripts=None):
                 summary = f"Transcript is invalid: {item.path.name}: {error}"
                 updated = int(item.mtime)
                 human_activity = 0
-        projection_identity = (actor_identity if name.startswith("fleet@native-")
+        projection_identity = (actor_identity or identity if name.startswith("fleet@native-")
                                else identity)
         rows.append((session_id, agent, state, " ".join(summary.split()), updated,
                      projection_identity, human_activity))
