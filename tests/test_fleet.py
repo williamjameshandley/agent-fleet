@@ -1117,10 +1117,18 @@ class IdentityTests(unittest.TestCase):
             {"addr": "claude-old@newton", "kind": "claude", "state": "retired",
              "cwd": "/work", "created": 1, "human_activity": 0,
              "active_evaluation": None, "evaluation_started": 0},
+            {"addr": "claude-unavailable@newton", "kind": "claude",
+             "evaluator": "native", "state": "unavailable", "cwd": "/work",
+             "created": 1, "human_activity": 0, "active_evaluation": None,
+             "evaluation_started": 0},
+            {"addr": "llm-unavailable@newton", "kind": "llm",
+             "state": "unavailable", "cwd": "/work", "created": 1,
+             "human_activity": 0, "active_evaluation": None,
+             "evaluation_started": 0},
         ]
         projected = alan_inventory("newton", descriptors)
         self.assertEqual([item.ref.session_id for item in projected],
-                         [codex, "python-1@newton"])
+                         [codex, "python-1@newton", "claude-unavailable@newton"])
         self.assertEqual(projected[0].state, "working")
         self.assertEqual(projected[0].transcript_id, identity)
         self.assertEqual(projected[0].transcript_path, "")
@@ -1128,6 +1136,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(projected[0].evaluation_started, 3)
         self.assertEqual(projected[1].transcript_id, "")
         self.assertEqual(projected[1].transcript_path, "")
+        self.assertEqual(projected[2].state, "unavailable")
 
     def test_host_inventory_projects_only_actors_with_current_presentations(self):
         with tempfile.TemporaryDirectory() as cwd:
@@ -3459,6 +3468,13 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("▸ 2", root_line)
         self.assertNotIn("▸", child_line)
         self.assertNotIn("▾", child_line)
+
+    def test_rows_render_unavailable_actor_as_unavailable(self):
+        session = replace(self.session("lovelace", "$1"),
+                          reported_state="unavailable")
+        projected = [alan.Projected(session, 0, 0, False)]
+        rendered = render.rows_text(projected, [], 100, now=1)
+        self.assertIn("\033[37;41m?\033[0m", rendered)
 
     def test_rows_size_their_summary_to_the_requested_width(self):
         session = replace(self.session("lovelace", "$1"),

@@ -315,7 +315,8 @@ def last_human_time(item):
         human = False
         if item.agent == "claude" and event.get("type") == "user" and not event.get("isMeta"):
             content = event.get("message", {}).get("content")
-            human = (isinstance(content, str) or
+            human = ((isinstance(content, str) and
+                      not content.startswith(("<command-name>", "<local-command-stdout>"))) or
                      (isinstance(content, list) and
                       any(block.get("type") == "text" for block in content)))
         elif item.agent == "codex":
@@ -675,6 +676,8 @@ def fold_adopted(sessions):
                 f"found {len(actors)} and {len(native)}"
             )
         if not native:
+            if actors[0].state == "unavailable":
+                consumed.add(actors[0].ref)
             continue
         actor, provider = actors[0], native[0]
         replacements[actor.ref] = replace(actor, attachment=provider.ref)

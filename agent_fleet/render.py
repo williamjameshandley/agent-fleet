@@ -78,7 +78,7 @@ def rows_text(projected, unavailable, width, now=None, revision=None):
                    f"{age // 60}m" if age < 3600 else f"{age // 3600}h")
         marker = ("?" if session.ref.server.host in unavailable else
                   {"needs-action": "!", "working": "*", "waiting": ".",
-                   "finished": "-"}[session.state])
+                   "finished": "-", "unavailable": "?"}[session.state])
         agent = {"codex": "X", "shell": ""}.get(
             session.agent, session.agent[:1].upper())
         summary = " ".join(

@@ -234,6 +234,20 @@ def test_claude_human_activity_excludes_tool_results_and_meta_events(tmp_path):
     assert last_human_time(transcript("claude", path)) == 1784541600
 
 
+def test_claude_human_activity_excludes_local_command_records(tmp_path):
+    path = tmp_path / "00000000-0000-0000-0000-000000000001.jsonl"
+    events = [
+        {"type": "user", "timestamp": "2026-07-20T10:00:00Z",
+         "message": {"content": "human prompt"}},
+        {"type": "user", "timestamp": "2026-07-20T11:00:00Z",
+         "message": {"content": "<command-name>/mcp</command-name>"}},
+        {"type": "user", "timestamp": "2026-07-20T12:00:00Z",
+         "message": {"content": "<local-command-stdout>reconnected</local-command-stdout>"}},
+    ]
+    path.write_text("".join(json.dumps(event) + "\n" for event in events))
+    assert last_human_time(transcript("claude", path)) == 1784541600
+
+
 def test_codex_human_activity_uses_latest_user_message(tmp_path):
     path = tmp_path / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
     events = [
@@ -349,6 +363,37 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
     assert fold_adopted([provider, actor]) == [
         __import__("dataclasses").replace(actor, attachment=provider.ref)
     ]
+
+
+def test_unavailable_adopted_actor_recovers_its_live_provider_and_name():
+    identity = "00000000-0000-0000-0000-000000000001"
+    actor = Session(
+        SessionRef(ServerRef("newton", "", 0, 0, "alan"),
+                   f"claude-{identity}@newton"),
+        "remembered", 1, 0, 0, 1, "alan", "", "/work", "claude",
+        "unavailable", transcript_id=identity,
+    )
+    provider = Session(
+        SessionRef(ServerRef("newton", "/tmp/tmux/default", 42, 10), "$7"),
+        "fleet@native-test", 1, 2, 1, 1, "python3", "", "/work", "claude",
+        "waiting", transcript_id=identity,
+    )
+
+    assert fold_adopted([provider, actor]) == [
+        __import__("dataclasses").replace(actor, attachment=provider.ref)
+    ]
+
+
+def test_unavailable_native_actor_without_a_live_provider_remains_absent():
+    identity = "00000000-0000-0000-0000-000000000001"
+    actor = Session(
+        SessionRef(ServerRef("newton", "", 0, 0, "alan"),
+                   f"claude-{identity}@newton"),
+        "remembered", 1, 0, 0, 1, "alan", "", "/work", "claude",
+        "unavailable", transcript_id=identity,
+    )
+
+    assert fold_adopted([actor]) == []
 
 
 def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
