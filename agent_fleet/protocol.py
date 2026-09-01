@@ -10,6 +10,7 @@ SESSION_FIELDS = {
     "command", "title", "cwd", "agent_name", "reported_state", "summary",
     "recency", "transcript_id", "human_activity", "evaluation",
     "evaluation_started", "transcript_path", "worked", "attachment",
+    "evaluator", "managed", "hibernation",
 }
 SERVER_FIELDS = {"source", "socket", "pid", "started", "kind"}
 RELATIVE_SERVER_FIELDS = SERVER_FIELDS - {"source"}
@@ -43,11 +44,14 @@ def _session(session, relative=False):
         "attachment": ({"server": _server(session.attachment.server, relative),
                         "id": session.attachment.session_id}
                        if session.attachment else None),
+        "evaluator": session.evaluator,
+        "managed": session.managed,
+        "hibernation": session.hibernation,
     }
 
 
 def encode(sessions, usage=None, unavailable=None, graph=None):
-    message = {"version": 2,
+    message = {"version": 3,
                "sessions": [_session(session) for session in sessions],
                "usage": usage or {}, "unavailable": unavailable or [],
                "alan": (nx.node_link_data(graph, edges="edges")
@@ -56,7 +60,7 @@ def encode(sessions, usage=None, unavailable=None, graph=None):
 
 
 def encode_observation(sessions, available, graph):
-    return json.dumps({"version": 2,
+    return json.dumps({"version": 3,
                        "sessions": [_session(session, relative=True)
                                     for session in sessions],
                        "available": available,
@@ -106,7 +110,7 @@ def decode_message(line):
     message = json.loads(line)
     _exact(message, {"version", "sessions", "usage", "unavailable", "alan"},
            "message")
-    if message["version"] != 2:
+    if message["version"] != 3:
         raise ValueError(f"unsupported Fleet protocol version {message['version']}")
     return _sessions(message["sessions"]), message["usage"], message["unavailable"]
 
@@ -123,7 +127,7 @@ def graph_value(message):
 def decode_observation(line, source):
     message = json.loads(line)
     _exact(message, {"version", "sessions", "available", "alan"}, "observation")
-    if message["version"] != 2:
+    if message["version"] != 3:
         raise ValueError(f"unsupported Fleet protocol version {message['version']}")
     if not isinstance(message["available"], bool):
         raise ValueError("invalid Fleet availability")

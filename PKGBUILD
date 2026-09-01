@@ -29,6 +29,7 @@ package() {
   for script in fleet-muster fleet-viewer fleet-view fleet-deck fleet-office fleet-commander; do
     install -Dm755 "$startdir/$script" "$pkgdir/usr/bin/$script"
   done
+  install -Dm755 "$startdir/fleet-hibernate-idle" "$pkgdir/usr/bin/fleet-hibernate-idle"
   install -d "$pkgdir/usr/lib/agent-fleet"
   printf '#!/usr/bin/python\nfrom agent_fleet.ui_process import main\nmain()\n' \
     > "$pkgdir/usr/lib/agent-fleet/ui"

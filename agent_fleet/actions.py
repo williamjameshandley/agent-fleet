@@ -98,6 +98,10 @@ def archive(key):
     fleet_action({"operation": "archive", "source": key})
 
 
+def hibernate(key):
+    fleet_action({"operation": "hibernate", "source": key})
+
+
 def next_waiting():
     from .daemon import request
     key = request("next-waiting\t" + dict(viewer.slots()).get("main", "")).strip()

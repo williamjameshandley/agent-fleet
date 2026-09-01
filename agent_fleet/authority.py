@@ -15,6 +15,7 @@ FIELDS = {
     "archive-composite": {"operation", "actor", "agent", "target", "transcript"},
     "archive-pristine": {"operation", "actor", "agent", "target"},
     "archive-tmux": {"operation", "target", "agent", "transcript"},
+    "hibernate-alan": {"operation", "actor"},
     "restore-alan": {"operation", "actor"},
     "restore-native": {"operation", "actor", "agent", "transcript"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
@@ -67,6 +68,9 @@ def execute(request):
     if operation == "archive-tmux":
         transcripts.verify(request["agent"], request["transcript"])
         tmux.mutate_target(request["target"], "archive", [])
+        return {}
+    if operation == "hibernate-alan":
+        alan.hibernate(request["actor"])
         return {}
     if operation == "restore-alan":
         return {"source": f"alan:{alan.resume(request['actor'])}"}
