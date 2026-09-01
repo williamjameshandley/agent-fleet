@@ -1298,6 +1298,8 @@ class Fleet:
                   and not descriptors[0].get("managed", False))
         if session.attachment or not native or session.agent not in {"claude", "codex", "grok"}:
             return session
+        if session.attachment_ambiguous:
+            raise RuntimeError(session.summary)
         if not session.transcript_id:
             raise ValueError("native restore requires a durable transcript identity")
         task = self.restores.get(key)
@@ -1305,7 +1307,7 @@ class Fleet:
             task = asyncio.create_task(self.restore_native(session))
             self.restores[key] = task
             task.add_done_callback(lambda completed: self.restore_task_done(key, completed))
-            self.own_task(task, f"restore {key}")
+            self.own_task(task, "restore")
         await asyncio.shield(task)
         session = self.source(key)
         if not session.attachment:

@@ -427,12 +427,34 @@ def test_multiple_provider_presentations_retain_every_session_without_native_nam
 
     projected = fold_adopted([actor, *providers])
 
-    assert projected[0] == actor
+    assert projected[0].ref == actor.ref
+    assert projected[0].state == "needs-action"
+    assert projected[0].attachment_ambiguous
+    assert "2 provider presentations share" in projected[0].summary
     assert [session.ref for session in projected[1:]] == [item.ref for item in providers]
     assert [session.name for session in projected[1:]] == ["historic name"] * 2
     assert all(session.state == "needs-action" for session in projected[1:])
     assert all("2 provider presentations share" in session.summary
                for session in projected[1:])
+
+
+def test_retired_actor_with_multiple_presentations_remains_hidden():
+    identity = "00000000-0000-0000-0000-000000000001"
+    actor = Session(SessionRef(ServerRef("newton", "", 0, 0, "alan"),
+                               f"claude-{identity}@newton"),
+                    "historic name", 1, 0, 0, 1, "alan", "", "/work",
+                    "claude", "retired", transcript_id=identity)
+    providers = [
+        Session(SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), f"${number}"),
+                f"fleet@native-{number}", 1, 0, 0, 1, "claude", "", "/work",
+                "claude", "waiting", transcript_id=identity)
+        for number in (7, 8)
+    ]
+
+    projected = fold_adopted([actor, *providers])
+
+    assert [session.ref for session in projected] == [item.ref for item in providers]
+    assert all(session.state == "needs-action" for session in projected)
 
 
 def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):

@@ -733,11 +733,16 @@ def fold_adopted(sessions):
             continue
         actor = actors[0]
         if len(native) > 1:
+            summary = (f"{len(native)} provider presentations share "
+                       f"{actor.ref.session_id}")
+            if actor.state != "retired":
+                replacements[actor.ref] = replace(
+                    actor, reported_state="needs-action", summary=summary,
+                    attachment_ambiguous=True)
             for provider in native:
                 replacements[provider.ref] = replace(
                     provider, name=actor.name, reported_state="needs-action",
-                    summary=(f"{len(native)} provider presentations share "
-                             f"{actor.ref.session_id}"))
+                    summary=summary)
             continue
         [provider] = native
         if actor.state == "retired":

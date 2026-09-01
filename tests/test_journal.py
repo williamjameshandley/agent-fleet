@@ -142,6 +142,29 @@ def test_refresh_task_failure_is_retrieved_and_recorded_once(monkeypatch):
         "task": "refresh_muster", "error_type": "RuntimeError"})]
 
 
+def test_restore_task_failure_is_retrieved_and_accepted_by_schema(monkeypatch):
+    sent = []
+    monkeypatch.setattr(journal, "_send", lambda **fields: sent.append(fields))
+
+    async def exercise():
+        fleet = daemon.Fleet()
+
+        async def fail():
+            raise RuntimeError("content must not enter the event")
+
+        fleet.own_task(asyncio.create_task(fail()), "restore")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not fleet.background_tasks
+        assert not fleet.task_names
+
+    asyncio.run(exercise())
+    assert len(sent) == 1
+    assert sent[0]["FLEET_EVENT"] == "daemon_task_failed"
+    assert sent[0]["FLEET_TASK"] == "restore"
+    assert sent[0]["FLEET_ERROR_TYPE"] == "RuntimeError"
+
+
 def test_archive_task_failure_is_retrieved_and_recorded_once(monkeypatch):
     records = []
     monkeypatch.setattr(daemon.journal, "record",
