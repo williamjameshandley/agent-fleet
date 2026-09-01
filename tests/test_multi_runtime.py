@@ -63,6 +63,32 @@ def test_runtime_source_configuration_is_closed_absolute_and_distinct(tmp_path, 
         config.runtime_sources()
 
 
+def test_own_login_source_is_collected_without_ssh():
+    import getpass
+
+    fleet = Fleet()
+    own = config.RuntimeSource(
+        os.uname().nodename.split(".", 1)[0], getpass.getuser(),
+        "/own/loop.sock", "/own/tmux.sock")
+    other = config.RuntimeSource(
+        "elsewhere", getpass.getuser(), "/other/loop.sock", "/other/tmux.sock")
+    commands = []
+
+    async def capture(*command, **kwargs):
+        commands.append(command)
+        raise asyncio.CancelledError
+
+    with mock.patch("agent_fleet.daemon.asyncio.create_subprocess_exec", capture):
+        for source in (own, other):
+            with pytest.raises(asyncio.CancelledError):
+                asyncio.run(fleet.collect(source))
+
+    assert commands[0][0] == "env"
+    assert "LOOP_SOCKET=/own/loop.sock" in commands[0]
+    assert commands[1][0] == "ssh"
+    assert f"{getpass.getuser()}@elsewhere" in commands[1]
+
+
 def test_source_tmux_command_selects_the_exact_configured_socket(monkeypatch):
     monkeypatch.setenv("FLEET_TMUX_SOCKET", "/run/user/1004/tmux.sock")
 

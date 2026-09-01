@@ -1,4 +1,5 @@
 import asyncio
+import getpass
 import os
 import socket
 import sys
@@ -175,8 +176,11 @@ class Fleet:
                   "from agent_fleet.daemon import events; events()")
         remote = ["env", *(f"{key}={value}"
                             for key, value in source.environment().items()), *python]
-        command = ["ssh", "-T", "-o", "BatchMode=yes",
-                   f"{source.principal}@{source.host}", shlex.join(remote)]
+        local = (source.principal == getpass.getuser()
+                 and source.host == os.uname().nodename.split(".", 1)[0])
+        command = remote if local else [
+            "ssh", "-T", "-o", "BatchMode=yes",
+            f"{source.principal}@{source.host}", shlex.join(remote)]
         while True:
             process = await asyncio.create_subprocess_exec(*command,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -344,6 +348,9 @@ class Fleet:
             stderr=asyncio.subprocess.DEVNULL)
         await process.wait()
         if process.returncode:
+            journal.record("muster_publication_failed",
+                           publication=action.split("(", 1)[0],
+                           status=process.returncode)
             for artifact in artifacts:
                 artifact.unlink(missing_ok=True)
 
@@ -441,6 +448,18 @@ class Fleet:
                  if item.session.ref.key == target), None)
             payload = f"pos({position})" if position else ""
             self.schedule_refresh()
+        elif request.startswith("place "):
+            key = request.removeprefix("place ")
+            async with self.view_lock:
+                position = next(
+                    (index for index, item in enumerate(self.projected(), 1)
+                     if item.session.ref.key == key), None)
+                path = RUNTIME / "muster.sock"
+                if position is None:
+                    journal.record("muster_place_skipped", source=key)
+                elif path.exists():
+                    await self.send_publication(path, f"pos({position})", [])
+            payload = "OK"
         elif request.startswith("muster-register\t"):
             try:
                 values = request.split("\t")

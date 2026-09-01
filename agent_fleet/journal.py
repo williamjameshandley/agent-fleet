@@ -14,6 +14,8 @@ VALUES = {
     "reason": {"clear", "create_failed", "exited", "missing", "rollback_failed",
                "select_failed", "shutdown"},
     "route": {"local", "remote"},
+    "step": {"marker", "window"},
+    "surface": {"muster", "tmux"},
     "stage": {"attach", "daemon", "focus", "resolve", "select", "ssh", "switch",
               "worker"},
     "task": {"archive", "refresh_muster", "restore"},
@@ -43,6 +45,18 @@ EVENTS = {
     "attachment_exited": (
         "viewer", WARNING, "Fleet presentation exited",
         ("slot", "host", "window", "status", "signal")),
+    "attachment_cleanup_failed": (
+        "viewer", WARNING, "Fleet presentation cleanup failed",
+        ("slot", "host", "window", "step", "error")),
+    "viewer_slot_unavailable": (
+        "viewer", WARNING, "Fleet viewer slot unavailable", ("slot", "error")),
+    "viewer_error_unpublished": (
+        "viewer", WARNING, "Fleet viewer error unpublished", ("surface", "error")),
+    "muster_publication_failed": (
+        "daemon", WARNING, "Fleet muster publication failed",
+        ("publication", "status")),
+    "muster_place_skipped": (
+        "daemon", WARNING, "Fleet muster placement skipped", ("source",)),
     "projection_completed": (
         "viewer", INFO, "Fleet projection completed",
         ("slot", "host", "source", "path", "selection_ack_seconds",

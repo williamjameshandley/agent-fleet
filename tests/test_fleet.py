@@ -168,18 +168,29 @@ class IdentityTests(unittest.TestCase):
         fetch.assert_called_once_with("cursor")
 
     def test_cursor_placement_is_one_action_against_musters_own_list(self):
-        with tempfile.TemporaryDirectory() as directory:
-            (Path(directory) / "muster.sock").touch()
-            with mock.patch.object(ui, "RUNTIME", Path(directory)), \
-                    mock.patch("agent_fleet.ui.subprocess.run",
-                               return_value=subprocess.CompletedProcess([], 0)) as run:
-                ui.select()
+        with mock.patch("agent_fleet.ui.request", return_value="OK\n") as placed, \
+                mock.patch("agent_fleet.ui.subprocess.run") as run:
+            ui.select("actor:first")
+        placed.assert_called_once_with("place actor:first")
+        run.assert_not_called()
 
-        posted = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(len(posted), 2)
-        for request in posted:
-            self.assertIn("transform(/usr/lib/agent-fleet/ui cursor)", request)
-            self.assertNotIn("reload-sync", request)
+    def test_unresponsive_viewer_slot_remains_occupied(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "viewer-side.sock").touch()
+            with mock.patch.object(viewer, "RUNTIME", Path(directory)), \
+                    mock.patch.object(viewer.journal, "record") as recorded:
+                available = viewer.slots()
+                with mock.patch.object(viewer, "open_main") as opened, \
+                        mock.patch.object(viewer, "request") as requested, \
+                        mock.patch.object(viewer.subprocess, "run") as displayed:
+                    viewer.show("actor:first")
+        self.assertEqual(available, [("side", None)])
+        recorded.assert_called_with("viewer_slot_unavailable", slot="side",
+                                    error=mock.ANY)
+        opened.assert_not_called()
+        requested.assert_not_called()
+        message = displayed.call_args.args[0][-1]
+        self.assertIn("unresponsive: side", message)
 
     def test_cursor_omits_a_missing_daemon_position(self):
         with mock.patch.object(hot, "active_main", return_value="actor:first"), \
@@ -206,6 +217,43 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(asyncio.run(position("cursor actor:focused")),
                          (b"pos(2)\n", 1))
         self.assertEqual(asyncio.run(position("cursor")), (b"pos(1)\n", 1))
+
+    def test_daemon_place_publishes_one_position_through_its_own_channel(self):
+        fleet = Fleet()
+        sessions = [mock.Mock(ref=mock.Mock(key="actor:first"), state="waiting"),
+                    mock.Mock(ref=mock.Mock(key="actor:focused"), state="working")]
+        projected = [mock.Mock(session=session) for session in sessions]
+
+        async def place(request, runtime):
+            reader = asyncio.StreamReader()
+            reader.feed_data((request + "\n").encode())
+            reader.feed_eof()
+            writer = mock.Mock()
+            writer.drain = mock.AsyncMock()
+            published = mock.AsyncMock()
+            recorded = []
+            with mock.patch.object(fleet, "projected", return_value=projected), \
+                    mock.patch.object(fleet, "send_publication", published), \
+                    mock.patch.object(daemon, "RUNTIME", runtime), \
+                    mock.patch.object(daemon.journal, "record",
+                                      lambda event, **fields: recorded.append(event)):
+                await fleet.reply(reader, writer)
+            return writer.write.call_args.args[0], published, recorded
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            (runtime / "muster.sock").touch()
+            reply, published, recorded = asyncio.run(
+                place("place actor:focused", runtime))
+            self.assertEqual(reply, b"OK\n")
+            published.assert_awaited_once_with(
+                runtime / "muster.sock", "pos(2)", [])
+            self.assertEqual(recorded, [])
+            reply, published, recorded = asyncio.run(
+                place("place actor:absent", runtime))
+            self.assertEqual(reply, b"OK\n")
+            published.assert_not_awaited()
+            self.assertEqual(recorded, ["muster_place_skipped"])
 
     def test_machine_labels_are_single_cell_and_noether_uses_ligature(self):
         self.assertEqual([machine(host) for host in
@@ -303,7 +351,8 @@ class IdentityTests(unittest.TestCase):
         state = viewer.Attachment("main", "/dev/pts/8", ui)
         state.daemon = daemon
         state.ensure_master = mock.Mock(return_value=(123, 456))
-        state.ssh = mock.Mock(return_value=mock.Mock(stdout="/dev/pts/10\n"))
+        state.ssh = mock.Mock(return_value=mock.Mock(stdout="/dev/pts/10\n",
+                                                     returncode=0))
         state.open(actor.ref.key)
         state.clear()
 
@@ -1357,7 +1406,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch("agent_fleet.ui.select") as select:
             viewer.open_main(session.ref.key)
         request.assert_called_once_with("main", session.ref.key)
-        select.assert_called_once_with()
+        select.assert_called_once_with(session.ref.key)
 
     def test_fzf_open_adapter_sends_one_exact_timed_socket_request(self):
         root = Path(__file__).parents[1]
@@ -1579,12 +1628,13 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(state, "ensure_master", return_value=(123, 456)), \
              mock.patch.object(state, "reclaim_marker"), \
              mock.patch.object(state, "ssh",
-                               return_value=mock.Mock(stdout="/dev/pts/8\n")) as ssh, \
+                               return_value=mock.Mock(stdout="/dev/pts/8\n",
+                                                      returncode=0)) as ssh, \
              mock.patch.object(state, "prove_switch"):
             entry = state.create_host(source, "source")
         command = ui.command.call_args_list[0].args[0][-1]
         self.assertIn(f"ssh -tt -o BatchMode=yes {source}", command)
-        ssh.assert_called_with(source, mock.ANY, capture=True)
+        ssh.assert_called_with(source, mock.ANY, capture=True, check=False)
         self.assertEqual((entry.window, entry.client), ("@2", "/dev/pts/8"))
 
     def test_cold_attachment_retries_only_until_tmux_registers_its_client(self):
@@ -1973,24 +2023,23 @@ class IdentityTests(unittest.TestCase):
         create.assert_not_called(); select.assert_not_called()
         self.assertIs(state.attachments["will@remote"], entry)
 
-    def test_remote_start_retries_until_the_allocated_client_is_registered(self):
+    def test_remote_start_awaits_registration_over_one_channel(self):
         ui = mock.Mock()
         ui.command.side_effect = [["@2"]]
         state = viewer.Attachment("main", "/dev/pts/9", ui)
-        empty = mock.Mock(stdout="", returncode=0)
         tty = mock.Mock(stdout="/dev/pts/8\n", returncode=0)
         with mock.patch.object(state, "ensure_master", return_value=(82, 10)), \
              mock.patch.object(state, "resolve",
                                return_value=("/tmp/tmux", 12, 10, "$1")), \
-             mock.patch.object(state, "ssh",
-                               side_effect=[empty, tty]) as ssh, \
+             mock.patch.object(state, "ssh", return_value=tty) as ssh, \
              mock.patch.object(state, "reclaim_marker") as reclaim, \
              mock.patch.object(state, "prove_switch") as switch:
             result = state.create_host("newton", "newton:/tmp/tmux:12:10:$1")
         self.assertEqual((result.window, result.client), ("@2", "/dev/pts/8"))
         switch.assert_called_once_with("newton:/tmp/tmux:12:10:$1", "/dev/pts/8")
         reclaim.assert_called_once_with("newton", os.uname().nodename.split(".", 1)[0])
-        self.assertEqual(len(ssh.call_args_list), 2)
+        ssh.assert_called_once()
+        self.assertIn("cat", ssh.call_args.args[1])
 
     def test_non_hub_actor_lookup_reuses_one_forward_to_the_fleet_daemon(self):
         state = viewer.Attachment("side", "/dev/pts/9", mock.Mock())
@@ -2547,6 +2596,38 @@ class IdentityTests(unittest.TestCase):
         self.assertIn("set-option -t fleet@muster mouse off", muster)
         self.assertIn("/usr/bin/nc -U", main)
         self.assertIn("ConditionHost=lovelace", service)
+
+    def test_launcher_refuses_an_unresponsive_resident_viewer(self):
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            environment = {key: value for key, value in os.environ.items()
+                           if key != "TMUX"}
+            environment["TMUX_TMPDIR"] = str(directory / "tmux")
+            environment["XDG_RUNTIME_DIR"] = str(directory / "runtime")
+            (directory / "tmux").mkdir()
+            (directory / "runtime").mkdir()
+            (directory / "bin").mkdir()
+            (directory / "bin" / "hostname").write_text("#!/bin/sh\necho lovelace\n")
+            (directory / "bin" / "hostname").chmod(0o755)
+            environment["PATH"] = str(directory / "bin") + ":" + environment["PATH"]
+            subprocess.run(
+                ["tmux", "-L", "agent-fleet-ui", "new-session", "-d",
+                 "-s", "fleet@main", "sleep 30"], check=True, env=environment)
+            try:
+                refused = subprocess.run([root / "fleet-viewer", "main"],
+                                         stdin=subprocess.DEVNULL, text=True,
+                                         capture_output=True, env=environment)
+                self.assertEqual(refused.returncode, 1)
+                self.assertIn("--destroy", refused.stderr)
+                sessions = subprocess.run(
+                    ["tmux", "-L", "agent-fleet-ui", "list-sessions", "-F",
+                     "#{session_name}"], check=True, text=True, capture_output=True,
+                    env=environment).stdout.splitlines()
+                self.assertEqual(sessions, ["fleet@main"])
+            finally:
+                subprocess.run(["tmux", "-L", "agent-fleet-ui", "kill-server"],
+                               env=environment)
 
     def test_main_viewer_restores_its_owned_top_status(self):
         root = Path(__file__).parents[1]

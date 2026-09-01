@@ -99,14 +99,19 @@ def viewer_error(value):
                 "@fleet_viewer_error", value] if value else
                ["/usr/bin/tmux", "-N", "set-option", "-u", "-t", "=fleet@muster:",
                 "@fleet_viewer_error"])
-    subprocess.run(command, check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    stored = subprocess.run(command, text=True, capture_output=True)
+    if stored.returncode:
+        journal.record("viewer_error_unpublished", surface="tmux",
+                       error=stored.stderr.strip() or str(stored.returncode))
     path = RUNTIME / "muster.sock"
     if path.exists():
-        subprocess.run(["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-                        "-XPOST", "-d", "transform-header(/usr/lib/agent-fleet/ui header)",
-                        "http://localhost"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+        posted = subprocess.run(
+            ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
+             "-XPOST", "-d", "transform-header(/usr/lib/agent-fleet/ui header)",
+             "http://localhost"], text=True, capture_output=True)
+        if posted.returncode:
+            journal.record("viewer_error_unpublished", surface="muster",
+                           error=posted.stderr.strip() or str(posted.returncode))
 
 
 def request(slot, key):
@@ -119,15 +124,16 @@ def slots():
         slot = path.name.removeprefix("viewer-").removesuffix(".sock")
         try:
             found.append((slot, exchange(slot, "STATUS")))
-        except RuntimeError:
-            continue
+        except RuntimeError as error:
+            journal.record("viewer_slot_unavailable", slot=slot, error=str(error))
+            found.append((slot, None))
     return found
 
 
 def open_main(key):
     request("main", key)
     from .ui import select
-    select()
+    select(key)
 
 
 def show(key, slot=None):
@@ -139,15 +145,19 @@ def show(key, slot=None):
     if slot:
         open_main(key) if slot == "main" else request(slot, key)
         return
-    free = next((name for name, source in available if not source), None)
+    free = next((name for name, source in available if source == ""), None)
     if free:
         open_main(key) if free == "main" else request(free, key)
         return
     if len(available) == 1 and available[0][0] == "main":
         open_main(key)
         return
+    unresponsive = [name for name, source in available if source is None]
+    message = "All viewer slots are occupied; choose a slot explicitly"
+    if unresponsive:
+        message += " (unresponsive: " + " ".join(unresponsive) + ")"
     subprocess.run(["/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
-                    "All viewer slots are occupied; choose a slot explicitly"])
+                    message])
 
 
 def process_identity(pid):
@@ -359,15 +369,10 @@ class Attachment:
                 raise RuntimeError("UI server did not create one presentation window")
         window = output[0]
         try:
-            deadline = time.monotonic() + 3
-            client = ""
-            while time.monotonic() < deadline:
-                result = self.ssh(host, f"cat {remote_file} 2>/dev/null || :",
-                                  capture=True)
-                client = result.stdout.strip()
-                if client:
-                    break
-                time.sleep(.02)
+            wait = (f"for _ in $(seq 150); do [ -s {remote_file} ] && "
+                    f"exec cat {remote_file}; sleep .02; done; exit 1")
+            result = self.ssh(host, wait, capture=True, check=False)
+            client = result.stdout.strip() if result.returncode == 0 else ""
             if not client:
                 error = RuntimeError("remote tmux did not report the viewer attachment")
                 raise ViewerFailure("attach", "client_registration", error) from error
@@ -382,16 +387,20 @@ class Attachment:
         except Exception:
             try:
                 self.remove_window(window)
-            except EXPECTED:
-                pass
+            except EXPECTED as cleanup_error:
+                journal.record("attachment_cleanup_failed", slot=self.slot,
+                               host=host, window=window, step="window",
+                               error=str(cleanup_error))
             else:
                 journal.record("attachment_removed", slot=self.slot, host=host,
                                window=window, reason="create_failed")
             if remote_file:
                 try:
                     self.reclaim_marker(host, owner)
-                except RuntimeError:
-                    pass
+                except RuntimeError as cleanup_error:
+                    journal.record("attachment_cleanup_failed", slot=self.slot,
+                                   host=host, window=window, step="marker",
+                                   error=str(cleanup_error))
             raise
 
     def select_host(self, entry):
@@ -560,10 +569,7 @@ class Attachment:
             master_dead = entry.master is not None and not process_alive(entry.master)
             dead = entry.window not in windows
             if not dead:
-                try:
-                    dead = self.ui_value(entry.window, "#{pane_dead}") == "1"
-                except RuntimeError:
-                    dead = True
+                dead = self.ui_value(entry.window, "#{pane_dead}") == "1"
             if master_dead or dead:
                 status = signal = ""
                 if dead:

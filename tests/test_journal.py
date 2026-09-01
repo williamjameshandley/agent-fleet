@@ -382,7 +382,7 @@ def test_attachment_creation_and_removal_events_follow_real_lifecycle(monkeypatc
     monkeypatch.setattr(state, "ensure_master", lambda host: (123, 456))
     monkeypatch.setattr(state, "reclaim_marker", lambda host, owner: None)
     monkeypatch.setattr(state, "ssh", lambda *args, **kwargs:
-                        mock.Mock(stdout="/dev/pts/8\n"))
+                        mock.Mock(stdout="/dev/pts/8\n", returncode=0))
     monkeypatch.setattr(state, "prove_switch", lambda key, client: None)
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
@@ -474,7 +474,9 @@ def test_create_cleanup_failure_preserves_original_attachment_failure(monkeypatc
 
     assert (raised.value.stage, raised.value.cause) == (
         "attach", "client_registration")
-    assert records == []
+    assert records == [("attachment_cleanup_failed", {
+        "slot": "main", "host": "will@lovelace", "window": "@2",
+        "step": "window", "error": "kill failed"})]
 
 
 def test_nested_boundary_preserves_the_first_specific_failure():
