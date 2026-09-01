@@ -168,6 +168,26 @@ def test_archive_task_failure_is_retrieved_and_recorded_once(monkeypatch):
         "task": "archive", "error_type": "RuntimeError"})]
 
 
+def test_restore_task_failure_uses_stable_journal_identity(monkeypatch):
+    records = []
+    monkeypatch.setattr(daemon.journal, "record",
+                        lambda event, **fields: records.append((event, fields)))
+
+    async def fail():
+        raise RuntimeError("content must not enter the event")
+
+    async def exercise():
+        fleet = daemon.Fleet()
+        task = asyncio.create_task(fail())
+        fleet.own_task(task, "restore")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+    assert records == [("daemon_task_failed", {
+        "task": "restore", "error_type": "RuntimeError"})]
+
+
 def test_connected_host_requires_owned_process_evidence(monkeypatch):
     fleet = daemon.Fleet()
     monkeypatch.setattr(daemon, "decode_observation",

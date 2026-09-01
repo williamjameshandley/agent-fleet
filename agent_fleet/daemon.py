@@ -1305,7 +1305,7 @@ class Fleet:
             task = asyncio.create_task(self.restore_native(session))
             self.restores[key] = task
             task.add_done_callback(lambda completed: self.restore_task_done(key, completed))
-            self.own_task(task, f"restore {key}")
+            self.own_task(task, "restore")
         await asyncio.shield(task)
         session = self.source(key)
         if not session.attachment:
