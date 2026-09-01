@@ -54,6 +54,7 @@ class Session:
     transcript_path: str = ""
     worked: bool = True
     attachment: SessionRef | None = None
+    attachment_ambiguous: bool = False
 
     @property
     def agent(self):

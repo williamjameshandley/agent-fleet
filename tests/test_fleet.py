@@ -497,12 +497,13 @@ class IdentityTests(unittest.TestCase):
                           "cwd": session.cwd, "attachment": "",
                           "tmux_socket": "/tmp/tmux-1000/default"})
 
-    def test_daemon_resolve_restores_a_missing_native_provider_attachment(self):
+    def test_daemon_resolve_restores_a_missing_blocked_native_attachment(self):
         fleet = Fleet()
         actor = "codex-full-id@lovelace"
         session = Session(
             SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), actor),
-            "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
+            "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "needs-action",
+            "1 awaiting", 0,
             "full-id")
         attachment = SessionRef(ServerRef(
             "will@lovelace", "/tmp/tmux/default", 12, 10), "$9")
@@ -535,7 +536,7 @@ class IdentityTests(unittest.TestCase):
 
         asyncio.run(exercise())
         self.assertEqual(json.loads(writer.write.call_args.args[0]),
-                         {"agent": "codex", "state": "waiting", "cwd": "/work",
+                         {"agent": "codex", "state": "needs-action", "cwd": "/work",
                           "attachment": attachment.key,
                           "tmux_socket": "/tmp/tmux-1000/default"})
 
@@ -670,6 +671,36 @@ class IdentityTests(unittest.TestCase):
                         ValueError, "native restore requires a durable transcript identity"):
                     await fleet.ensure_attachment(session.ref.key)
             authority.assert_not_awaited()
+
+        asyncio.run(exercise())
+
+    def test_native_restore_refuses_existing_ambiguous_presentations(self):
+        fleet = Fleet()
+        actor = "claude-full-id@lovelace"
+        session = Session(
+            SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), actor),
+            "work", 1, 2, 0, 1, "alan", "", "/work", "claude", "waiting", "", 0,
+            "full-id")
+        providers = [Session(
+            SessionRef(ServerRef(
+                "will@lovelace", "/tmp/tmux/default", 12, 10), f"${number}"),
+            f"fleet@native-{number}", 1, 2, 0, 1, "claude", "", "/work",
+            "claude", "waiting", "", 0, "full-id")
+            for number in (8, 9)]
+        fleet.sessions = {"will@lovelace": fold_adopted([session, *providers])}
+        fleet.unavailable.clear()
+        graph = nx.MultiDiGraph()
+        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
+                                  "kind": "claude",
+                                  "evaluator": "native", "managed": False}]
+        fleet._composed = (fleet.observed, graph)
+
+        async def exercise():
+            with mock.patch.object(fleet, "restore_native", mock.AsyncMock()) as restore:
+                with self.assertRaisesRegex(
+                        RuntimeError, "2 provider presentations share"):
+                    await fleet.ensure_attachment(session.ref.key)
+            restore.assert_not_awaited()
 
         asyncio.run(exercise())
 
