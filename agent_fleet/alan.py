@@ -156,7 +156,13 @@ def _timestamp(value):
 def address_identity(addr, kind):
     if kind not in {"claude", "codex", "grok"}:
         return ""
+    if addr.startswith("alan:"):
+        addr = addr.split(":", 2)[2]
     return addr.split("-", 1)[1].rsplit("@", 1)[0]
+
+
+def actor_address(descriptor):
+    return descriptor.get("actor", descriptor["addr"])
 
 
 def actors(graph=None, operations=None):
@@ -255,8 +261,8 @@ def update_actor_descriptor(graph, all_descriptors, current, raw, nodes):
     return descriptor
 
 
-def inventory(host, actor_descriptors):
-    source = ServerRef(host, "", 0, 0, "alan")
+def inventory(source, actor_descriptors):
+    source = ServerRef(source, "", 0, 0, "alan")
     sessions = []
     for actor in actor_descriptors:
         if actor["state"] in {"retired", "unavailable"}:
@@ -329,15 +335,19 @@ def project(sessions, graph, expanded=(), show_python=False):
         parent = graph.nodes[source].get("stream") or source.rsplit("#", 1)[0]
         ancestry.add_edge(parent, child)
 
+    def graph_actor(session):
+        return (session.ref.key if session.ref.key in descriptors
+                else session.ref.session_id)
+
     actor_sessions = {
-        session.ref.session_id: session
+        graph_actor(session): session
         for session in sessions
         if session.ref.server.kind == "alan"
     }
     expanded = set(expanded)
     children = {}
     eligible = set()
-    session_order = [session.ref.session_id for session in sessions
+    session_order = [graph_actor(session) for session in sessions
                      if session.ref.server.kind == "alan"
                      and (show_python or session.agent != "python")]
     principals = {addr for addr, descriptor in descriptors.items()
@@ -417,7 +427,7 @@ def project(sessions, graph, expanded=(), show_python=False):
         if session.ref.server.kind != "alan":
             result.append(Projected(session, 0, 0, False))
             continue
-        actor = session.ref.session_id
+        actor = graph_actor(session)
         if actor in eligible:
             result.extend(emit(actor, 0))
     return result

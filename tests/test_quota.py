@@ -11,7 +11,7 @@ def result(code=0, stdout="", stderr=""):
 
 def test_provider_failure_does_not_prevent_other_provider_update(tmp_path):
     readers = [RuntimeError("claude failed"), "codex current"]
-    with mock.patch.object(quota, "hosts", return_value=[os.uname().nodename]), \
+    with mock.patch.object(quota, "HUB", os.uname().nodename), \
          mock.patch.object(quota, "tmux", return_value=result()), \
          mock.patch.object(quota, "tmux_check") as tmux_check, \
          mock.patch.object(quota, "usage", side_effect=readers), \

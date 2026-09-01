@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-from agent_fleet import daemon, journal, viewer
+from agent_fleet import config, daemon, journal, viewer
 
 
 def test_event_supplies_fixed_native_fields(monkeypatch):
@@ -102,23 +102,23 @@ def test_collector_diagnostics_preserve_stdout_for_protocol():
 
 def test_host_events_follow_availability_transitions(monkeypatch):
     fleet = daemon.Fleet()
-    host = "newton"
-    fleet.processes[host] = mock.Mock(pid=42)
-    graph = mock.Mock()
+    source = next(iter(fleet.sources.values()))
+    fleet.processes[source.key] = mock.Mock(pid=42)
+    graph = daemon.nx.MultiDiGraph()
     records = []
     monkeypatch.setattr(daemon, "decode_observation",
-                        lambda raw: ([], {}, set(), graph))
+                        lambda raw, bound: ([], True, graph))
     monkeypatch.setattr(daemon.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
 
-    fleet.update_host(host, b"observation")
-    fleet.update_host(host, b"observation")
-    asyncio.run(fleet.host_disconnected(host, 42, 1))
-    asyncio.run(fleet.host_disconnected(host, 43, 2))
+    fleet.update_source(source, b"observation")
+    fleet.update_source(source, b"observation")
+    asyncio.run(fleet.source_disconnected(source.key, 42, 1))
+    asyncio.run(fleet.source_disconnected(source.key, 43, 2))
 
     assert records == [
-        ("host_connected", {"host": host, "pid": 42}),
-        ("host_disconnected", {"host": host, "pid": 42, "status": 1}),
+        ("source_connected", {"source": source.key, "pid": 42}),
+        ("source_disconnected", {"source": source.key, "pid": 42, "status": 1}),
     ]
 
 
@@ -171,12 +171,13 @@ def test_archive_task_failure_is_retrieved_and_recorded_once(monkeypatch):
 def test_connected_host_requires_owned_process_evidence(monkeypatch):
     fleet = daemon.Fleet()
     monkeypatch.setattr(daemon, "decode_observation",
-                        lambda raw: ([], {}, set(), mock.Mock()))
+                        lambda raw, source: ([], True, daemon.nx.MultiDiGraph()))
+    source = next(iter(fleet.sources.values()))
     with pytest.raises(KeyError):
-        fleet.update_host("newton", b"observation")
-    fleet.unavailable.discard("newton")
+        fleet.update_source(source, b"observation")
+    fleet.unavailable.discard(source.key)
     with pytest.raises(RuntimeError, match="requires process identity and status"):
-        asyncio.run(fleet.host_disconnected("newton"))
+        asyncio.run(fleet.source_disconnected(source.key))
 
 
 def test_daemon_ready_and_stopping_bracket_its_owned_server(tmp_path, monkeypatch):
@@ -196,7 +197,6 @@ def test_daemon_ready_and_stopping_bracket_its_owned_server(tmp_path, monkeypatc
         return Server()
 
     monkeypatch.setattr(daemon, "RUNTIME", tmp_path)
-    monkeypatch.setattr(daemon, "hosts", lambda: ["lovelace"])
     monkeypatch.setattr(daemon.asyncio, "start_unix_server", start)
     monkeypatch.setattr(daemon.os, "chmod", lambda *args: None)
     monkeypatch.setattr(daemon.journal, "record",
@@ -204,10 +204,12 @@ def test_daemon_ready_and_stopping_bracket_its_owned_server(tmp_path, monkeypatc
     fleet = daemon.Fleet()
     fleet.register_existing_muster = mock.AsyncMock()
     fleet.collect = mock.AsyncMock()
+    fleet.watch_quota = mock.AsyncMock()
 
     asyncio.run(fleet.serve())
 
-    fields = {"socket": str(tmp_path / "fleet.sock"), "hosts_text": "lovelace"}
+    fields = {"socket": str(tmp_path / "fleet.sock"),
+              "sources_text": " ".join(fleet.sources)}
     assert records == [("daemon_ready", fields), ("daemon_stopping", fields)]
 
 
@@ -215,9 +217,13 @@ def test_projection_events_distinguish_cold_same_host_and_cross_host(monkeypatch
     state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
     records = []
     entries = {
-        "lovelace": mock.Mock(source="local-old", client="/dev/pts/1", window="@1"),
-        "newton": mock.Mock(source="remote-old", client="/dev/pts/2", window="@2"),
+        "will@lovelace": mock.Mock(source="local-old", client="/dev/pts/1", window="@1"),
+        "will@newton": mock.Mock(source="remote-old", client="/dev/pts/2", window="@2"),
     }
+    monkeypatch.setattr(viewer, "runtime_sources", lambda: [
+        config.RuntimeSource(host, "will", "/home/will/.local/state/alan/loop.sock",
+                             "/tmp/tmux-1000/default")
+        for host in ("lovelace", "newton")])
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
     monkeypatch.setattr(state, "create_host", lambda host, key: entries[host])
@@ -225,10 +231,10 @@ def test_projection_events_distinguish_cold_same_host_and_cross_host(monkeypatch
     monkeypatch.setattr(state, "select_host", lambda entry: None)
     monkeypatch.setattr(state, "ui_windows", lambda: {"@1", "@2"})
 
-    state.open("lovelace:/tmp/tmux/default:12:10:$1")
-    state.open("lovelace:/tmp/tmux/default:12:10:$2")
-    state.attachments["newton"] = entries["newton"]
-    state.open("newton:/tmp/tmux/default:13:11:$1")
+    state.open("will@lovelace:/tmp/tmux/default:12:10:$1")
+    state.open("will@lovelace:/tmp/tmux/default:12:10:$2")
+    state.attachments["will@newton"] = entries["will@newton"]
+    state.open("will@newton:/tmp/tmux/default:13:11:$1")
 
     assert [fields["path"] for event, fields in records
             if event == "projection_completed"] == ["cold", "same_host", "cross_host"]
@@ -301,6 +307,9 @@ def test_viewer_failure_stages_are_assigned_at_the_owning_boundary(monkeypatch):
                         mock.Mock(side_effect=subprocess.CalledProcessError(1, "ssh")))
     caught(lambda: state.ssh("newton", "true"))
     caught(lambda: state.resolve("invalid"))
+    monkeypatch.setattr(state, "ensure_master", lambda host: (123, 456))
+    monkeypatch.setattr(state, "reclaim_marker", lambda host, owner: None)
+    monkeypatch.setattr(state, "resolve", lambda key, remote=False: ("/tmp/tmux", 1, 1, "$1"))
     state.ui.command.side_effect = RuntimeError("tmux failed")
     caught(lambda: state.create_host("lovelace", "lovelace:/tmp/tmux:1:1:$1"))
     monkeypatch.setattr(state, "daemon", lambda message: '{"error":"stale"}')
@@ -322,7 +331,7 @@ def test_viewer_failure_stages_are_assigned_at_the_owning_boundary(monkeypatch):
 
 def test_journal_transport_failure_does_not_stop_successful_projection(monkeypatch):
     state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
-    key = "lovelace:/tmp/tmux/default:12:10:$1"
+    key = "will@lovelace:/tmp/tmux/default:12:10:$1"
     entry = mock.Mock(source=key, client="/dev/pts/8", window="@2",
                       remote_file=None, master=None)
     records = []
@@ -346,21 +355,25 @@ def test_attachment_creation_and_removal_events_follow_real_lifecycle(monkeypatc
     ui.command.side_effect = [["@2"], ["/dev/pts/8"], []]
     state = viewer.Attachment("main", "/dev/pts/9", ui)
     monkeypatch.setattr(viewer.os, "uname", lambda: mock.Mock(nodename="lovelace"))
-    monkeypatch.setattr(state, "resolve", lambda key: ("/tmp/tmux", 12, 10, "$1"))
+    monkeypatch.setattr(state, "resolve", lambda key, remote=False: ("/tmp/tmux", 12, 10, "$1"))
+    monkeypatch.setattr(state, "ensure_master", lambda host: (123, 456))
+    monkeypatch.setattr(state, "reclaim_marker", lambda host, owner: None)
+    monkeypatch.setattr(state, "ssh", lambda *args, **kwargs:
+                        mock.Mock(stdout="/dev/pts/8\n"))
     monkeypatch.setattr(state, "prove_switch", lambda key, client: None)
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
 
-    entry = state.create_host("lovelace", "source")
-    state.attachments["lovelace"] = entry
-    state.remove_host("lovelace", "clear")
+    entry = state.create_host("will@lovelace", "source")
+    state.attachments["will@lovelace"] = entry
+    state.remove_host("will@lovelace", "clear")
 
     assert records == [
         ("attachment_created", {
-            "slot": "main", "host": "lovelace", "route": "local",
+            "slot": "main", "host": "will@lovelace", "route": "remote",
             "window": "@2", "client": "/dev/pts/8"}),
         ("attachment_removed", {
-            "slot": "main", "host": "lovelace", "window": "@2",
+            "slot": "main", "host": "will@lovelace", "window": "@2",
             "reason": "clear"}),
     ]
 
@@ -371,15 +384,18 @@ def test_failed_attachment_creation_records_only_removal(monkeypatch):
     ui.command.side_effect = [["@2"], [], []]
     state = viewer.Attachment("main", "/dev/pts/9", ui)
     monkeypatch.setattr(viewer.os, "uname", lambda: mock.Mock(nodename="lovelace"))
-    monkeypatch.setattr(state, "resolve", lambda key: ("/tmp/tmux", 12, 10, "$1"))
+    monkeypatch.setattr(state, "resolve", lambda key, remote=False: ("/tmp/tmux", 12, 10, "$1"))
+    monkeypatch.setattr(state, "ensure_master", lambda host: (123, 456))
+    monkeypatch.setattr(state, "reclaim_marker", lambda host, owner: None)
+    monkeypatch.setattr(state, "ssh", lambda *args, **kwargs: mock.Mock(stdout=""))
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
 
     with pytest.raises(viewer.ViewerFailure):
-        state.create_host("lovelace", "source")
+        state.create_host("will@lovelace", "source")
 
     assert records == [("attachment_removed", {
-        "slot": "main", "host": "lovelace", "window": "@2",
+        "slot": "main", "host": "will@lovelace", "window": "@2",
         "reason": "create_failed"})]
 
 
@@ -420,16 +436,18 @@ def test_absent_window_completes_removal_after_kill_reports_failure(monkeypatch)
 def test_create_cleanup_failure_preserves_original_attachment_failure(monkeypatch):
     records = []
     ui = mock.Mock()
-    ui.command.side_effect = [
-        ["@2"], [], RuntimeError("kill failed"), ["@2"]]
+    ui.command.side_effect = [["@2"], RuntimeError("kill failed"), ["@2"]]
     state = viewer.Attachment("main", "/dev/pts/9", ui)
     monkeypatch.setattr(viewer.os, "uname", lambda: mock.Mock(nodename="lovelace"))
-    monkeypatch.setattr(state, "resolve", lambda key: ("/tmp/tmux", 12, 10, "$1"))
+    monkeypatch.setattr(state, "resolve", lambda key, remote=False: ("/tmp/tmux", 12, 10, "$1"))
+    monkeypatch.setattr(state, "ensure_master", lambda host: (123, 456))
+    monkeypatch.setattr(state, "reclaim_marker", lambda host, owner: None)
+    monkeypatch.setattr(state, "ssh", lambda *args, **kwargs: mock.Mock(stdout=""))
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
 
     with pytest.raises(viewer.ViewerFailure) as raised:
-        state.create_host("lovelace", "source")
+        state.create_host("will@lovelace", "source")
 
     assert (raised.value.stage, raised.value.cause) == (
         "attach", "client_registration")
@@ -476,7 +494,8 @@ def test_viewer_ready_and_stopping_bracket_the_controller_socket(tmp_path, monke
 def test_operation_failure_records_controlled_cause_once_without_error_text(monkeypatch):
     records = []
     failed = threading.Event()
-    state = mock.Mock(source="lovelace:/tmp/tmux/default:1:1:$1", host="lovelace")
+    state = mock.Mock(source="will@lovelace:/tmp/tmux/default:1:1:$1",
+                      host="will@lovelace")
     state.check.return_value = ""
 
     def fail(key, selected=None, host=None):
@@ -485,20 +504,24 @@ def test_operation_failure_records_controlled_cause_once_without_error_text(monk
         raise viewer.ViewerFailure("switch", "identity_or_client", error) from error
 
     state.open.side_effect = fail
+    monkeypatch.setattr(viewer, "runtime_sources", lambda: [
+        config.RuntimeSource(host, "will", "/home/will/.local/state/alan/loop.sock",
+                             "/tmp/tmux-1000/default")
+        for host in ("lovelace", "newton")])
     monkeypatch.setattr(viewer, "viewer_error", lambda value: None)
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
     worker = viewer.ViewerWorker(state, "main")
     try:
-        worker.intent("PROJECT", "newton:/tmp/tmux/default:2:2:$2")
+        worker.intent("PROJECT", "will@newton:/tmp/tmux/default:2:2:$2")
         assert failed.wait(1)
-        assert worker.barrier("SOURCE") == "lovelace:/tmp/tmux/default:1:1:$1"
+        assert worker.barrier("SOURCE") == "will@lovelace:/tmp/tmux/default:1:1:$1"
     finally:
         worker.close()
 
     assert records == [("viewer_operation_failed", {
         "slot": "main", "operation": "PROJECT", "host": "newton",
-        "source": "newton:/tmp/tmux/default:2:2:$2", "stage": "switch",
+            "source": "will@newton:/tmp/tmux/default:2:2:$2", "stage": "switch",
         "cause": "identity_or_client",
         "error_type": "RuntimeError"})]
 
@@ -536,19 +559,23 @@ def test_malformed_identity_fails_once_without_routing_or_stopping_worker(
 
 def test_unexpected_worker_failure_records_controller_event_once(monkeypatch):
     records = []
-    state = mock.Mock(source="old", host="newton")
+    state = mock.Mock(source="old", host="will@newton")
     state.check.return_value = ""
     state.open.side_effect = AssertionError("prompt and transcript content")
+    monkeypatch.setattr(viewer, "runtime_sources", lambda: [
+        config.RuntimeSource("newton", "will",
+                             "/home/will/.local/state/alan/loop.sock",
+                             "/tmp/tmux-1000/default")])
     monkeypatch.setattr(viewer, "viewer_error", lambda value: None)
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
     worker = viewer.ViewerWorker(state, "main")
-    worker.intent("PROJECT", "newton:/tmp/tmux/default:2:2:$2")
+    worker.intent("PROJECT", "will@newton:/tmp/tmux/default:2:2:$2")
     worker.thread.join(1)
 
     assert not worker.thread.is_alive()
     assert records == [("viewer_controller_failed", {
         "slot": "main", "operation": "PROJECT", "host": "newton",
-        "source": "newton:/tmp/tmux/default:2:2:$2", "stage": "worker",
+        "source": "will@newton:/tmp/tmux/default:2:2:$2", "stage": "worker",
         "cause": "unexpected",
         "error_type": "AssertionError"})]

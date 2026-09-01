@@ -12,6 +12,7 @@ from unittest import mock
 import networkx as nx
 
 from agent_fleet import alan
+from agent_fleet import config
 from agent_fleet.commander import validate_proposal
 from agent_fleet import commander_client
 from agent_fleet.commander_client import render
@@ -20,42 +21,47 @@ from agent_fleet.protocol import encode
 
 
 class CommanderContextTests(unittest.TestCase):
+    @staticmethod
+    def sources(*hosts):
+        return {f"will@{host}": config.RuntimeSource(
+            host, "will", "/home/will/.local/state/alan/loop.sock",
+            "/tmp/tmux-1000/default") for host in hosts}
+
     def test_history_queries_only_available_source_hosts(self):
         fleet = Fleet()
-        fleet.unavailable = {"noether"}
+        fleet.sources = self.sources("lovelace", "noether")
+        fleet.unavailable = {"will@noether"}
         fleet.sessions = {}
         fleet.history_observation = mock.AsyncMock(return_value={
             "host": "lovelace", "actors": [], "transcripts": [],
         })
-        with mock.patch("agent_fleet.daemon.hosts",
-                        return_value=["lovelace", "noether"]):
-            self.assertEqual(asyncio.run(fleet.history()), [])
-        fleet.history_observation.assert_awaited_once_with("lovelace")
+        self.assertEqual(asyncio.run(fleet.history()), [])
+        fleet.history_observation.assert_awaited_once_with("will@lovelace")
 
     def test_one_disconnected_history_host_does_not_erase_other_hosts(self):
         fleet = Fleet()
+        fleet.sources = self.sources("lovelace", "noether")
         fleet.unavailable = set()
         fleet.sessions = {}
 
         async def history(host):
-            if host == "noether":
+            if host == "will@noether":
                 raise RuntimeError("connection closed")
-            return {"host": host, "actors": [], "transcripts": [{
+            return {"host": host.split("@", 1)[1], "actors": [], "transcripts": [{
                 "agent": "codex", "session_id": "thread", "mtime": 1,
                 "cwd": "/work", "name": "retained",
             }]}
 
         fleet.history_observation = history
-        with mock.patch("agent_fleet.daemon.hosts",
-                        return_value=["lovelace", "noether"]):
-            self.assertEqual(asyncio.run(fleet.history()), [{
-                "key": "lovelace:codex:thread", "host": "lovelace",
+        self.assertEqual(asyncio.run(fleet.history()), [{
+                "key": "will@lovelace:codex:thread", "host": "lovelace",
+                "runtime_source": "will@lovelace",
                 "agent": "codex", "name": "retained", "cwd": "/work",
-                "mtime": 1,
-            }])
+                "mtime": 1}])
 
     def context(self, unavailable=(), profile_suffix="", transcript_name="old", sessions=()):
         fleet = Fleet()
+        fleet.sources = self.sources("newton", "lovelace")
         fleet.unavailable = set(unavailable)
         fleet.sessions = {"lovelace": list(sessions)}
 
@@ -72,8 +78,7 @@ class CommanderContextTests(unittest.TestCase):
 
         fleet.remote_json = remote
         fleet.history_observation = history
-        with mock.patch("agent_fleet.daemon.hosts", return_value=["newton", "lovelace"]):
-            return asyncio.run(fleet.commander_context())
+        return asyncio.run(fleet.commander_context())
 
     def test_revision_hashes_the_canonical_body(self):
         context = self.context()
@@ -81,12 +86,14 @@ class CommanderContextTests(unittest.TestCase):
         body = json.dumps(context, sort_keys=True, separators=(",", ":"),
                           ensure_ascii=False).encode()
         self.assertEqual(revision, hashlib.sha256(body).hexdigest())
-        self.assertEqual(context["hosts"], ["lovelace", "newton"])
+        self.assertEqual(context["sources"], ["will@lovelace", "will@newton"])
 
     def test_changing_snapshot_content_changes_revision(self):
         baseline = self.context()["revision"]
         session = SimpleNamespace(
-            ref=SimpleNamespace(key="source-1", server=SimpleNamespace(host="lovelace")),
+            ref=SimpleNamespace(
+                key="source-1", server=SimpleNamespace(
+                    host="lovelace", source="will@lovelace")),
             name="work", agent="codex", state="waiting", summary="summary",
             human_activity=2, transcript_id="live-thread", worked=True)
         variants = [self.context(["newton"]), self.context(profile_suffix="-changed"),
@@ -103,16 +110,15 @@ class CommanderContextTests(unittest.TestCase):
 
             fleet.remote_json = remote
             fleet.history_observation = remote
-            with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]):
-                context = asyncio.create_task(fleet.commander_context())
-                await asyncio.sleep(0)
-                reader = asyncio.StreamReader()
-                reader.feed_data(b"snapshot\n")
-                reader.feed_eof()
-                writer = mock.Mock()
-                writer.drain = mock.AsyncMock()
-                await asyncio.wait_for(fleet.reply(reader, writer), .1)
-                context.cancel()
+            context = asyncio.create_task(fleet.commander_context())
+            await asyncio.sleep(0)
+            reader = asyncio.StreamReader()
+            reader.feed_data(b"snapshot\n")
+            reader.feed_eof()
+            writer = mock.Mock()
+            writer.drain = mock.AsyncMock()
+            await asyncio.wait_for(fleet.reply(reader, writer), .1)
+            context.cancel()
 
             self.assertTrue(writer.write.called)
 
@@ -120,17 +126,21 @@ class CommanderContextTests(unittest.TestCase):
 
     def test_history_uses_no_alan_query_when_the_graph_is_absent(self):
         fleet = Fleet()
-        fleet.graphs = {"turing": None}
+        source = config.RuntimeSource("turing", "will",
+                                      "/home/will/.local/state/alan/loop.sock",
+                                      "/tmp/tmux-1000/default")
+        fleet.sources = {source.key: source}
+        fleet.graphs = {source.key: None}
         fleet.observed = 1
 
         async def remote(host, *command):
-            self.assertEqual(host, "turing")
+            self.assertEqual(host, "will@turing")
             self.assertIn("agent_fleet.transcripts import history", command[2])
             return [{"agent": "codex", "session_id": "thread-1"}]
 
         fleet.remote_json = remote
-        self.assertEqual(asyncio.run(fleet.history_observation("turing")), {
-            "host": "turing", "actors": [],
+        self.assertEqual(asyncio.run(fleet.history_observation("will@turing")), {
+            "host": "turing", "source": "will@turing", "actors": [],
             "transcripts": [{"agent": "codex", "session_id": "thread-1"}],
         })
 
@@ -147,18 +157,20 @@ class CommanderContextTests(unittest.TestCase):
             "agent": "codex", "session_id": identity, "mtime": 4,
             "name": "duplicate", "cwd": "/work",
         }]}]
-        history = Fleet.history_entries([], ["newton"], observations)
+        history = Fleet.history_entries([], ["will@newton"], observations)
         self.assertEqual([item["key"] for item in history], [
-            f"alan:codex-{identity}@lovelace", "alan:llm-review@lovelace"])
+            f"alan:will@newton:codex-{identity}@lovelace",
+            "alan:will@newton:llm-review@lovelace"])
 
     def test_mdjudge_search_joins_exact_retired_tablet_actor(self):
         identity = "00000000-0000-4000-8000-000000000001"
         actor = f"codex-{identity}@lovelace"
         fleet = Fleet()
+        fleet.sources = self.sources("lovelace")
         fleet.unavailable = set()
 
         async def observation(host, query):
-            self.assertEqual((host, query), ("lovelace", "mdjudge"))
+            self.assertEqual((host, query), ("will@lovelace", "mdjudge"))
             return {"actors": [{
                 "addr": actor, "kind": "codex", "state": "retired",
                 "label": "tablet", "cwd": "/work",
@@ -169,38 +181,37 @@ class CommanderContextTests(unittest.TestCase):
             }]}
 
         fleet.search_observation = observation
-        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]):
-            [result] = asyncio.run(fleet.search_history("mdjudge"))
-        self.assertEqual(result["source"], f"alan:{actor}")
+        [result] = asyncio.run(fleet.search_history("mdjudge"))
+        self.assertEqual(result["source"], f"alan:will@lovelace:{actor}")
         self.assertEqual(result["name"], "tablet")
         self.assertEqual(result["lifecycle"], "retired")
 
     def test_unowned_search_hit_remains_standalone_provider_history(self):
         fleet = Fleet()
+        fleet.sources = self.sources("lovelace")
         fleet.unavailable = set()
         fleet.search_observation = mock.AsyncMock(return_value={
             "actors": [], "hits": [{
                 "agent": "claude", "session_id": "full-id", "path": "/native/a.jsonl",
                 "line": 2, "role": "assistant", "cwd": "/work", "text": "topic",
             }]})
-        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]):
-            [result] = asyncio.run(fleet.search_history("topic"))
-        self.assertEqual(result["source"], "lovelace:claude:full-id")
+        [result] = asyncio.run(fleet.search_history("topic"))
+        self.assertEqual(result["source"], "will@lovelace:claude:full-id")
         self.assertEqual(result["lifecycle"], "standalone")
 
     def test_search_uses_only_available_source_corpora(self):
         fleet = Fleet()
-        fleet.unavailable = {"noether"}
+        fleet.sources = self.sources("lovelace", "noether")
+        fleet.unavailable = {"will@noether"}
         fleet.search_observation = mock.AsyncMock(return_value={
             "actors": [], "hits": [],
         })
-        with mock.patch("agent_fleet.daemon.hosts",
-                        return_value=["lovelace", "noether"]):
-            self.assertEqual(asyncio.run(fleet.search_history("topic")), [])
-        fleet.search_observation.assert_awaited_once_with("lovelace", "topic")
+        self.assertEqual(asyncio.run(fleet.search_history("topic")), [])
+        fleet.search_observation.assert_awaited_once_with("will@lovelace", "topic")
 
     def test_multiple_actors_claiming_search_identity_fail_visibly(self):
         fleet = Fleet()
+        fleet.sources = self.sources("lovelace")
         fleet.unavailable = set()
         identity = "00000000-0000-4000-8000-000000000001"
         fleet.search_observation = mock.AsyncMock(return_value={
@@ -211,15 +222,14 @@ class CommanderContextTests(unittest.TestCase):
                           "path": "/native/a", "line": 1, "role": "user",
                           "cwd": "/work", "text": "topic"}],
         })
-        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]), \
-             self.assertRaisesRegex(RuntimeError, "ambiguous codex transcript ownership"):
+        with self.assertRaisesRegex(RuntimeError, "ambiguous codex transcript ownership"):
             asyncio.run(fleet.search_history("topic"))
 
 
 class ProposalTests(unittest.TestCase):
     def setUp(self):
         self.request = {"request_id": "r1", "snapshot": {
-            "revision": "abc", "hosts": ["newton"],
+            "revision": "abc", "sources": ["will@newton"],
             "sessions": [{"source": "source-1", "agent": "codex",
                           "transcript_id": "thread-1"}],
             "history": [{"key": "history-1"}],
@@ -233,11 +243,11 @@ class ProposalTests(unittest.TestCase):
             {"type": "clear_slot", "request_id": "r1", "snapshot_revision": "abc",
              "workstation": "boltzmann", "slot": "main"},
             {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
-             "host": "newton", "agent": "claude", "name": "work", "cwd": None},
+             "source": "will@newton", "agent": "claude", "name": "work", "cwd": None},
             {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
-             "host": "newton", "agent": "grok", "name": "work", "cwd": None},
+             "source": "will@newton", "agent": "grok", "name": "work", "cwd": None},
             {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
-             "host": "newton", "agent": "llm", "name": "work", "cwd": None},
+             "source": "will@newton", "agent": "llm", "name": "work", "cwd": None},
             {"type": "rename", "request_id": "r1", "snapshot_revision": "abc",
              "source": "source-1", "name": "new-name"},
             {"type": "archive", "request_id": "r1", "snapshot_revision": "abc",
@@ -285,11 +295,11 @@ class ProposalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_proposal(bad, self.request)
         bad = {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
-               "host": "newton", "agent": "codex", "name": "work", "cwd": "relative"}
+               "source": "will@newton", "agent": "codex", "name": "work", "cwd": "relative"}
         with self.assertRaises(ValueError):
             validate_proposal(bad, self.request)
         bad = {"type": "create", "request_id": "r1", "snapshot_revision": "abc",
-               "host": "newton", "agent": "python", "name": "work", "cwd": None}
+               "source": "will@newton", "agent": "python", "name": "work", "cwd": None}
         with self.assertRaises(ValueError):
             validate_proposal(bad, self.request)
         bad["cwd"] = "/srv/work"

@@ -51,12 +51,16 @@ across machines, operable with one hand and eventually none.
 
 - Prefer clean composition of tmux, OpenSSH, fzf, Ghostty, i3 and systemd over
   custom UI machinery. Keep code lean and comments factual.
-- Fleet is hard alpha. Make clean cutovers: delete superseded behavior and do
+- Fleet is pre-alpha. Make clean cutovers: delete superseded behavior and do
   not add migrations, compatibility modes, dual paths, fallbacks, or retained
   legacy machinery. If irreplaceable live sessions require preservation during
   deployment, perform one explicitly inventoried and revalidated operational
   surgery outside Fleet, record the evidence, and remove its temporary
   apparatus. Do not turn that surgery into product migration code.
+- Tests state current requirements, not compatibility obligations. Rewrite or
+  delete tests for superseded behavior when a clean cutover changes an
+  invariant; do not preserve migratory production paths merely to keep old
+  tests unchanged.
 - Do not add defensive fallbacks that guess identities or hide drift. Translate
   boundary failures into visible errors. Never retry by session name or recency.
 - No persistent JSON state. Lovelace owns the sole disposable in-memory

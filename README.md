@@ -295,14 +295,21 @@ operations; it publishes no general command surface. Recoverable provider
 history is read directly from native transcripts and exact retained Alan actor
 identity; ordinary tmux state has no inferred reconstruction path.
 
-Host aliases come from `~/.config/agent-fleet/hosts`. Routing and credentials
-belong to OpenSSH configuration. Machine labels are single-cell (`N L B T Œ`),
-so Fleet has no icon-font dependency.
+Routing and credentials belong to OpenSSH configuration. Machine labels are
+single-cell (`N L B T Œ`), so Fleet has no icon-font dependency.
 
 Fleet consumes the canonical `loop` client, which resolves the personal Alan
 socket from `LOOP_SOCKET` or the user's XDG state directory. An unavailable
 Alan socket removes Alan rows but does not invalidate healthy tmux inventory on
 the same host.
+
+Runtime boundaries are listed in
+`~/.config/agent-fleet/runtime-sources.json`. Each closed entry names `host`,
+`principal`, `public_socket`, and `tmux_socket`, with absolute socket paths.
+Fleet connects to the exact `<principal>@<host>` OpenSSH login for each entry;
+that login supplies the Unix identity, home and XDG paths. The Lovelace hub
+qualifies each collector's source-relative observations by the configured
+source, and ordinary Unix access failures remain visible.
 
 Fleet displays direct-root Alan actors by default. Spawned actors form recursive
 folds beneath their nearest visible creator; each visible actor folds

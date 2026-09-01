@@ -3,7 +3,7 @@ import subprocess
 import sys
 import time
 
-from .config import RUNTIME, hosts
+from .config import HUB, RUNTIME
 from .usage import read as usage
 
 
@@ -25,8 +25,8 @@ def read():
 
 
 def update():
-    if os.uname().nodename != hosts()[0]:
-        raise RuntimeError("quota collection runs only on the first fleet host")
+    if os.uname().nodename != HUB:
+        raise RuntimeError("quota collection runs only on the Fleet hub")
     errors = []
     for agent in ("claude", "codex"):
         option = f"@fleet_{agent}_retry_after"
