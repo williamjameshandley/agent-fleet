@@ -119,9 +119,15 @@ def request(slot, key):
 
 
 def slots():
+    sessions = subprocess.run(
+        ["/usr/bin/tmux", "-L", "agent-fleet-ui", "list-sessions",
+         "-F", "#{session_name}"], text=True, capture_output=True)
+    names = sessions.stdout.splitlines() if sessions.returncode == 0 else []
     found = []
-    for path in sorted(RUNTIME.glob("viewer-*.sock")):
-        slot = path.name.removeprefix("viewer-").removesuffix(".sock")
+    for name in sorted(names):
+        slot = name.removeprefix("fleet@")
+        if slot == name or not SLOT.fullmatch(slot):
+            continue
         try:
             found.append((slot, exchange(slot, "STATUS")))
         except RuntimeError as error:
@@ -372,6 +378,10 @@ class Attachment:
             wait = (f"for _ in $(seq 150); do [ -s {remote_file} ] && "
                     f"exec cat {remote_file}; sleep .02; done; exit 1")
             result = self.ssh(host, wait, capture=True, check=False)
+            if result.returncode not in (0, 1):
+                error = RuntimeError(result.stderr.strip()
+                                     or f"ssh exited {result.returncode}")
+                raise ViewerFailure("ssh", "command", error) from error
             client = result.stdout.strip() if result.returncode == 0 else ""
             if not client:
                 error = RuntimeError("remote tmux did not report the viewer attachment")

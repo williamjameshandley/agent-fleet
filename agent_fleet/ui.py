@@ -99,7 +99,10 @@ def footer():
 
 
 def select(key):
-    request(f"place {key}")
+    reply = request(f"place {key}").strip()
+    if reply != "OK":
+        raise RuntimeError(reply.removeprefix("ERROR ")
+                           or "Muster placement failed")
 
 
 def history():

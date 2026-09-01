@@ -410,7 +410,7 @@ def test_failed_attachment_creation_records_only_removal(monkeypatch):
     monkeypatch.setattr(state, "resolve", lambda key, remote=False: ("/tmp/tmux", 12, 10, "$1"))
     monkeypatch.setattr(state, "ensure_master", lambda host: (123, 456))
     monkeypatch.setattr(state, "reclaim_marker", lambda host, owner: None)
-    monkeypatch.setattr(state, "ssh", lambda *args, **kwargs: mock.Mock(stdout=""))
+    monkeypatch.setattr(state, "ssh", lambda *args, **kwargs: mock.Mock(stdout="", stderr="", returncode=1))
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
 
@@ -465,7 +465,7 @@ def test_create_cleanup_failure_preserves_original_attachment_failure(monkeypatc
     monkeypatch.setattr(state, "resolve", lambda key, remote=False: ("/tmp/tmux", 12, 10, "$1"))
     monkeypatch.setattr(state, "ensure_master", lambda host: (123, 456))
     monkeypatch.setattr(state, "reclaim_marker", lambda host, owner: None)
-    monkeypatch.setattr(state, "ssh", lambda *args, **kwargs: mock.Mock(stdout=""))
+    monkeypatch.setattr(state, "ssh", lambda *args, **kwargs: mock.Mock(stdout="", stderr="", returncode=1))
     monkeypatch.setattr(viewer.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
 

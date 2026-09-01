@@ -353,6 +353,7 @@ class Fleet:
                            status=process.returncode)
             for artifact in artifacts:
                 artifact.unlink(missing_ok=True)
+        return process.returncode
 
     async def wait_for_muster_idle(self):
         while True:
@@ -450,6 +451,7 @@ class Fleet:
             self.schedule_refresh()
         elif request.startswith("place "):
             key = request.removeprefix("place ")
+            payload = "OK"
             async with self.view_lock:
                 position = next(
                     (index for index, item in enumerate(self.projected(), 1)
@@ -458,8 +460,10 @@ class Fleet:
                 if position is None:
                     journal.record("muster_place_skipped", source=key)
                 elif path.exists():
-                    await self.send_publication(path, f"pos({position})", [])
-            payload = "OK"
+                    status = await self.send_publication(
+                        path, f"pos({position})", [])
+                    if status:
+                        payload = f"ERROR Muster placement failed: curl exited {status}"
         elif request.startswith("muster-register\t"):
             try:
                 values = request.split("\t")

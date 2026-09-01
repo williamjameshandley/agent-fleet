@@ -175,21 +175,23 @@ class IdentityTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_unresponsive_viewer_slot_remains_occupied(self):
-        with tempfile.TemporaryDirectory() as directory:
-            (Path(directory) / "viewer-side.sock").touch()
-            with mock.patch.object(viewer, "RUNTIME", Path(directory)), \
-                    mock.patch.object(viewer.journal, "record") as recorded:
-                available = viewer.slots()
-                with mock.patch.object(viewer, "open_main") as opened, \
-                        mock.patch.object(viewer, "request") as requested, \
-                        mock.patch.object(viewer.subprocess, "run") as displayed:
-                    viewer.show("actor:first")
+        listed = subprocess.CompletedProcess([], 0, stdout="fleet@side\n",
+                                             stderr="")
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(viewer, "RUNTIME", Path(directory)), \
+                mock.patch.object(viewer.journal, "record") as recorded, \
+                mock.patch.object(viewer.subprocess, "run",
+                                  return_value=listed) as run:
+            available = viewer.slots()
+            with mock.patch.object(viewer, "open_main") as opened, \
+                    mock.patch.object(viewer, "request") as requested:
+                viewer.show("actor:first")
         self.assertEqual(available, [("side", None)])
         recorded.assert_called_with("viewer_slot_unavailable", slot="side",
                                     error=mock.ANY)
         opened.assert_not_called()
         requested.assert_not_called()
-        message = displayed.call_args.args[0][-1]
+        message = run.call_args.args[0][-1]
         self.assertIn("unresponsive: side", message)
 
     def test_cursor_omits_a_missing_daemon_position(self):
@@ -224,13 +226,13 @@ class IdentityTests(unittest.TestCase):
                     mock.Mock(ref=mock.Mock(key="actor:focused"), state="working")]
         projected = [mock.Mock(session=session) for session in sessions]
 
-        async def place(request, runtime):
+        async def place(request, runtime, status=0):
             reader = asyncio.StreamReader()
             reader.feed_data((request + "\n").encode())
             reader.feed_eof()
             writer = mock.Mock()
             writer.drain = mock.AsyncMock()
-            published = mock.AsyncMock()
+            published = mock.AsyncMock(return_value=status)
             recorded = []
             with mock.patch.object(fleet, "projected", return_value=projected), \
                     mock.patch.object(fleet, "send_publication", published), \
@@ -254,6 +256,16 @@ class IdentityTests(unittest.TestCase):
             self.assertEqual(reply, b"OK\n")
             published.assert_not_awaited()
             self.assertEqual(recorded, ["muster_place_skipped"])
+            reply, published, recorded = asyncio.run(
+                place("place actor:focused", runtime, status=7))
+            self.assertEqual(
+                reply, b"ERROR Muster placement failed: curl exited 7\n")
+
+    def test_failed_placement_crosses_the_selection_boundary(self):
+        with mock.patch("agent_fleet.ui.request",
+                        return_value="ERROR Muster placement failed: curl exited 7\n"):
+            with self.assertRaisesRegex(RuntimeError, "curl exited 7"):
+                ui.select("actor:first")
 
     def test_machine_labels_are_single_cell_and_noether_uses_ligature(self):
         self.assertEqual([machine(host) for host in
@@ -2040,6 +2052,26 @@ class IdentityTests(unittest.TestCase):
         reclaim.assert_called_once_with("newton", os.uname().nodename.split(".", 1)[0])
         ssh.assert_called_once()
         self.assertIn("cat", ssh.call_args.args[1])
+
+    def test_remote_registration_failures_keep_their_boundary(self):
+        for returncode, stage, cause in ((1, "attach", "client_registration"),
+                                         (255, "ssh", "command")):
+            with self.subTest(returncode=returncode):
+                ui = mock.Mock()
+                ui.command.side_effect = [["@2"], [], []]
+                state = viewer.Attachment("main", "/dev/pts/9", ui)
+                failed = mock.Mock(stdout="", stderr="lost connection",
+                                   returncode=returncode)
+                with mock.patch.object(state, "ensure_master",
+                                       return_value=(82, 10)), \
+                     mock.patch.object(state, "resolve",
+                                       return_value=("/tmp/tmux", 12, 10, "$1")), \
+                     mock.patch.object(state, "ssh", return_value=failed), \
+                     mock.patch.object(state, "reclaim_marker"), \
+                     self.assertRaises(viewer.ViewerFailure) as raised:
+                    state.create_host("newton", "newton:/tmp/tmux:12:10:$1")
+                self.assertEqual((raised.exception.stage, raised.exception.cause),
+                                 (stage, cause))
 
     def test_non_hub_actor_lookup_reuses_one_forward_to_the_fleet_daemon(self):
         state = viewer.Attachment("side", "/dev/pts/9", mock.Mock())
