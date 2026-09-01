@@ -525,11 +525,14 @@ def native_actor(pids):
         roots = [value.split(b"=", 1)[1] for value in environment
                  if value.startswith(b"ALAN_NATIVE_ROOT=")]
         for root in roots:
+            path = Path(os.fsdecode(root)) / "actor"
             try:
-                actors.add((Path(os.fsdecode(root)) / "actor").read_text().strip())
-            except OSError:
-                continue
-    actors.discard("")
+                actor = path.read_text().strip()
+            except OSError as error:
+                raise RuntimeError(f"cannot read published native actor {path}: {error}")
+            if not actor:
+                raise RuntimeError(f"published native actor is empty: {path}")
+            actors.add(actor)
     if len(actors) > 1:
         raise RuntimeError("provider process tree carries multiple Alan actors: "
                            + ", ".join(sorted(actors)))
@@ -568,7 +571,11 @@ def observe(sessions, transcripts=None):
             [agent] = agents
         elif agent not in AGENTS or "@" in name:
             continue
-        actor = native_actor(tree)
+        try:
+            actor = native_actor(tree)
+        except RuntimeError as error:
+            rows.append((session_id, agent, "needs-action", str(error), 0, "", 0))
+            continue
         expected = f"{agent}-"
         suffix = f"@{sessions_by_id[session_id].ref.server.host}"
         if actor and (not actor.startswith(expected) or not actor.endswith(suffix)):
@@ -731,6 +738,9 @@ def fold_adopted(sessions):
                              f"{actor.ref.session_id}"))
             continue
         [provider] = native
+        if actor.state == "retired":
+            replacements[provider.ref] = replace(provider, name=actor.name)
+            continue
         replacements[actor.ref] = replace(
             actor, attachment=provider.ref,
             reported_state=(provider.state if actor.state in {"retired", "unavailable"}

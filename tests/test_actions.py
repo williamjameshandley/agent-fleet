@@ -343,6 +343,23 @@ def test_composite_archive_keeps_bare_actor_and_raw_provider_operations():
         "agent": "codex", "transcript": "thread-1"}
 
 
+def test_retired_native_actor_leaves_a_provider_only_archive_boundary():
+    actor = replace(session(agent="codex"), reported_state="retired",
+                    name="historic name")
+    provider = session(kind="tmux", agent="codex")
+    [historic] = fold_adopted([actor, provider])
+    fleet = Fleet()
+    fleet.sessions = {"lovelace": [historic]}
+    fleet.unavailable.clear()
+
+    assert historic.ref == provider.ref
+    assert historic.name == "historic name"
+    assert fleet.archive_authority(historic.ref.key)[2] == {
+        "operation": "archive-tmux",
+        "target": ["/tmp/tmux/default", 12, 10, "$1"],
+        "agent": "codex", "transcript": "thread-1"}
+
+
 def test_composite_archive_projection_leaves_no_actor_or_raw_provider():
     actor = session(agent="codex")
     provider = session(kind="tmux", agent="codex")

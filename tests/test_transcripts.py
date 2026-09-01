@@ -1,6 +1,9 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 import agent_fleet.transcripts as transcripts
 from agent_fleet.transcripts import (PANE_FORMAT, indexed_claude_agents, last_human_time,
@@ -35,6 +38,17 @@ def test_native_actor_is_derived_from_the_published_runtime_identity(tmp_path, m
         else b""))
 
     assert transcripts.native_actor([42]) == "claude-session@lovelace"
+
+
+def test_native_actor_rejects_a_declared_root_without_an_actor(tmp_path, monkeypatch):
+    root = tmp_path / "native"
+    root.mkdir()
+    monkeypatch.setattr(Path, "read_bytes", lambda path: (
+        f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
+        else b""))
+
+    with pytest.raises(RuntimeError, match="cannot read published native actor"):
+        transcripts.native_actor([42])
 
 
 def test_claude_observe_accepts_optional_status(monkeypatch):
@@ -362,22 +376,29 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
     ]
 
 
-def test_inactive_adopted_actor_folds_only_while_its_provider_is_present():
+def test_inactive_adopted_actor_folds_according_to_its_lifecycle_state():
     identity = "00000000-0000-0000-0000-000000000001"
     alan_server = ServerRef("newton", "", 0, 0, "alan")
     provider = Session(SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$7"),
                        "fleet@native-test", 1, 0, 0, 1, "codex", "", "/work",
                        "codex", "waiting", transcript_id=identity)
 
-    for state in ("retired", "unavailable"):
-        actor = Session(SessionRef(alan_server, f"codex-{identity}@newton"), "actor",
-                        1, 0, 0, 1, "alan", "", "/work", "codex", state,
-                        transcript_id=identity)
-        assert fold_adopted([actor]) == []
-        [folded] = fold_adopted([actor, provider])
-        assert folded.ref == actor.ref
-        assert folded.attachment == provider.ref
-        assert folded.state == "waiting"
+    retired = Session(SessionRef(alan_server, f"codex-{identity}@newton"), "actor",
+                      1, 0, 0, 1, "alan", "", "/work", "codex", "retired",
+                      transcript_id=identity)
+    unavailable = replace(retired, reported_state="unavailable")
+
+    assert fold_adopted([retired]) == []
+    [historic] = fold_adopted([retired, provider])
+    assert historic.ref == provider.ref
+    assert historic.name == "actor"
+    assert historic.attachment is None
+
+    assert fold_adopted([unavailable]) == []
+    [folded] = fold_adopted([unavailable, provider])
+    assert folded.ref == unavailable.ref
+    assert folded.attachment == provider.ref
+    assert folded.state == "waiting"
 
 
 def test_multiple_provider_presentations_retain_every_session_without_native_names():
@@ -406,7 +427,7 @@ def test_multiple_provider_presentations_retain_every_session_without_native_nam
 def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
     identity = "00000000-0000-0000-0000-000000000001"
     session = Session(
-        SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$7"),
+        SessionRef(ServerRef("will@newton", "/tmp/tmux", 1, 1), "$7"),
         "fleet@native-test", 1, 2, 1, 1, "python3", "", "/work",
     )
     item = type("Transcript", (), {"session_id": identity})()
@@ -436,6 +457,58 @@ def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
     monkeypatch.setattr(transcripts, "native_actor", lambda _tree: "")
     [historic] = transcripts.observe([session], {})
     assert historic.transcript_id == identity
+
+    def invalid_actor(_tree):
+        raise RuntimeError("published native actor is empty")
+
+    monkeypatch.setattr(transcripts, "native_actor", invalid_actor)
+    [invalid] = transcripts.observe([session], {})
+    assert invalid.reported_state == "needs-action"
+    assert invalid.summary == "published native actor is empty"
+
+
+def test_native_claude_missing_from_registry_folds_by_published_actor(tmp_path, monkeypatch):
+    from agent_fleet.daemon import Fleet
+    fleet = Fleet()
+    identity = "00000000-0000-0000-0000-000000000001"
+    path = tmp_path / f"{identity}.jsonl"
+    path.write_text("{}\n")
+    item = transcript("claude", path)
+    provider = Session(
+        SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), "$7"),
+        "fleet@native-test", 1, 2, 1, 1, "python3", "", "/work",
+    )
+    actor = Session(
+        SessionRef(ServerRef("will@newton", "", 0, 0, "alan"),
+                   f"claude-{identity}@newton"),
+        "agent-os", 1, 0, 0, 1, "alan", "", "/work", "claude", "waiting",
+        transcript_id=identity,
+    )
+
+    def run(arguments, **_kwargs):
+        output = ("[]" if arguments[:2] == ["claude", "agents"] else
+                  "name=fleet@native-test session=$7 pid=100 command=python3 title=''\n")
+        return type("Result", (), {"stdout": output})()
+
+    monkeypatch.setattr(transcripts.subprocess, "run", run)
+    monkeypatch.setattr(transcripts, "process_tree", lambda: {100: [101]})
+    monkeypatch.setattr(transcripts.os, "readlink", lambda path: (
+        "/usr/bin/claude" if path == "/proc/101/exe" else "/usr/bin/python3"))
+    monkeypatch.setattr(transcripts, "native_actor",
+                        lambda _tree: f"claude-{identity}@newton")
+    monkeypatch.setattr(transcripts, "last_event_time", lambda _path: 3)
+    monkeypatch.setattr(transcripts, "last_human_time", lambda _item: 2)
+    monkeypatch.setattr(transcripts, "latest_assistant_text", lambda _item: "reply")
+
+    [projected] = transcripts.observe(
+        [provider, actor], {("claude", identity): item})
+
+    assert projected.ref == actor.ref
+    assert projected.name == "agent-os"
+    assert projected.attachment == provider.ref
+    fleet.sessions = {"will@newton": [projected]}
+    fleet.unavailable.clear()
+    assert fleet.archive_authority(projected.ref.key)[2]["operation"] == "archive-composite"
 
 
 def test_invalid_provider_transcript_isolated_to_its_session(tmp_path, monkeypatch):
