@@ -1,6 +1,7 @@
 """Finite source-authority mutations for the Fleet action boundary."""
 
 import json
+from pathlib import Path
 
 from . import alan, presentation, tmux, transcripts
 from .config import KINDS
@@ -9,11 +10,11 @@ from .config import KINDS
 FIELDS = {
     "create": {"operation", "agent", "name", "cwd"},
     "rename-alan": {"operation", "actor", "name"},
-    "rename-tmux": {"operation", "source", "name"},
+    "rename-tmux": {"operation", "target", "name"},
     "archive-alan": {"operation", "actor", "agent"},
-    "archive-composite": {"operation", "actor", "agent", "source", "transcript"},
-    "archive-pristine": {"operation", "actor", "agent", "source"},
-    "archive-tmux": {"operation", "source", "agent", "transcript"},
+    "archive-composite": {"operation", "actor", "agent", "target", "transcript"},
+    "archive-pristine": {"operation", "actor", "agent", "target"},
+    "archive-tmux": {"operation", "target", "agent", "transcript"},
     "restore-alan": {"operation", "actor"},
     "restore-native": {"operation", "actor", "agent", "transcript"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
@@ -23,19 +24,24 @@ def execute(request):
     operation = request.get("operation")
     if operation not in FIELDS or set(request) != FIELDS[operation]:
         raise ValueError("invalid authority action")
-    if any(not isinstance(value, str) or not value
-           for name, value in request.items() if name != "operation"):
+    if any(not isinstance(value, str) or (not value and name != "cwd")
+           for name, value in request.items()
+           if name not in {"operation", "target"}):
+        raise ValueError("invalid authority action")
+    if "target" in request and (not isinstance(request["target"], list)
+                                or len(request["target"]) != 4):
         raise ValueError("invalid authority action")
     if operation == "create":
         if request["agent"] not in KINDS:
             raise ValueError("create requires a language-actor kind")
-        addr = alan.create(request["agent"], request["name"], request["cwd"])
+        cwd = request["cwd"] or str(Path.home())
+        addr = alan.create(request["agent"], request["name"], cwd)
         return {"source": f"alan:{addr}"}
     if operation == "rename-alan":
         alan.rename(request["actor"], request["name"])
         return {"name": request["name"]}
     if operation == "rename-tmux":
-        tmux.mutate(request["source"], "rename", [request["name"]])
+        tmux.mutate_target(request["target"], "rename", [request["name"]])
         return {"name": request["name"]}
     if operation == "archive-alan":
         if request["agent"] not in {"llm", "claude", "codex", "grok", "antigravity"}:
@@ -48,19 +54,19 @@ def execute(request):
         if request["agent"] not in {"claude", "codex", "grok"}:
             raise ValueError("archive requires a natively adopted agent")
         transcripts.verify(request["agent"], request["transcript"])
-        tmux.mutate(request["source"], "archive", [])
+        tmux.mutate_target(request["target"], "archive", [])
         alan.retire(request["actor"])
         return {}
     if operation == "archive-pristine":
         if request["agent"] not in {"claude", "codex", "grok"}:
             raise ValueError("archive requires a natively adopted agent")
         alan.verify_pristine(request["actor"])
-        tmux.mutate(request["source"], "archive", [])
+        tmux.mutate_target(request["target"], "archive", [])
         alan.retire(request["actor"])
         return {}
     if operation == "archive-tmux":
         transcripts.verify(request["agent"], request["transcript"])
-        tmux.mutate(request["source"], "archive", [])
+        tmux.mutate_target(request["target"], "archive", [])
         return {}
     if operation == "restore-alan":
         return {"source": f"alan:{alan.resume(request['actor'])}"}

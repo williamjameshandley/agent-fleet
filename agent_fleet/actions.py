@@ -3,9 +3,8 @@ import subprocess
 import shlex
 import json
 import time
-from pathlib import Path
 
-from .config import KINDS, hosts
+from .config import KINDS, runtime_sources
 from .remote import find
 from .daemon import action as fleet_action, history as history_projection, history_search
 from .daemon import preview as pane_preview, snapshot
@@ -54,11 +53,11 @@ def create_tab():
                     "exec /usr/lib/agent-fleet/ui create"], check=True)
 
 
-def _create_human_root(host, agent, name, cwd):
+def _create_human_root(source, agent, name, cwd):
     """Create and present one human-rooted Alan actor for Muster."""
     if os.environ.get("LOOP_SOCKET"):
         raise RuntimeError("Muster create cannot run with an actor socket; use loop.spawn()")
-    value = fleet_action({"operation": "create", "host": host,
+    value = fleet_action({"operation": "create", "source": source,
                           "agent": agent, "name": name, "cwd": cwd})
     key = value["source"]
     viewer.open_main(key)
@@ -67,12 +66,11 @@ def _create_human_root(host, agent, name, cwd):
 
 def create_prompt():
     """Collect Muster input and create one human-rooted actor."""
-    host = muster_input("host", hosts())
-    agent = muster_input("agent", KINDS, context=host)
-    name = muster_input("name", context=f"{host} · {agent}")
-    cwd = muster_input("directory", initial=str(Path.home()),
-                       context=f"{host} · {agent} · {name}") or str(Path.home())
-    return _create_human_root(host, agent, name, cwd)
+    source = muster_input("source", [item.key for item in runtime_sources()])
+    agent = muster_input("agent", KINDS, context=source)
+    name = muster_input("name", context=f"{source} · {agent}")
+    cwd = muster_input("directory", context=f"{source} · {agent} · {name}")
+    return _create_human_root(source, agent, name, cwd)
 
 
 def rename_tab(key):

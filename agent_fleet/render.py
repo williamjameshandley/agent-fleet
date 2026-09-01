@@ -36,7 +36,7 @@ def recency(session):
 
 def order(sessions, unavailable, graph, expanded=(), show_python=False):
     sessions = sorted(sessions,
-                      key=lambda s: (s.ref.server.host in unavailable,
+                      key=lambda s: (s.ref.server.source in unavailable,
                                      STATE_ORDER.get(s.state, 2),
                                      -recency(s), s.ref.key))
     if graph is not None:
@@ -76,7 +76,7 @@ def rows_text(projected, unavailable, width, now=None, revision=None):
         age = max(0, now - timestamp)
         elapsed = ("?" if not timestamp else
                    f"{age // 60}m" if age < 3600 else f"{age // 3600}h")
-        marker = ("?" if session.ref.server.host in unavailable else
+        marker = ("?" if session.ref.server.source in unavailable else
                   {"needs-action": "!", "working": "*", "waiting": ".",
                    "finished": "-"}[session.state])
         agent = {"codex": "X", "shell": ""}.get(

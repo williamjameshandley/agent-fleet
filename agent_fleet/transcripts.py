@@ -13,6 +13,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
+from .config import tmux_command
+
 
 CLAUDE = Path.home() / ".claude/projects"
 CODEX = Path.home() / ".codex/sessions"
@@ -187,9 +189,9 @@ def resume(agent, session_id, name):
                "codex": ["codex", "resume", item.session_id],
                "grok": ["grok", "--resume", item.session_id],
                "antigravity": ["agy", "--conversation", item.session_id]}[agent]
-    subprocess.run(["/usr/bin/tmux", "-N", "new-session", "-d", "-s", name, "-c",
-                    item.cwd() or str(Path.home()), *command], check=True)
-    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name, "status", "on"],
+    subprocess.run(tmux_command("new-session", "-d", "-s", name, "-c",
+                                item.cwd() or str(Path.home()), *command), check=True)
+    subprocess.run(tmux_command("set-option", "-t", name, "status", "on"),
                    check=True)
 
 
@@ -204,17 +206,17 @@ def resume_native(agent, session_id):
     runtime.mkdir(parents=True, exist_ok=True)
     root = tempfile.mkdtemp(prefix=f"{agent}-", dir=runtime)
     name = "fleet@native-" + secrets.token_hex(16)
-    subprocess.run([
-        "/usr/bin/tmux", "-N", "new-session", "-d", "-s", name,
+    subprocess.run(tmux_command(
+        "new-session", "-d", "-s", name,
         "-c", item.cwd() or str(Path.home()),
         "-e", "ALAN_NATIVE_INNER=1", "-e", f"ALAN_NATIVE_ROOT={root}",
         "-e", f"LOOP_PUBLIC_SOCKET={public}",
         "/usr/lib/alan/alan-native-session", agent, *arguments,
-    ], check=True)
-    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name,
-                    "status", "off"], check=True)
-    subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-t", name,
-                    "mouse", "on"], check=True)
+    ), check=True)
+    subprocess.run(tmux_command("set-option", "-t", name,
+                                "status", "off"), check=True)
+    subprocess.run(tmux_command("set-option", "-t", name,
+                                "mouse", "on"), check=True)
 
 
 def event_text(agent, event, role):
@@ -543,7 +545,7 @@ def observe(sessions, transcripts=None):
     children = process_tree()
     rows = []
     sessions_by_id = {session.ref.session_id: session for session in sessions}
-    panes = subprocess.run(["/usr/bin/tmux", "-N", "list-panes", "-a", "-F", PANE_FORMAT],
+    panes = subprocess.run(tmux_command("list-panes", "-a", "-F", PANE_FORMAT),
                            text=True, capture_output=True, check=True).stdout
     for line in panes.splitlines():
         name, session_id, pid, command, title = (

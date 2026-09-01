@@ -22,13 +22,14 @@ import loop
 import networkx as nx
 
 from agent_fleet.model import ServerRef, Session, SessionRef
-from agent_fleet.protocol import decode, decode_graph, decode_observation, encode
+from agent_fleet.protocol import (decode, decode_graph, decode_observation, encode,
+                                  encode_observation)
 from agent_fleet.render import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.transcripts import fold_adopted
 from agent_fleet.tmux import split_key
-from agent_fleet import actions, authority, proc
+from agent_fleet import actions, authority, daemon, proc
 from agent_fleet import alan
-from agent_fleet.config import machine, ssh_environment
+from agent_fleet.config import RuntimeSource, machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
 from agent_fleet.alan import Watcher as AlanWatcher
 from agent_fleet.alan import resume as alan_resume
@@ -62,18 +63,20 @@ def tmux_session_row(session_id, name, human_activity="", **changes):
 
 
 class IdentityTests(unittest.TestCase):
-    SOURCE_A = "lovelace:/tmp/tmux/default:1:1:$1"
-    SOURCE_B = "lovelace:/tmp/tmux/default:1:1:$2"
-    SOURCE_C = "lovelace:/tmp/tmux/default:1:1:$3"
-    SOURCE_D = "lovelace:/tmp/tmux/default:1:1:$4"
-    SOURCE_J = "lovelace:/tmp/tmux/default:1:1:$10"
-    SOURCE_K = "lovelace:/tmp/tmux/default:1:1:$11"
+    SOURCE_A = "will@lovelace:/tmp/tmux/default:1:1:$1"
+    SOURCE_B = "will@lovelace:/tmp/tmux/default:1:1:$2"
+    SOURCE_C = "will@lovelace:/tmp/tmux/default:1:1:$3"
+    SOURCE_D = "will@lovelace:/tmp/tmux/default:1:1:$4"
+    SOURCE_J = "will@lovelace:/tmp/tmux/default:1:1:$10"
+    SOURCE_K = "will@lovelace:/tmp/tmux/default:1:1:$11"
     def session(self, host, sid="$1"):
-        return Session(SessionRef(ServerRef(host, "/tmp/tmux/default", 12, 10), sid),
+        return Session(SessionRef(ServerRef(
+            f"will@{host}", "/tmp/tmux/default", 12, 10), sid),
                        "work", 1, 2, 0, 1, "codex", "waiting", "/work")
 
     def fold_fleet(self):
         host = "lovelace"
+        source = RuntimeSource(host, "will", "/run/alan.sock", "/run/tmux.sock")
         root = f"codex-root@{host}"
         child = f"claude-child@{host}"
         python = f"python-child@{host}"
@@ -90,10 +93,10 @@ class IdentityTests(unittest.TestCase):
         graph.add_node(f"{principal}#1", stream=principal, op="spawn")
         graph.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
         for position, descendant in enumerate((child, python), 1):
-            source = f"{root}#{position}"
-            graph.add_node(source, stream=root, op="spawn")
-            graph.add_edge(source, f"{descendant}#0", key="spawn")
-        server = ServerRef(host, "", 0, 0, "alan")
+            operation = f"{root}#{position}"
+            graph.add_node(operation, stream=root, op="spawn")
+            graph.add_edge(operation, f"{descendant}#0", key="spawn")
+        server = ServerRef(source.key, "", 0, 0, "alan")
         sessions = [
             Session(SessionRef(server, actor), actor, 1, 0, 0, 1, "alan", "",
                     "/work", kind, "waiting")
@@ -101,7 +104,10 @@ class IdentityTests(unittest.TestCase):
                                 (python, "python"))
         ]
         fleet = Fleet()
-        fleet.sessions = {host: sessions}
+        graph = daemon.qualify_graph(graph, source)
+        root, child, python = (f"alan:{source.key}:{actor}"
+                               for actor in (root, child, python))
+        fleet.sessions = {source.key: sessions}
         fleet.unavailable = set()
         fleet.observed = fleet.view_revision = 1
         fleet._composed = (fleet.observed, graph)
@@ -211,29 +217,30 @@ class IdentityTests(unittest.TestCase):
         sessions[0] = replace(
             sessions[0],
             attachment=SessionRef(
-                ServerRef("newton", "/tmp/tmux/native", 44, 12), "$9"
+                ServerRef("will@newton", "/tmp/tmux/native", 44, 12), "$9"
             ),
         )
         encoded = json.loads(encode(sessions))
-        self.assertEqual(set(encoded), {"version", "sessions", "usage", "unavailable"})
+        self.assertEqual(
+            set(encoded), {"version", "sessions", "usage", "unavailable", "alan"})
         self.assertEqual(encoded["sessions"][0]["server"]["kind"], "tmux")
         self.assertEqual(decode(json.dumps(encoded)), sessions)
         with self.assertRaisesRegex(ValueError, "unsupported Fleet protocol version"):
-            decode('{"version":2,"sessions":[],"usage":{},"unavailable":[]}')
+            decode('{"version":1,"sessions":[],"usage":{},"unavailable":[],"alan":null}')
 
     def test_composite_actor_operations_use_the_exact_provider_attachment(self):
         fleet = Fleet()
-        actor = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
+        actor = SessionRef(ServerRef("will@newton", "", 0, 0, "alan"),
                            "codex-a@newton")
         attachment = SessionRef(
-            ServerRef("newton", "/tmp/tmux/native", 44, 12), "$9"
+            ServerRef("will@newton", "/tmp/tmux/native", 44, 12), "$9"
         )
         session = replace(self.session("newton"), ref=actor, attachment=attachment)
-        fleet.sessions = {"newton": [session]}
+        fleet.sessions = {"will@newton": [session]}
         fleet.unavailable = set()
         process = mock.Mock(stdin=mock.Mock())
         process.stdin.drain = mock.AsyncMock()
-        fleet.processes = {"newton": process}
+        fleet.processes = {"will@newton": process}
 
         async def exercise():
             preview = asyncio.create_task(fleet.preview(actor.key, 80, 24))
@@ -248,7 +255,8 @@ class IdentityTests(unittest.TestCase):
 
         asyncio.run(exercise())
         requests = [json.loads(call.args[0]) for call in process.stdin.write.call_args_list]
-        self.assertEqual(requests[0]["key"], attachment.key)
+        self.assertEqual(requests[0]["target"],
+                         ["/tmp/tmux/native", 44, 12, "$9"])
         self.assertEqual(requests[1]["target"],
                          ["/tmp/tmux/native", 44, 12, "$9"])
 
@@ -256,14 +264,15 @@ class IdentityTests(unittest.TestCase):
         host = os.uname().nodename.split(".", 1)[0]
         identity = "00000000-0000-0000-0000-000000000001"
         actor = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"),
+            SessionRef(ServerRef(f"will@{host}", "", 0, 0, "alan"),
                        f"codex-{identity}@{host}"),
             "actor", 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting",
             transcript_id=identity,
         )
         provider = replace(
             self.session(host, "$9"),
-            ref=SessionRef(ServerRef(host, "/tmp/tmux/native", 44, 12), "$9"),
+            ref=SessionRef(ServerRef(
+                f"will@{host}", "/tmp/tmux/native", 44, 12), "$9"),
             transcript_id=identity,
         )
         [composite] = fold_adopted([provider, actor])
@@ -274,6 +283,8 @@ class IdentityTests(unittest.TestCase):
 
         def daemon(request):
             requests.append(request)
+            if request.startswith("cleanup "):
+                return json.dumps({"ok": True})
             if request.startswith("resolve "):
                 return json.dumps({
                     "agent": current.agent,
@@ -291,6 +302,8 @@ class IdentityTests(unittest.TestCase):
         )
         state = viewer.Attachment("main", "/dev/pts/8", ui)
         state.daemon = daemon
+        state.ensure_master = mock.Mock(return_value=(123, 456))
+        state.ssh = mock.Mock(return_value=mock.Mock(stdout="/dev/pts/10\n"))
         state.open(actor.ref.key)
         state.clear()
 
@@ -317,7 +330,7 @@ class IdentityTests(unittest.TestCase):
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         with mock.patch.object(state, "find", return_value=session), \
              self.assertRaises(viewer.ViewerFailure) as raised:
-            state.resolve(f"alan:{actor}")
+            state.resolve(f"alan:will@newton:{actor}")
         self.assertEqual((raised.exception.stage, raised.exception.cause),
                          ("resolve", "unavailable"))
 
@@ -326,7 +339,7 @@ class IdentityTests(unittest.TestCase):
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         with mock.patch.object(state, "find", return_value=session), \
              self.assertRaises(viewer.ViewerFailure) as raised:
-            state.resolve("alan:codex-1@newton")
+            state.resolve("alan:will@newton:codex-1@newton")
         self.assertEqual((raised.exception.stage, raised.exception.cause,
                           raised.exception.error_type),
                          ("resolve", "invalid_identity", "AttributeError"))
@@ -387,7 +400,7 @@ class IdentityTests(unittest.TestCase):
         )
 
         fleet = Fleet()
-        fleet.graphs = {"newton": newton, "lovelace": lovelace}
+        fleet.graphs = {"will@newton": newton, "will@lovelace": lovelace}
         fleet.observed = 1
         composed = fleet.composed_graph()
 
@@ -410,23 +423,24 @@ class IdentityTests(unittest.TestCase):
             composed,
         )
 
-    def test_host_observation_decodes_sessions_and_graph_from_one_json_parse(self):
+    def test_source_observation_decodes_sessions_and_graph_from_one_json_parse(self):
         graph = nx.MultiDiGraph()
         graph.graph["actors"] = []
-        raw = encode([self.session("lovelace")], {}, [], graph)
+        source = RuntimeSource("lovelace", "will", "/run/alan", "/run/tmux")
+        raw = encode_observation([self.session("lovelace")], True, graph)
         with mock.patch("agent_fleet.protocol.json.loads",
                         wraps=json.loads) as loads:
-            sessions, usage, unavailable, decoded = decode_observation(raw)
+            sessions, available, decoded = decode_observation(raw, source)
         loads.assert_called_once_with(raw)
         self.assertEqual(len(sessions), 1)
-        self.assertEqual((usage, unavailable), ({}, []))
+        self.assertTrue(available)
         self.assertEqual(decoded.graph["actors"], [])
 
     def test_composed_graph_recomposes_only_per_observation_generation(self):
         graph = nx.MultiDiGraph()
         graph.graph["actors"] = [{"addr": "a@h", "kind": "codex"}]
         fleet = Fleet()
-        fleet.graphs = {"lovelace": graph}
+        fleet.graphs = {"will@lovelace": graph}
         fleet.observed = 1
         first = fleet.composed_graph()
         self.assertIs(fleet.composed_graph(), first)
@@ -466,7 +480,7 @@ class IdentityTests(unittest.TestCase):
     def test_daemon_resolves_one_exact_live_descriptor_without_snapshot(self):
         fleet = Fleet()
         session = self.session("lovelace")
-        fleet.sessions = {"lovelace": [session]}
+        fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable = set()
         writer = mock.Mock()
         writer.drain = mock.AsyncMock()
@@ -480,28 +494,31 @@ class IdentityTests(unittest.TestCase):
         asyncio.run(exercise())
         self.assertEqual(json.loads(writer.write.call_args.args[0]),
                          {"agent": session.agent, "state": session.state,
-                          "cwd": session.cwd, "attachment": ""})
+                          "cwd": session.cwd, "attachment": "",
+                          "tmux_socket": "/tmp/tmux-1000/default"})
 
     def test_daemon_resolve_restores_a_missing_native_provider_attachment(self):
         fleet = Fleet()
         actor = "codex-full-id@lovelace"
         session = Session(
-            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), actor),
             "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
             "full-id")
-        attachment = SessionRef(ServerRef("lovelace", "/tmp/tmux/default", 12, 10), "$9")
+        attachment = SessionRef(ServerRef(
+            "will@lovelace", "/tmp/tmux/default", 12, 10), "$9")
         restored = replace(session, attachment=attachment)
-        fleet.sessions = {"lovelace": [session]}
+        fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
         graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
+                                  "kind": "codex",
                                   "evaluator": "native", "managed": False}]
         fleet._composed = (fleet.observed, graph)
         writer = mock.Mock()
         writer.drain = mock.AsyncMock()
 
         async def wait(*_args):
-            fleet.sessions = {"lovelace": [restored]}
+            fleet.sessions = {"will@lovelace": [restored]}
             return session.ref.key
 
         async def exercise():
@@ -511,7 +528,7 @@ class IdentityTests(unittest.TestCase):
             with mock.patch.object(fleet, "authority", mock.AsyncMock()) as authority, \
                  mock.patch.object(fleet, "wait_for_source", side_effect=wait) as waiting:
                 await fleet.reply(reader, writer)
-            authority.assert_awaited_once_with("lovelace", {
+            authority.assert_awaited_once_with("will@lovelace", {
                 "operation": "restore-native", "actor": actor,
                 "agent": "codex", "transcript": "full-id"})
             waiting.assert_awaited_once()
@@ -519,21 +536,24 @@ class IdentityTests(unittest.TestCase):
         asyncio.run(exercise())
         self.assertEqual(json.loads(writer.write.call_args.args[0]),
                          {"agent": "codex", "state": "waiting", "cwd": "/work",
-                          "attachment": attachment.key})
+                          "attachment": attachment.key,
+                          "tmux_socket": "/tmp/tmux-1000/default"})
 
     def test_native_restore_is_shared_by_concurrent_opens(self):
         fleet = Fleet()
         actor = "codex-full-id@lovelace"
         session = Session(
-            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), actor),
             "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
             "full-id")
-        attachment = SessionRef(ServerRef("lovelace", "/tmp/tmux/default", 12, 10), "$9")
+        attachment = SessionRef(ServerRef(
+            "will@lovelace", "/tmp/tmux/default", 12, 10), "$9")
         restored = replace(session, attachment=attachment)
-        fleet.sessions = {"lovelace": [session]}
+        fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
         graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
+                                  "kind": "codex",
                                   "evaluator": "native", "managed": False}]
         fleet._composed = (fleet.observed, graph)
         launched = asyncio.Event()
@@ -544,7 +564,7 @@ class IdentityTests(unittest.TestCase):
             await release.wait()
 
         async def wait(*_args):
-            fleet.sessions = {"lovelace": [restored]}
+            fleet.sessions = {"will@lovelace": [restored]}
             return session.ref.key
 
         async def exercise():
@@ -564,14 +584,16 @@ class IdentityTests(unittest.TestCase):
         fleet = Fleet()
         actor = "codex-full-id@lovelace"
         session = Session(
-            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), actor),
             "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
             "full-id")
-        attachment = SessionRef(ServerRef("lovelace", "/tmp/tmux/default", 12, 10), "$9")
-        fleet.sessions = {"lovelace": [session]}
+        attachment = SessionRef(ServerRef(
+            "will@lovelace", "/tmp/tmux/default", 12, 10), "$9")
+        fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
         graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
+                                  "kind": "codex",
                                   "evaluator": "native", "managed": False}]
         fleet._composed = (fleet.observed, graph)
         launched = asyncio.Event()
@@ -582,7 +604,8 @@ class IdentityTests(unittest.TestCase):
             await release.wait()
 
         async def wait(*_args):
-            fleet.sessions = {"lovelace": [replace(session, attachment=attachment)]}
+            fleet.sessions = {"will@lovelace": [replace(
+                session, attachment=attachment)]}
             return session.ref.key
 
         async def exercise():
@@ -608,13 +631,14 @@ class IdentityTests(unittest.TestCase):
         fleet = Fleet()
         actor = "codex-full-id@lovelace"
         session = Session(
-            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), actor),
             "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting", "", 0,
             "full-id")
-        fleet.sessions = {"lovelace": [session]}
+        fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
         graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
+                                  "kind": "codex",
                                   "evaluator": "native", "managed": False}]
         fleet._composed = (fleet.observed, graph)
 
@@ -630,12 +654,13 @@ class IdentityTests(unittest.TestCase):
         fleet = Fleet()
         actor = "codex-full-id@lovelace"
         session = Session(
-            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), actor),
+            SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), actor),
             "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting")
-        fleet.sessions = {"lovelace": [session]}
+        fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
         graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": actor, "kind": "codex",
+        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
+                                  "kind": "codex",
                                   "evaluator": "native", "managed": False}]
         fleet._composed = (fleet.observed, graph)
 
@@ -651,13 +676,14 @@ class IdentityTests(unittest.TestCase):
     def test_warm_switch_restores_before_addressing_the_presentation(self):
         fleet = Fleet()
         session = self.session("lovelace")
-        attachment = SessionRef(ServerRef("lovelace", "/tmp/tmux/default", 12, 10), "$9")
+        attachment = SessionRef(ServerRef(
+            "will@lovelace", "/tmp/tmux/default", 12, 10), "$9")
         restored = replace(session, attachment=attachment)
-        fleet.sessions = {"lovelace": [session]}
+        fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
         process = mock.Mock(stdin=mock.Mock())
         process.stdin.drain = mock.AsyncMock()
-        fleet.processes = {"lovelace": process}
+        fleet.processes = {"will@lovelace": process}
 
         async def exercise():
             with mock.patch.object(
@@ -667,9 +693,10 @@ class IdentityTests(unittest.TestCase):
                 request = json.loads(process.stdin.write.call_args.args[0])
                 self.assertEqual(request["target"],
                                  ["/tmp/tmux/default", 12, 10, "$9"])
-                fleet.host_reply({"switch": 1,
-                                  "target": ["/tmp/tmux/default", 12, 10, "$9"],
-                                  "duration": .001})
+                fleet.source_reply("will@lovelace", {
+                    "switch": 1,
+                    "target": ["/tmp/tmux/default", 12, 10, "$9"],
+                    "duration": .001})
                 await pending
             ensure.assert_awaited_once_with(session.ref.key)
 
@@ -678,7 +705,7 @@ class IdentityTests(unittest.TestCase):
     def test_daemon_refuses_to_resolve_a_pending_archive(self):
         fleet = Fleet()
         session = self.session("lovelace")
-        fleet.sessions = {"lovelace": [session]}
+        fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable = set()
         fleet.pending_archives.add(session.ref.key)
         writer = mock.Mock()
@@ -715,7 +742,7 @@ class IdentityTests(unittest.TestCase):
     def test_daemon_switch_reply_carries_the_human_label(self):
         fleet = Fleet()
         session = replace(self.session("lovelace"), name="Calendar")
-        fleet.sessions = {"lovelace": [session]}
+        fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
         writer = mock.Mock()
         writer.drain = mock.AsyncMock()
@@ -739,16 +766,17 @@ class IdentityTests(unittest.TestCase):
 
     def test_alan_switch_carries_the_selected_presentation_descriptor(self):
         host = "lovelace"
+        source = "will@lovelace"
         actor = f"llm-one@{host}"
         session = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"), actor),
+            SessionRef(ServerRef(source, "", 0, 0, "alan"), actor),
             "fixture", 1, 0, 0, 1, "alan", "", "/work", "llm")
         fleet = Fleet()
-        fleet.sessions = {host: [session]}
+        fleet.sessions = {source: [session]}
         fleet.unavailable.clear()
         process = mock.Mock()
         process.stdin.drain = mock.AsyncMock()
-        fleet.processes = {host: process}
+        fleet.processes = {source: process}
 
         async def exercise():
             pending = asyncio.create_task(
@@ -759,18 +787,19 @@ class IdentityTests(unittest.TestCase):
                 "switch": 1, "client": "/dev/pts/8", "actor": actor,
                 "agent": "llm", "cwd": "/work",
             })
-            fleet.host_reply({"switch": 1, "target": ["/tmp/tmux", 12, 10, "$1"],
-                              "duration": .001})
+            fleet.source_reply(source, {
+                "switch": 1, "target": ["/tmp/tmux", 12, 10, "$1"],
+                "duration": .001})
             self.assertEqual(await pending,
                              (("/tmp/tmux", 12, 10, "$1"), .001,
                               "fixture", "lovelace"))
 
         asyncio.run(exercise())
 
-    def test_alan_key_uses_its_host_bound_actor_identity_once(self):
-        ref = SessionRef(ServerRef("newton", "", 0, 0, "alan"),
+    def test_alan_key_qualifies_the_actor_with_its_exact_source(self):
+        ref = SessionRef(ServerRef("will@newton", "", 0, 0, "alan"),
                          "codex-a@newton")
-        self.assertEqual(ref.key, "alan:codex-a@newton")
+        self.assertEqual(ref.key, "alan:will@newton:codex-a@newton")
 
     def test_viewer_open_has_no_actor_creation_or_resume_path(self):
         source = (Path(__file__).parents[1] / "agent_fleet/viewer.py").read_text()
@@ -779,21 +808,21 @@ class IdentityTests(unittest.TestCase):
 
     def test_preview_daemon_rejects_stale_and_malformed_keys_before_dispatch(self):
         fleet = Fleet()
-        fleet.sessions = {"lovelace": [self.session("lovelace")]}
+        fleet.sessions = {"will@lovelace": [self.session("lovelace")]}
         for key in ["lovelace:/tmp/tmux/default:12:10:$gone", "malformed"]:
             with self.assertRaises(RuntimeError) as raised:
                 asyncio.run(fleet.preview(key))
             self.assertEqual(str(raised.exception), f"source is not in the current projection: {key}")
 
-        fleet.unavailable = {"lovelace"}
+        fleet.unavailable = {"will@lovelace"}
         with self.assertRaises(RuntimeError) as raised:
             asyncio.run(fleet.preview(self.session("lovelace").ref.key))
         self.assertEqual(
-            str(raised.exception), "lovelace is disconnected; refusing action"
+            str(raised.exception), "will@lovelace is disconnected; refusing action"
         )
 
         fleet.unavailable.clear()
-        fleet.tmux_unavailable = {"lovelace"}
+        fleet.tmux_unavailable = {"will@lovelace"}
         with self.assertRaisesRegex(RuntimeError, "tmux server is unavailable"):
             asyncio.run(fleet.preview(self.session("lovelace").ref.key))
 
@@ -860,11 +889,13 @@ class IdentityTests(unittest.TestCase):
             ssh = bin_dir / "ssh"
             ssh.write_text(
                 "#!/bin/sh\n"
-                f"exec {sys.executable} -c "
-                "'from agent_fleet.daemon import projection; print(projection(), end=\"\")'\n"
+                "exec /bin/sh -c \"$5\"\n"
             )
             ssh.chmod(0o755)
             host = os.uname().nodename
+            source = RuntimeSource(
+                host, "will", str(alan_socket),
+                str(tmux_runtime / f"tmux-{os.getuid()}" / "default"))
             fleet = Fleet()
             stopped = threading.Event()
             emit_update = threading.Event()
@@ -911,7 +942,6 @@ class IdentityTests(unittest.TestCase):
             label_path.parent.mkdir(parents=True)
             label_path.write_text("needle row\n")
             (config / "agent-fleet").mkdir(parents=True)
-            (config / "agent-fleet" / "hosts").write_text(host + "\n")
 
             def serve_watch():
                 with socket.socket(socket.AF_UNIX) as server:
@@ -1011,11 +1041,11 @@ class IdentityTests(unittest.TestCase):
                 async def exercise():
                     reply_server = await asyncio.start_unix_server(
                         fleet.reply, str(fleet_socket))
-                    collector = asyncio.create_task(fleet.collect(host))
+                    collector = asyncio.create_task(fleet.collect(source))
                     try:
                         await wait_for(
-                            lambda: fleet.sessions.get(host)
-                            and fleet.sessions[host][0].name == "needle row"
+                            lambda: fleet.sessions.get(source.key)
+                            and fleet.sessions[source.key][0].name == "needle row"
                         )
                         await fleet.refresh_muster()
                         await wait_for(
@@ -1040,8 +1070,8 @@ class IdentityTests(unittest.TestCase):
 
                         emit_update.set()
                         await wait_for(
-                            lambda: fleet.sessions.get(host)
-                            and fleet.sessions[host][0].state == "working"
+                            lambda: fleet.sessions.get(source.key)
+                            and fleet.sessions[source.key][0].state == "working"
                             and fleet.refresh_pending
                         )
                         await asyncio.sleep(.2)
@@ -1255,7 +1285,7 @@ class IdentityTests(unittest.TestCase):
                     graph.add_edge(source, target, key="spawn")
 
                 with mock.patch.dict(os.environ, environment, clear=True):
-                    sessions = tmux.inventory(host, descriptors)
+                    sessions = tmux.inventory(f"will@{host}", descriptors)
                     projected_graph = alan.projection_graph(graph)
                     projected = render.order(
                         sessions, [], projected_graph, show_python=True)
@@ -1473,7 +1503,7 @@ class IdentityTests(unittest.TestCase):
         session = self.session(os.uname().nodename)
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         state.source = "old"
-        state.host = os.uname().nodename.split(".", 1)[0]
+        state.host = f"will@{os.uname().nodename.split('.', 1)[0]}"
         entry = mock.Mock(client="/dev/pts/8", source="old")
         state.attachments[state.host] = entry
         with mock.patch.object(state, "ui_windows", return_value={entry.window}), \
@@ -1489,10 +1519,11 @@ class IdentityTests(unittest.TestCase):
         session = self.session(os.uname().nodename)
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         host = os.uname().nodename.split(".", 1)[0]
+        source = f"will@{host}"
         stale = mock.Mock(window="@2", client="/dev/pts/8", source="old")
         fresh = mock.Mock(window="@3", client="/dev/pts/10", source=session.ref.key)
-        state.source = "old"; state.host = host
-        state.attachments[host] = stale
+        state.source = "old"; state.host = source
+        state.attachments[source] = stale
 
         def remove(removed, _reason):
             state.attachments.pop(removed)
@@ -1503,20 +1534,26 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "select_host"):
             state.open(session.ref.key)
-        removed.assert_called_once_with(host, "missing")
+        removed.assert_called_once_with(source, "missing")
         switch.assert_not_called()
-        self.assertIs(state.attachments[host], fresh)
+        self.assertIs(state.attachments[source], fresh)
         self.assertEqual(state.source, session.ref.key)
 
-    def test_initial_local_attachment_does_not_request_nested_tmux(self):
+    def test_same_host_attachment_uses_the_exact_source_login(self):
         ui = mock.Mock()
-        ui.command.side_effect = [["@2"], ["/dev/pts/8"]]
+        ui.command.side_effect = [["@2"]]
         state = viewer.Attachment("main", "/dev/pts/9", ui)
+        source = f"will@{os.uname().nodename.split('.', 1)[0]}"
         with mock.patch.object(state, "resolve", return_value=("/tmp/tmux", 12, 10, "$1")), \
+             mock.patch.object(state, "ensure_master", return_value=(123, 456)), \
+             mock.patch.object(state, "reclaim_marker"), \
+             mock.patch.object(state, "ssh",
+                               return_value=mock.Mock(stdout="/dev/pts/8\n")) as ssh, \
              mock.patch.object(state, "prove_switch"):
-            entry = state.create_host(os.uname().nodename.split(".", 1)[0], "source")
+            entry = state.create_host(source, "source")
         command = ui.command.call_args_list[0].args[0][-1]
-        self.assertIn("env -u TMUX -u TMUX_PANE", command)
+        self.assertIn(f"ssh -tt -o BatchMode=yes {source}", command)
+        ssh.assert_called_with(source, mock.ANY, capture=True)
         self.assertEqual((entry.window, entry.client), ("@2", "/dev/pts/8"))
 
     def test_cold_attachment_retries_only_until_tmux_registers_its_client(self):
@@ -1676,16 +1713,17 @@ class IdentityTests(unittest.TestCase):
         state.host = "old-host"
         state.attachments = {
             "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
-            "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
-        with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
+            "will@new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
+        sources = [RuntimeSource("new-host", "will", "/run/alan", "/run/tmux")]
+        with mock.patch.object(viewer, "runtime_sources", return_value=sources), \
              mock.patch.object(state, "ui_windows",
-                               return_value={state.attachments["new-host"].window}), \
+                               return_value={state.attachments["will@new-host"].window}), \
              mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "select_host", side_effect=RuntimeError("UI failed")):
             with self.assertRaisesRegex(RuntimeError, "UI failed"):
-                state.open("new-host:/tmp/tmux/default:12:10:$1")
+                state.open("will@new-host:/tmp/tmux/default:12:10:$1")
         self.assertEqual(switch.call_args_list, [
-            mock.call("new-host:/tmp/tmux/default:12:10:$1", "/dev/pts/2"),
+            mock.call("will@new-host:/tmp/tmux/default:12:10:$1", "/dev/pts/2"),
             mock.call("prior-new", "/dev/pts/2")])
         self.assertEqual((state.source, state.host), ("old-source", "old-host"))
 
@@ -1695,34 +1733,37 @@ class IdentityTests(unittest.TestCase):
         state.host = "old-host"
         state.attachments = {
             "old-host": mock.Mock(source="old-source", client="/dev/pts/1"),
-            "new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
-        with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
+            "will@new-host": mock.Mock(source="prior-new", client="/dev/pts/2")}
+        sources = [RuntimeSource("new-host", "will", "/run/alan", "/run/tmux")]
+        with mock.patch.object(viewer, "runtime_sources", return_value=sources), \
              mock.patch.object(state, "ui_windows",
-                               return_value={state.attachments["new-host"].window}), \
+                               return_value={state.attachments["will@new-host"].window}), \
              mock.patch.object(
                 state, "resident_switch",
                 side_effect=[None, RuntimeError("rollback failed")]), \
              mock.patch.object(state, "select_host", side_effect=RuntimeError("UI failed")), \
              mock.patch.object(state, "remove_host") as remove:
             with self.assertRaisesRegex(RuntimeError, "UI failed"):
-                state.open("new-host:/tmp/tmux/default:12:10:$1")
-        remove.assert_called_once_with("new-host", "rollback_failed")
+                state.open("will@new-host:/tmp/tmux/default:12:10:$1")
+        remove.assert_called_once_with("will@new-host", "rollback_failed")
         self.assertEqual((state.source, state.host), ("old-source", "old-host"))
 
     def test_cross_host_open_retains_both_host_windows(self):
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
         old = mock.Mock(source="old-source", client="/dev/pts/1", window="@1")
         new = mock.Mock(source="prior-new", client="/dev/pts/2", window="@2")
-        state.attachments = {"old-host": old, "new-host": new}
+        state.attachments = {"old-host": old, "will@new-host": new}
         state.source = "old-source"; state.host = "old-host"
-        with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"new-host"})), \
+        sources = [RuntimeSource("new-host", "will", "/run/alan", "/run/tmux")]
+        with mock.patch.object(viewer, "runtime_sources", return_value=sources), \
              mock.patch.object(state, "ui_windows", return_value={new.window}), \
              mock.patch.object(state, "resident_switch"), \
              mock.patch.object(state, "select_host"):
-            state.open("new-host:/tmp/tmux/default:12:10:$1")
-        self.assertEqual(set(state.attachments), {"old-host", "new-host"})
+            state.open("will@new-host:/tmp/tmux/default:12:10:$1")
+        self.assertEqual(set(state.attachments), {"old-host", "will@new-host"})
         self.assertEqual((state.host, state.source),
-                         ("new-host", "new-host:/tmp/tmux/default:12:10:$1"))
+                         ("will@new-host",
+                          "will@new-host:/tmp/tmux/default:12:10:$1"))
 
     def test_real_ui_windows_survive_display_detach_and_cross_host_selection(self):
         root = Path(__file__).parents[1]
@@ -1753,20 +1794,22 @@ class IdentityTests(unittest.TestCase):
                     window = control.command(
                         ["new-window", "-d", "-P", "-F", "#{window_id}",
                          "-t", "fleet@test", "-n", host, command])[0]
-                    entries[host] = mock.Mock(
+                    key = f"will@{host}"
+                    entries[key] = mock.Mock(
                         window=window,
                         client=state.ui_value(window, "#{pane_tty}"),
-                        source=f"{host}:/tmp/tmux/default:1:1:$1",
+                        source=f"{key}:/tmp/tmux/default:1:1:$1",
                         remote_file=None, master=None)
                 state.attachments = entries
-                state.host = "lovelace"; state.source = entries["lovelace"].source
+                state.host = "will@lovelace"
+                state.source = entries["will@lovelace"].source
                 identities = {
                     host: (entry.window,
                            state.ui_value(entry.window, "#{pane_pid}"), entry.client)
                     for host, entry in entries.items()}
                 with mock.patch.object(state, "resident_switch"):
-                    state.open(entries["newton"].source)
-                    state.open(entries["lovelace"].source)
+                    state.open(entries["will@newton"].source)
+                    state.open(entries["will@lovelace"].source)
                 self.assertEqual(
                     {host: (entry.window,
                             state.ui_value(entry.window, "#{pane_pid}"), entry.client)
@@ -1791,19 +1834,21 @@ class IdentityTests(unittest.TestCase):
                 control.command(["detach-client", "-t", display_clients[0]])
                 display.wait(timeout=2); os.close(master); display = None
                 self.assertIsNone(control_process.poll())
-                self.assertEqual(set(state.attachments), {"lovelace", "newton"})
-                self.assertEqual(state.source, entries["lovelace"].source)
+                self.assertEqual(set(state.attachments),
+                                 {"will@lovelace", "will@newton"})
+                self.assertEqual(state.source, entries["will@lovelace"].source)
                 control.command(["new-session", "-d", "-s", "fleet@other",
                                  "sleep 30"])
-                index = state.ui_value(entries["lovelace"].window,
+                index = state.ui_value(entries["will@lovelace"].window,
                                        "#{window_index}")
-                control.command(["link-window", "-s", entries["lovelace"].window,
+                control.command(["link-window", "-s",
+                                 entries["will@lovelace"].window,
                                  "-t", "=fleet@other:"])
                 control.command(["unlink-window", "-t",
                                  f"=fleet@test:{index}"])
                 self.assertEqual(state.check(),
                                  "Viewer attachment exited unexpectedly")
-                self.assertEqual(set(state.attachments), {"newton"})
+                self.assertEqual(set(state.attachments), {"will@newton"})
                 self.assertEqual(state.source, "")
             finally:
                 if display and display.poll() is None:
@@ -1881,19 +1926,21 @@ class IdentityTests(unittest.TestCase):
 
     def test_repeated_remote_open_retains_master_and_interactive_client(self):
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
-        state.source = "remote:/tmp/tmux/default:12:10:$1"
-        state.host = "remote"
+        state.source = "will@remote:/tmp/tmux/default:12:10:$1"
+        state.host = "will@remote"
         entry = mock.Mock(source=state.source, client="/dev/pts/8", window="@2")
-        state.attachments["remote"] = entry
-        with mock.patch.object(viewer, "SOURCE_HOSTS", frozenset({"remote"})), \
+        state.attachments["will@remote"] = entry
+        sources = [RuntimeSource("remote", "will", "/run/alan", "/run/tmux")]
+        with mock.patch.object(viewer, "runtime_sources", return_value=sources), \
              mock.patch.object(state, "ui_windows", return_value={entry.window}), \
              mock.patch.object(state, "resident_switch") as switch, \
              mock.patch.object(state, "create_host") as create, \
              mock.patch.object(state, "select_host") as select:
-            state.open("remote:/tmp/tmux/default:12:10:$2")
-        switch.assert_called_once_with("remote:/tmp/tmux/default:12:10:$2", "/dev/pts/8")
+            state.open("will@remote:/tmp/tmux/default:12:10:$2")
+        switch.assert_called_once_with(
+            "will@remote:/tmp/tmux/default:12:10:$2", "/dev/pts/8")
         create.assert_not_called(); select.assert_not_called()
-        self.assertIs(state.attachments["remote"], entry)
+        self.assertIs(state.attachments["will@remote"], entry)
 
     def test_remote_start_retries_until_the_allocated_client_is_registered(self):
         ui = mock.Mock()
@@ -1994,28 +2041,30 @@ class IdentityTests(unittest.TestCase):
 
     def test_create_materializes_codex_as_an_alan_actor(self):
         host = os.uname().nodename
+        source = f"will@{host}"
         with mock.patch.dict(os.environ, {"LOOP_SOCKET": ""}), \
              mock.patch("agent_fleet.actions.muster_input",
-                        side_effect=[host, "codex", "analysis.", "/work"]) as prompt, \
+                        side_effect=[source, "codex", "analysis.", "/work"]) as prompt, \
              mock.patch("agent_fleet.actions.fleet_action",
-                        return_value={"source": f"alan:codex-deadbeef@{host}"}) as action, \
+                        return_value={"source": f"alan:{source}:codex-deadbeef@{host}"}) as action, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
             actions.create_prompt()
         self.assertEqual(
             prompt.call_args_list[1],
             mock.call("agent", ("claude", "codex", "grok", "antigravity", "llm"),
-                      context=host))
-        action.assert_called_once_with({"operation": "create", "host": host,
+                      context=source))
+        action.assert_called_once_with({"operation": "create", "source": source,
                                        "agent": "codex", "name": "analysis.",
                                        "cwd": "/work"})
-        show.assert_called_once_with(f"alan:codex-deadbeef@{host}")
+        show.assert_called_once_with(f"alan:{source}:codex-deadbeef@{host}")
 
     def test_muster_create_rejects_an_actor_socket(self):
         host = os.uname().nodename
         with mock.patch.dict(os.environ, {"LOOP_SOCKET": "/actor/loop.sock"}), \
              mock.patch("agent_fleet.actions.fleet_action") as action:
             with self.assertRaisesRegex(RuntimeError, "use loop.spawn"):
-                actions._create_human_root(host, "codex", "analysis.", "/work")
+                actions._create_human_root(
+                    f"will@{host}", "codex", "analysis.", "/work")
         action.assert_not_called()
 
     def test_create_is_not_a_public_python_action(self):
@@ -2027,21 +2076,23 @@ class IdentityTests(unittest.TestCase):
 
     def test_create_uses_claudes_existing_provider_presentation(self):
         host = "newton" if os.uname().nodename != "newton" else "lovelace"
+        source = f"will@{host}"
         with mock.patch.dict(os.environ, {"LOOP_SOCKET": ""}), \
              mock.patch("agent_fleet.actions.muster_input",
-                        side_effect=[host, "claude", "analysis", "/work"]) as prompt, \
+                        side_effect=[source, "claude", "analysis", "/work"]) as prompt, \
              mock.patch("agent_fleet.actions.fleet_action",
-                        return_value={"source": f"alan:claude-deadbeef@{host}"}) as action, \
+                        return_value={
+                            "source": f"alan:{source}:claude-deadbeef@{host}"}) as action, \
              mock.patch("agent_fleet.actions.viewer.open_main") as show:
             actions.create_prompt()
         self.assertEqual(
             prompt.call_args_list[1],
             mock.call("agent", ("claude", "codex", "grok", "antigravity", "llm"),
-                      context=host))
-        action.assert_called_once_with({"operation": "create", "host": host,
+                      context=source))
+        action.assert_called_once_with({"operation": "create", "source": source,
                                        "agent": "claude", "name": "analysis",
                                        "cwd": "/work"})
-        show.assert_called_once_with(f"alan:claude-deadbeef@{host}")
+        show.assert_called_once_with(f"alan:{source}:claude-deadbeef@{host}")
         self.assertNotIn('"tmux", "new-session"',
                          (Path(__file__).parents[1] / "agent_fleet/actions.py").read_text())
 
@@ -2062,61 +2113,64 @@ class IdentityTests(unittest.TestCase):
     def test_create_rejects_unknown_agent_before_process_creation(self):
         fleet = Fleet()
         fleet.unavailable.clear()
-        with mock.patch("agent_fleet.daemon.hosts", return_value=["lovelace"]), \
-             mock.patch.object(fleet, "authority") as execute:
+        with mock.patch.object(fleet, "authority") as execute:
             with self.assertRaisesRegex(ValueError, "language-actor kind"):
-                asyncio.run(fleet.action({"operation": "create", "host": "lovelace",
+                asyncio.run(fleet.action({"operation": "create",
+                                          "source": "will@lovelace",
                                           "agent": "python", "name": "work",
                                           "cwd": "/work"}))
         execute.assert_not_awaited()
 
     def test_daemon_bare_llm_create_does_not_wait_for_provider_attachment(self):
         host = "lovelace"
+        source = "will@lovelace"
         fleet = Fleet()
         fleet.unavailable.clear()
-        actor = alan_inventory(host, [{
+        actor = alan_inventory(source, [{
             "addr": f"llm-1@{host}", "kind": "llm", "state": "waiting",
             "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
         }])[0]
 
         async def exercise():
-            with mock.patch("agent_fleet.daemon.hosts", return_value=[host]), \
-                 mock.patch.object(fleet, "authority", return_value={
-                     "source": actor.ref.key}):
+            with mock.patch.object(fleet, "authority", return_value={
+                    "source": f"alan:{actor.ref.session_id}"}) as create:
                 pending = asyncio.create_task(fleet.action({
-                    "operation": "create", "host": host, "agent": "llm",
-                    "name": "work", "cwd": "/work"}))
+                    "operation": "create", "source": source, "agent": "llm",
+                    "name": "work", "cwd": ""}))
                 await asyncio.sleep(0)
                 self.assertFalse(pending.done())
-                fleet.sessions[host] = [actor]
+                fleet.sessions[source] = [actor]
                 fleet.observed += 1
                 async with fleet.changed:
                     fleet.changed.notify_all()
                 self.assertEqual(await pending, {"source": actor.ref.key})
+                create.assert_awaited_once_with(source, {
+                    "operation": "create", "agent": "llm", "name": "work", "cwd": ""})
 
         asyncio.run(exercise())
 
     def test_daemon_external_kind_create_does_not_wait_for_provider_attachment(self):
         host = "lovelace"
+        source = "will@lovelace"
         fleet = Fleet()
         fleet.unavailable.clear()
-        actor = alan_inventory(host, [{
+        actor = alan_inventory(source, [{
             "addr": f"antigravity-1@{host}", "kind": "antigravity",
             "state": "waiting", "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
         }])[0]
 
         async def exercise():
-            with mock.patch("agent_fleet.daemon.hosts", return_value=[host]), \
-                 mock.patch.object(fleet, "authority", return_value={
-                     "source": actor.ref.key}):
+            with mock.patch.object(fleet, "authority", return_value={
+                    "source": f"alan:{actor.ref.session_id}"}):
                 pending = asyncio.create_task(fleet.action({
-                    "operation": "create", "host": host, "agent": "antigravity",
+                    "operation": "create", "source": source,
+                    "agent": "antigravity",
                     "name": "work", "cwd": "/work"}))
                 await asyncio.sleep(0)
                 self.assertFalse(pending.done())
-                fleet.sessions[host] = [actor]
+                fleet.sessions[source] = [actor]
                 fleet.observed += 1
                 async with fleet.changed:
                     fleet.changed.notify_all()
@@ -2126,34 +2180,34 @@ class IdentityTests(unittest.TestCase):
 
     def test_daemon_create_waits_on_its_own_observed_generation(self):
         host = "lovelace"
+        source = "will@lovelace"
         fleet = Fleet()
         fleet.unavailable.clear()
-        actor = alan_inventory(host, [{
+        actor = alan_inventory(source, [{
             "addr": f"codex-1@{host}", "kind": "codex", "state": "waiting",
             "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
         }])[0]
         provider = Session(
-            SessionRef(ServerRef(host, "/tmp/tmux/default", 12, 10), "$7"),
+            SessionRef(ServerRef(source, "/tmp/tmux/default", 12, 10), "$7"),
             "fleet@native-test", 1, 2, 0, 1, "python3", "", "/work",
             "codex", "waiting", "", 0, "1")
 
         async def exercise():
-            with mock.patch("agent_fleet.daemon.hosts", return_value=[host]), \
-                 mock.patch.object(fleet, "authority", return_value={
-                     "source": actor.ref.key}) as execute:
+            with mock.patch.object(fleet, "authority", return_value={
+                    "source": f"alan:{actor.ref.session_id}"}) as execute:
                 pending = asyncio.create_task(fleet.action({
-                    "operation": "create", "host": host, "agent": "codex",
+                    "operation": "create", "source": source, "agent": "codex",
                     "name": "work", "cwd": "/work"}))
                 await asyncio.sleep(0)
                 self.assertFalse(pending.done())
-                fleet.sessions[host] = [actor]
+                fleet.sessions[source] = [actor]
                 fleet.observed += 1
                 async with fleet.changed:
                     fleet.changed.notify_all()
                 await asyncio.sleep(0)
                 self.assertFalse(pending.done())
-                fleet.sessions[host] = fold_adopted([actor, provider])
+                fleet.sessions[source] = fold_adopted([actor, provider])
                 fleet.observed += 1
                 async with fleet.changed:
                     fleet.changed.notify_all()
@@ -2171,9 +2225,10 @@ class IdentityTests(unittest.TestCase):
 
     def test_archive_retires_exact_alan_actor_by_address(self):
         host = os.uname().nodename
+        source = f"will@{host}"
         identity = "00000000-0000-4000-8000-000000000001"
         actor = f"codex-{identity}@{host}"
-        key = f"alan:{actor}"
+        key = f"alan:{source}:{actor}"
         with mock.patch("agent_fleet.actions.fleet_action") as action, \
              mock.patch("agent_fleet.actions.viewer.slots", return_value=[("main", key)]), \
              mock.patch("agent_fleet.actions.viewer.request") as request:
@@ -2183,92 +2238,96 @@ class IdentityTests(unittest.TestCase):
 
     def test_archive_retires_alan_claude_without_projected_native_identity(self):
         host = os.uname().nodename
+        source = f"will@{host}"
         session = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"claude-1@{host}"),
+            SessionRef(ServerRef(source, "", 0, 0, "alan"), f"claude-1@{host}"),
             "work", 1, 0, 0, 1, "alan", "", "/work",
             "claude", "waiting", "", 0, "", 1)
         fleet = Fleet()
-        fleet.sessions[host] = [session]
+        fleet.sessions[source] = [session]
         fleet.unavailable.clear()
         with mock.patch.object(fleet, "authority", return_value={}) as execute, \
              mock.patch.object(fleet, "wait_for_absence") as absent:
             self.assertEqual(asyncio.run(fleet.action(
                 {"operation": "archive", "source": session.ref.key})), {})
         execute.assert_awaited_once_with(
-            host, {"operation": "archive-alan", "actor": f"claude-1@{host}",
+            source, {"operation": "archive-alan", "actor": f"claude-1@{host}",
                    "agent": "claude"})
         absent.assert_awaited_once_with(session.ref.key)
 
     def test_archive_closes_a_pristine_attached_session_without_a_transcript(self):
         host = os.uname().nodename
+        source = f"will@{host}"
         attachment = SessionRef(
-            ServerRef(host, "/tmp/tmux/native", 44, 12), "$9")
+            ServerRef(source, "/tmp/tmux/native", 44, 12), "$9")
         session = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"codex-1@{host}"),
+            SessionRef(ServerRef(source, "", 0, 0, "alan"), f"codex-1@{host}"),
             "fresh", 1, 0, 0, 1, "alan", "", "/work",
             "codex", "waiting", "", 0, "", 1, worked=False,
             attachment=attachment)
         fleet = Fleet()
-        fleet.sessions[host] = [session]
+        fleet.sessions[source] = [session]
         fleet.unavailable.clear()
         _, _, authority = fleet.archive_authority(session.ref.key)
         self.assertEqual(authority, {
             "operation": "archive-pristine", "actor": f"codex-1@{host}",
-            "agent": "codex", "source": attachment.key})
+            "agent": "codex", "target": ["/tmp/tmux/native", 44, 12, "$9"]})
 
     def test_archive_still_refuses_a_worked_session_without_a_transcript(self):
         host = os.uname().nodename
+        source = f"will@{host}"
         session = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"codex-1@{host}"),
+            SessionRef(ServerRef(source, "", 0, 0, "alan"), f"codex-1@{host}"),
             "busy", 1, 0, 0, 1, "alan", "", "/work",
             "codex", "waiting", "", 0, "", 1, worked=True,
             attachment=SessionRef(
-                ServerRef(host, "/tmp/tmux/native", 44, 12), "$9"))
+                ServerRef(source, "/tmp/tmux/native", 44, 12), "$9"))
         fleet = Fleet()
-        fleet.sessions[host] = [session]
+        fleet.sessions[source] = [session]
         fleet.unavailable.clear()
         with self.assertRaisesRegex(ValueError, "durable Claude or Codex identity"):
             fleet.archive_authority(session.ref.key)
 
     def test_archive_retires_bare_alan_language_actor_by_address(self):
         host = os.uname().nodename
+        source = f"will@{host}"
         session = Session(
-            SessionRef(ServerRef(host, "", 0, 0, "alan"), f"llm-1@{host}"),
+            SessionRef(ServerRef(source, "", 0, 0, "alan"), f"llm-1@{host}"),
             "review", 1, 0, 0, 1, "alan", "", "/work",
             "llm", "waiting")
         fleet = Fleet()
-        fleet.sessions[host] = [session]
+        fleet.sessions[source] = [session]
         fleet.unavailable.clear()
         with mock.patch.object(fleet, "authority", return_value={}) as execute, \
              mock.patch.object(fleet, "wait_for_absence"):
             asyncio.run(fleet.action(
                 {"operation": "archive", "source": session.ref.key}))
         execute.assert_awaited_once_with(
-            host, {"operation": "archive-alan", "actor": f"llm-1@{host}",
+            source, {"operation": "archive-alan", "actor": f"llm-1@{host}",
                    "agent": "llm"})
 
     def test_archive_verifies_transcript_then_closes_exact_tmux_identity(self):
         session = self.session("lovelace")
         session = Session(**{**session.__dict__, "transcript_id": "thread-1"})
         fleet = Fleet()
-        fleet.sessions["lovelace"] = [session]
+        fleet.sessions["will@lovelace"] = [session]
         fleet.unavailable.clear()
         with mock.patch.object(fleet, "authority", return_value={}) as execute, \
              mock.patch.object(fleet, "wait_for_absence") as absent:
             asyncio.run(fleet.action(
                 {"operation": "archive", "source": session.ref.key}))
-        execute.assert_awaited_once_with("lovelace", {
-            "operation": "archive-tmux", "source": session.ref.key,
+        execute.assert_awaited_once_with("will@lovelace", {
+            "operation": "archive-tmux",
+            "target": ["/tmp/tmux/default", 12, 10, "$1"],
             "agent": "codex", "transcript": "thread-1"})
         absent.assert_awaited_once_with(session.ref.key)
 
-    def test_tmux_archive_revalidates_full_source_before_kill(self):
-        key = f"{os.uname().nodename}:/tmp/tmux:12:10:$1"
+    def test_tmux_archive_revalidates_native_target_before_kill(self):
         result = mock.Mock(stdout=[])
         server = mock.Mock()
         server.cmd.return_value = result
         with mock.patch("agent_fleet.tmux.server", return_value=server):
-            tmux.mutate(key, "archive", [])
+            tmux.mutate_target(("/tmp/tmux", 12, 10, "$1"), "archive", [])
         command = server.cmd.call_args.args
         self.assertEqual(command[:4], ("if-shell", "-t", "$1", "-F"))
         self.assertIn("kill-session -t '$1'", command[5])
@@ -2401,7 +2460,7 @@ class IdentityTests(unittest.TestCase):
     def test_source_key_contains_server_generation(self):
         session = self.session("newton")
         self.assertEqual(split_key(session.ref.key),
-                         ("newton", "/tmp/tmux/default", 12, 10, "$1"))
+                         ("will@newton", "/tmp/tmux/default", 12, 10, "$1"))
 
     def test_archive_is_the_only_destructive_surface(self):
         root = Path(__file__).parents[1]
@@ -2585,30 +2644,27 @@ class IdentityTests(unittest.TestCase):
 
     def test_muster_projects_recursive_folds_and_python_independently(self):
         fleet, root, language, python = self.fold_fleet()
-        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+        self.assertEqual([item.session.ref.key for item in fleet.projected()],
                          [root])
         fleet.expanded.add(root)
         fleet.view_revision += 1; fleet._view_cache = None
-        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+        self.assertEqual([item.session.ref.key for item in fleet.projected()],
                          [root, language])
         fleet.show_python = True
         fleet.view_revision += 1; fleet._view_cache = None
-        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+        self.assertEqual([item.session.ref.key for item in fleet.projected()],
                          [root, language, python])
 
-    def test_host_observation_updates_availability_and_usage_before_projection(self):
+    def test_source_observation_updates_availability_before_projection(self):
         fleet = Fleet()
-        host = "lovelace"
+        source = RuntimeSource("lovelace", "will", "/run/alan", "/run/tmux")
         fleet._view_cache = ("stale",)
-        usage = {"claude": {"five_hour": {"utilization": 37}}}
-        raw = encode([self.session(host)], usage)
-        fleet.processes[host] = mock.Mock(pid=42)
-        with mock.patch("agent_fleet.daemon.hosts", return_value=[host]):
-            fleet.update_host(host, raw)
-        self.assertNotIn(host, fleet.unavailable)
-        self.assertEqual(fleet.usage, usage)
+        raw = encode_observation([self.session("lovelace")], True, None)
+        fleet.processes[source.key] = mock.Mock(pid=42)
+        fleet.update_source(source, raw)
+        self.assertNotIn(source.key, fleet.unavailable)
         self.assertIsNone(fleet._view_cache)
-        self.assertNotIn("offline lovelace", fleet.view(100)[2])
+        self.assertNotIn("offline will@lovelace", fleet.view(100)[2])
 
     def test_hidden_orphan_python_does_not_break_the_projection(self):
         fleet, root, _, python = self.fold_fleet()
@@ -2616,10 +2672,10 @@ class IdentityTests(unittest.TestCase):
         for source, target, relation in list(graph.edges(keys=True)):
             if relation == "spawn" and graph.nodes[target]["stream"] == python:
                 graph.remove_edge(source, target, relation)
-        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+        self.assertEqual([item.session.ref.key for item in fleet.projected()],
                          [root])
         fleet.show_python = True
-        self.assertNotIn(python, [item.session.ref.session_id
+        self.assertNotIn(python, [item.session.ref.key
                                   for item in fleet.projected()])
 
     def test_actor_without_current_principal_ancestry_stays_folded(self):
@@ -2629,7 +2685,7 @@ class IdentityTests(unittest.TestCase):
             if relation == "spawn" and graph.nodes[target]["stream"] == child:
                 graph.remove_edge(source, target, relation)
         fleet.expanded.add(root)
-        self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+        self.assertEqual([item.session.ref.key for item in fleet.projected()],
                          [root])
 
     def test_muster_socket_refuses_a_second_live_listener(self):
@@ -2652,13 +2708,13 @@ class IdentityTests(unittest.TestCase):
 
     def test_fold_opens_and_closes_only_the_selected_expandable_actor(self):
         fleet, root, child, _ = self.fold_fleet()
-        key = f"alan:{root}"
+        key = root
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)):
             revision = fleet.view_revision
             action = fleet.mutate_view(f"fold\topen\t{key}\t{revision}\t100")
             self.assertIn(root, fleet.expanded)
-            self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+            self.assertEqual([item.session.ref.key for item in fleet.projected()],
                              [root, child])
             self.assertIn("reload-sync(/usr/bin/cat", action)
             self.assertTrue(action.startswith("transform-header(/usr/bin/cat"))
@@ -2672,14 +2728,11 @@ class IdentityTests(unittest.TestCase):
     def test_fold_accepts_an_exact_current_parent_across_an_unrelated_revision(self):
         fleet, root, _, _ = self.fold_fleet()
         displayed = fleet.view_revision
-        raw = encode(fleet.sessions["lovelace"],
-                     {"claude": {"five_hour": {"utilization": 1}}},
-                     graph=fleet._composed[1])
-        fleet.update_host("lovelace", raw)
+        fleet.view_revision += 1
         with tempfile.TemporaryDirectory() as directory, \
-             mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)):
+            mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)):
             action = fleet.mutate_view(
-                f"fold\topen\talan:{root}\t{displayed}\t100")
+                f"fold\topen\t{root}\t{displayed}\t100")
         self.assertIn(root, fleet.expanded)
         self.assertNotIn("unbind(focus)", action)
 
@@ -2694,7 +2747,7 @@ class IdentityTests(unittest.TestCase):
                     fleet.expanded.add(root)
                     fleet.view_revision += 1
                     fleet._view_cache = None
-                    key = f"alan:{child}"
+                    key = child
                     message = "fold requires an Alan parent with children"
                 expanded = set(fleet.expanded)
                 with tempfile.TemporaryDirectory() as directory:
@@ -2740,12 +2793,12 @@ class IdentityTests(unittest.TestCase):
 
     def test_archive_transform_uses_one_action_and_one_coherent_redraw(self):
         fleet, root, _, _ = self.fold_fleet()
-        key = f"alan:{root}"
+        key = root
 
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
              mock.patch.object(fleet, "archive_authority", return_value=(
-                 fleet.sessions["lovelace"][0], "lovelace", {"operation": "archive"})), \
+                 fleet.sessions["will@lovelace"][0], "will@lovelace", {"operation": "archive"})), \
              mock.patch.object(fleet, "viewers", return_value=[]), \
              mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
             result = asyncio.run(fleet.mutate_action(
@@ -2754,38 +2807,38 @@ class IdentityTests(unittest.TestCase):
         self.assertNotIn("result-final", result)
         self.assertEqual(fleet.projected(), [])
         self.assertIn(key, fleet.pending_archives)
-        raw = encode(fleet.sessions["lovelace"], {}, graph=fleet._composed[1])
-        fleet.update_host("lovelace", raw)
-        self.assertEqual(fleet.projected(), [])
 
     def test_archive_transform_projects_the_remaining_successor(self):
         fleet, root, _, _ = self.fold_fleet()
         successor = "codex-successor@lovelace"
+        successor_key = f"alan:will@lovelace:{successor}"
+        successor_node = f"will@lovelace|{successor}#0"
+        principal_node = "will@lovelace|will@lovelace#2"
         fleet._composed[1].graph["actors"].append(
-            {"addr": successor, "kind": "codex"})
+            {"addr": successor_key, "actor": successor, "kind": "codex"})
         fleet._composed[1].add_node(
-            f"{successor}#0", stream=successor, op="create")
+            successor_node, stream=successor_key, op="create")
         fleet._composed[1].add_node(
-            "will@lovelace#2", stream="will@lovelace", op="spawn")
+            principal_node, stream="alan:will@lovelace:will@lovelace", op="spawn")
         fleet._composed[1].add_edge(
-            "will@lovelace#2", f"{successor}#0", key="spawn")
-        fleet.sessions["lovelace"].append(Session(
-            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), successor),
+            principal_node, successor_node, key="spawn")
+        fleet.sessions["will@lovelace"].append(Session(
+            SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), successor),
             successor, 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting"))
         fleet._view_cache = None
 
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
              mock.patch.object(fleet, "archive_authority", return_value=(
-                 fleet.sessions["lovelace"][0], "lovelace",
+                 fleet.sessions["will@lovelace"][0], "will@lovelace",
                  {"operation": "archive"})), \
-             mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
+            mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
             result = asyncio.run(fleet.mutate_action(
-                f"archive\talan:{root}\t{fleet.view_revision}\t100"))
+                f"archive\t{root}\t{fleet.view_revision}\t100"))
 
         self.assertNotIn("result-final", result)
         self.assertEqual([item.session.ref.key for item in fleet.projected()],
-                         [f"alan:{successor}"])
+                         [successor_key])
 
     def test_stock_fzf_archive_focuses_the_rendered_successor(self):
         self.assertIn(
@@ -2794,16 +2847,19 @@ class IdentityTests(unittest.TestCase):
             (Path(__file__).parents[1] / "agent_fleet/ui.py").read_text())
         fleet, root, _, _ = self.fold_fleet()
         successor = "codex-successor@lovelace"
+        successor_key = f"alan:will@lovelace:{successor}"
+        successor_node = f"will@lovelace|{successor}#0"
+        principal_node = "will@lovelace|will@lovelace#2"
         fleet._composed[1].graph["actors"].append(
-            {"addr": successor, "kind": "codex"})
+            {"addr": successor_key, "actor": successor, "kind": "codex"})
         fleet._composed[1].add_node(
-            f"{successor}#0", stream=successor, op="create")
+            successor_node, stream=successor_key, op="create")
         fleet._composed[1].add_node(
-            "will@lovelace#2", stream="will@lovelace", op="spawn")
+            principal_node, stream="alan:will@lovelace:will@lovelace", op="spawn")
         fleet._composed[1].add_edge(
-            "will@lovelace#2", f"{successor}#0", key="spawn")
-        fleet.sessions["lovelace"].append(Session(
-            SessionRef(ServerRef("lovelace", "", 0, 0, "alan"), successor),
+            principal_node, successor_node, key="spawn")
+        fleet.sessions["will@lovelace"].append(Session(
+            SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), successor),
             successor, 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting"))
         fleet._view_cache = None
 
@@ -2818,15 +2874,15 @@ class IdentityTests(unittest.TestCase):
             focus_path = directory / "focus"
             initial_path = directory / "initial.rows"
             initial_path.write_text(
-                f"alan:{root}\t1\troot\nalan:{successor}\t1\tsuccessor\n")
+                f"{root}\t1\troot\n{successor_key}\t1\tsuccessor\n")
             with mock.patch("agent_fleet.daemon.RUNTIME", runtime), \
                  mock.patch.object(fleet, "archive_authority", return_value=(
-                     fleet.sessions["lovelace"][0], "lovelace",
+                     fleet.sessions["will@lovelace"][0], "will@lovelace",
                      {"operation": "archive"})), \
                  mock.patch.object(fleet, "complete_archive",
                                    new_callable=mock.AsyncMock):
                 action = asyncio.run(fleet.mutate_action(
-                    f"archive\talan:{root}\t{fleet.view_revision}\t100"))
+                    f"archive\t{root}\t{fleet.view_revision}\t100"))
             record_focus = shlex.join((
                 "/bin/sh", "-c", f"printf '%s\\n' \"$1\" >> {focus_path}",
                 "sh", "{1}"))
@@ -2848,7 +2904,7 @@ class IdentityTests(unittest.TestCase):
                         break
                     time.sleep(.01)
                 self.assertEqual(focus_path.read_text().splitlines()[-1],
-                                 f"alan:{root}")
+                                 root)
                 subprocess.run(["tmux", "send-keys", "-t", "fleet@muster", "x"],
                                check=True, env=environment)
                 endpoint = ["curl", "-fsS", "--unix-socket", str(socket_path)]
@@ -2857,14 +2913,14 @@ class IdentityTests(unittest.TestCase):
                         endpoint + ["http://localhost"], check=True, text=True,
                         capture_output=True, env=environment).stdout)
                     current = (state.get("current") or {}).get("text", "")
-                    if (current.partition("\t")[0] == f"alan:{successor}"
+                    if (current.partition("\t")[0] == successor_key
                             and focus_path.read_text().splitlines()[-1]
-                            == f"alan:{successor}"):
+                            == successor_key):
                         break
                     time.sleep(.01)
-                self.assertEqual(current.partition("\t")[0], f"alan:{successor}")
+                self.assertEqual(current.partition("\t")[0], successor_key)
                 self.assertEqual(focus_path.read_text().splitlines()[-1],
-                                 f"alan:{successor}")
+                                 successor_key)
             finally:
                 subprocess.run(["tmux", "kill-server"], env=environment,
                                stdout=subprocess.DEVNULL,
@@ -2873,16 +2929,13 @@ class IdentityTests(unittest.TestCase):
     def test_archive_accepts_an_exact_current_source_across_an_unrelated_revision(self):
         fleet, root, _, _ = self.fold_fleet()
         displayed = fleet.view_revision
-        raw = encode(fleet.sessions["lovelace"],
-                     {"claude": {"five_hour": {"utilization": 1}}},
-                     graph=fleet._composed[1])
-        fleet.update_host("lovelace", raw)
+        fleet.view_revision += 1
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
              mock.patch.object(fleet, "viewers", return_value=[]), \
-             mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
+            mock.patch.object(fleet, "complete_archive", new_callable=mock.AsyncMock):
             result = asyncio.run(fleet.mutate_action(
-                f"archive\talan:{root}\t{displayed}\t100"))
+                f"archive\t{root}\t{displayed}\t100"))
         self.assertIn("transform-header", result)
 
     def test_unregistered_muster_rejects_view_mutation(self):
@@ -2898,13 +2951,13 @@ class IdentityTests(unittest.TestCase):
 
     def test_python_toggle_needs_no_selected_row(self):
         fleet, root, child, python = self.fold_fleet()
-        fleet.sessions = {"lovelace": [session for session in fleet.sessions["lovelace"]
-                                        if session.ref.session_id == python]}
+        fleet.sessions = {"will@lovelace": [session for session in fleet.sessions["will@lovelace"]
+                                        if session.ref.key == python]}
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)):
             self.assertEqual(fleet.projected(), [])
             fleet.mutate_view("toggle\tpython\t100")
-            self.assertEqual([item.session.ref.session_id for item in fleet.projected()],
+            self.assertEqual([item.session.ref.key for item in fleet.projected()],
                              [python])
 
     def test_muster_generation_preserves_respawns_and_resets_replacements(self):
@@ -2988,6 +3041,7 @@ class IdentityTests(unittest.TestCase):
 
             first = start()
             fleet = Fleet()
+            fleet.sources = {}
 
             async def replace(_generation, _width):
                 subprocess.run(["tmux", "kill-server"], check=True, env=environment)
@@ -3015,9 +3069,9 @@ class IdentityTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, environment, clear=True), \
                      mock.patch.object(fleet, "register_muster", side_effect=replace), \
                      mock.patch("agent_fleet.daemon.RUNTIME", Path(directory) / "runtime"), \
-                     mock.patch("agent_fleet.daemon.hosts", return_value=[]), \
                      mock.patch("agent_fleet.daemon.asyncio.start_unix_server",
                                 side_effect=listen), \
+                     mock.patch.object(fleet, "watch_quota", mock.AsyncMock()), \
                      mock.patch("agent_fleet.daemon.os.chmod"), \
                      mock.patch("agent_fleet.daemon.journal.record") as record:
                     asyncio.run(fleet.serve())
@@ -3124,7 +3178,7 @@ class IdentityTests(unittest.TestCase):
                     self.assertLess(action.index("transform-header"),
                                     action.index("reload-sync"))
                     old_header = artifacts[1].read_text()
-                    fleet.sessions["lovelace"].append(self.session("lovelace", "$99"))
+                    fleet.sessions["will@lovelace"].append(self.session("lovelace", "$99"))
                     fleet.view_revision += 1
                     fleet._view_cache = None
                     self.assertNotEqual(fleet.view(100)[2], old_header.rstrip("\n"))
@@ -3178,7 +3232,7 @@ class IdentityTests(unittest.TestCase):
                     time.sleep(.01)
                 with mock.patch("agent_fleet.daemon.RUNTIME", runtime):
                     _, dropped = fleet.publish_view(100)
-                    fleet.sessions["lovelace"].append(self.session("lovelace", "$99"))
+                    fleet.sessions["will@lovelace"].append(self.session("lovelace", "$99"))
                     fleet.view_revision += 1
                     fleet._view_cache = None
                     action, current = fleet.publish_view(100)
@@ -3510,7 +3564,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_missing_alan_presentation_fails_without_creating_it(self):
         actor = f"codex-1@{os.uname().nodename}"
-        session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
+        source = f"will@{os.uname().nodename}"
+        session = Session(SessionRef(ServerRef(source, "", 0, 0, "alan"),
                                      actor), "codex", 0, 0, 0, 1, "alan", "", "/work",
                           "codex")
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
@@ -3519,7 +3574,7 @@ class IdentityTests(unittest.TestCase):
              mock.patch.object(viewer.subprocess, "run", side_effect=failed), \
              mock.patch.object(viewer.subprocess, "Popen") as popen:
             with self.assertRaises(viewer.ViewerFailure) as raised:
-                state.resolve(f"alan:{actor}")
+                state.resolve(f"alan:{source}:{actor}")
         self.assertEqual((raised.exception.stage, raised.exception.cause,
                           raised.exception.error_type),
                          ("resolve", "unavailable", "CalledProcessError"))
@@ -3527,7 +3582,8 @@ class IdentityTests(unittest.TestCase):
 
     def test_python_open_retains_the_fleet_owned_presentation(self):
         actor = f"python-1@{os.uname().nodename}"
-        session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
+        source = f"will@{os.uname().nodename}"
+        session = Session(SessionRef(ServerRef(source, "", 0, 0, "alan"),
                                      actor), "python", 0, 0, 0, 1, "alan", "", "/work",
                           "python")
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
@@ -3536,13 +3592,14 @@ class IdentityTests(unittest.TestCase):
         with mock.patch.object(state, "find", return_value=session), \
              mock.patch.object(viewer.presentation, "target") as target, \
              mock.patch.object(viewer.subprocess, "run", side_effect=[missing, listed]):
-            self.assertEqual(state.resolve(f"alan:{actor}"),
+            self.assertEqual(state.resolve(f"alan:{source}:{actor}"),
                              ("/tmp/tmux/default", 12, 10, "$1"))
         target.assert_called_once_with(actor, {"kind": "python", "cwd": "/work"})
 
     def test_existing_python_open_does_not_touch_its_presentation(self):
         actor = f"python-1@{os.uname().nodename}"
-        session = Session(SessionRef(ServerRef(os.uname().nodename, "", 0, 0, "alan"),
+        source = f"will@{os.uname().nodename}"
+        session = Session(SessionRef(ServerRef(source, "", 0, 0, "alan"),
                                      actor), "python", 0, 0, 0, 1, "alan", "", "/work",
                           "python")
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
@@ -3550,7 +3607,7 @@ class IdentityTests(unittest.TestCase):
         with mock.patch.object(state, "find", return_value=session), \
              mock.patch.object(viewer.presentation, "target") as target, \
              mock.patch.object(viewer.subprocess, "run", return_value=listed):
-            state.resolve(f"alan:{actor}")
+            state.resolve(f"alan:{source}:{actor}")
         target.assert_not_called()
 
     def test_remote_actor_resolution_survives_the_remote_shell(self):
@@ -3561,7 +3618,8 @@ class IdentityTests(unittest.TestCase):
             stdout="/tmp/tmux-1000/default 2548 1784382062 \\$191\n")
         with mock.patch.object(state, "find", return_value=session), \
                 mock.patch.object(state, "ssh", return_value=listed) as ssh:
-            self.assertEqual(state.resolve(f"alan:{actor}", remote=True),
+            self.assertEqual(state.resolve(
+                f"alan:will@newton:{actor}", remote=True),
                              ("/tmp/tmux-1000/default", 2548, 1784382062, "$191"))
         self.assertIn("#{q:socket_path}", ssh.call_args.args[1])
 
@@ -3714,8 +3772,8 @@ class IdentityTests(unittest.TestCase):
         finally:
             worker.close()
         self.assertEqual(state.open.call_args_list,
-                         [mock.call(self.SOURCE_A, None, "lovelace"),
-                          mock.call(self.SOURCE_C, None, "lovelace")])
+                         [mock.call(self.SOURCE_A, None, "will@lovelace"),
+                          mock.call(self.SOURCE_C, None, "will@lovelace")])
 
     def test_viewer_worker_checks_attachments_under_continuous_projection(self):
         state = mock.Mock()
@@ -3809,8 +3867,8 @@ class IdentityTests(unittest.TestCase):
         finally:
             worker.close()
         self.assertEqual(state.open.call_args_list,
-                         [mock.call(self.SOURCE_A, None, "lovelace"),
-                          mock.call(self.SOURCE_D, None, "lovelace")])
+                         [mock.call(self.SOURCE_A, None, "will@lovelace"),
+                          mock.call(self.SOURCE_D, None, "will@lovelace")])
 
     def test_viewer_worker_exact_clear_cancels_pending_key_before_new_source(self):
         state = mock.Mock()
@@ -3844,8 +3902,8 @@ class IdentityTests(unittest.TestCase):
         finally:
             worker.close()
         self.assertEqual(state.open.call_args_list,
-                         [mock.call(self.SOURCE_K, None, "lovelace"),
-                          mock.call(self.SOURCE_J, None, "lovelace")])
+                         [mock.call(self.SOURCE_K, None, "will@lovelace"),
+                          mock.call(self.SOURCE_J, None, "will@lovelace")])
         state.release.assert_called_once_with(self.SOURCE_K)
 
     def test_viewer_worker_terminal_failure_rejects_future_work_without_hanging(self):
@@ -4221,7 +4279,7 @@ class IdentityTests(unittest.TestCase):
                                env=environment, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)
 
-    def test_quota_only_events_force_an_inventory_emit(self):
+    def test_alan_events_force_an_inventory_emit(self):
         source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()
-        self.assertIn('force = bool({"alan", "quota"} & set(events))', source)
+        self.assertIn('force = "alan" in events', source)
         self.assertIn("if serial != previous or force or current_available != available:", source)

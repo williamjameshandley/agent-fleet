@@ -6,7 +6,7 @@ from .config import KINDS
 FIELDS = {
     "show": {"type", "request_id", "snapshot_revision", "source", "workstation", "slot"},
     "clear_slot": {"type", "request_id", "snapshot_revision", "workstation", "slot"},
-    "create": {"type", "request_id", "snapshot_revision", "host", "agent", "name", "cwd"},
+    "create": {"type", "request_id", "snapshot_revision", "source", "agent", "name", "cwd"},
     "rename": {"type", "request_id", "snapshot_revision", "source", "name"},
     "archive": {"type", "request_id", "snapshot_revision", "source"},
     "open": {"type", "request_id", "snapshot_revision", "history", "workstation", "slot"},
@@ -44,7 +44,7 @@ def validate_proposal(proposal, request):
         raise ValueError("unknown Fleet history key")
     if operation == "create":
         cwd = proposal["cwd"]
-        if proposal["host"] not in snapshot["hosts"] or proposal["agent"] not in KINDS:
+        if proposal["source"] not in snapshot["sources"] or proposal["agent"] not in KINDS:
             raise ValueError("invalid create target")
         if not isinstance(proposal["name"], str) or not proposal["name"]:
             raise ValueError("invalid session name")

@@ -3,17 +3,21 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, order=True)
 class ServerRef:
-    host: str
+    source: str
     socket: str
     pid: int
     started: int
     kind: str = "tmux"
 
     @property
+    def host(self):
+        return self.source.rsplit("@", 1)[-1]
+
+    @property
     def key(self):
         if self.kind == "alan":
-            return f"alan:{self.host}"
-        return f"{self.host}:{self.socket}:{self.pid}:{self.started}"
+            return f"alan:{self.source}"
+        return f"{self.source}:{self.socket}:{self.pid}:{self.started}"
 
 
 @dataclass(frozen=True, order=True)
@@ -24,7 +28,7 @@ class SessionRef:
     @property
     def key(self):
         if self.server.kind == "alan":
-            return f"alan:{self.session_id}"
+            return f"alan:{self.server.source}:{self.session_id}"
         return f"{self.server.key}:{self.session_id}"
 
 
@@ -80,4 +84,17 @@ class Session:
 
 
 def key_host(key):
-    return key.rsplit("@", 1)[1] if key.startswith("alan:") else key.split(":", 1)[0]
+    source = key.removeprefix("alan:").split(":", 1)[0]
+    return source.rsplit("@", 1)[-1]
+
+
+def key_source(key):
+    return key.removeprefix("alan:").split(":", 1)[0]
+
+
+def key_actor(key):
+    value = key.removeprefix("alan:")
+    source, separator, actor = value.partition(":")
+    if not separator or "@" not in source or not actor:
+        raise ValueError("invalid Alan identity")
+    return actor
