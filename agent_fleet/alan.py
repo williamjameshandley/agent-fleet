@@ -273,11 +273,15 @@ def inventory(source, actor_descriptors):
             SessionRef(source, actor["addr"]), actor.get("label") or label(actor["addr"]),
             actor["created"], 0, 0, 1, "alan", "",
             actor.get("cwd") or "", actor["kind"], actor["state"],
-            actor.get("summary") or actor.get("last_error", ""), 0,
+            actor.get("summary") or actor.get("last_error", ""),
+            actor["last_operation_activity"],
             transcript_id,
             actor["human_activity"], actor.get("active_evaluation") or "",
             actor["evaluation_started"], "",
-            worked=actor.get("worked", True)))
+            worked=actor.get("worked", True),
+            evaluator=actor.get("evaluator", ""),
+            managed=actor.get("managed", False),
+            hibernation=actor["hibernation"]))
     return sessions
 
 
@@ -350,7 +354,8 @@ def project(sessions, graph, expanded=(), show_python=False):
     eligible = set()
     session_order = [graph_actor(session) for session in sessions
                      if session.ref.server.kind == "alan"
-                     and (show_python or session.agent != "python")]
+                     and (show_python or session.agent != "python"
+                          or session.state == "hibernated")]
     principals = {addr for addr, descriptor in descriptors.items()
                   if descriptor["kind"] == "principal"}
     native_roots = {addr for addr, descriptor in descriptors.items()
@@ -374,7 +379,8 @@ def project(sessions, graph, expanded=(), show_python=False):
     visible = [actor for actor in session_order
                if actor in roots
                and descriptors[actor].get("preset") != "commander"
-               and (descriptors[actor]["kind"] != "python" or show_python)]
+               and (descriptors[actor]["kind"] != "python" or show_python
+                    or descriptors[actor]["state"] == "hibernated")]
     visible_set = set(visible)
     for actor in visible:
         candidates = nx.ancestors(ancestry, actor) & visible_set
@@ -485,6 +491,10 @@ def runtime_name(actor):
 
 def retire(addr):
     loop.control(addr, "retire")
+
+
+def hibernate(addr):
+    loop.control(addr, "hibernate")
 
 
 def verify_pristine(addr):

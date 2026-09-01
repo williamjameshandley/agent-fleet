@@ -7,13 +7,16 @@ from .config import machine
 from . import alan
 
 
-STATE_ORDER = {"working": 0, "needs-action": 1, "waiting": 2, "finished": 3}
+STATE_ORDER = {"working": 0, "needs-action": 1, "unavailable": 1, "waiting": 2,
+               "hibernated": 3, "finished": 4}
 RESET = "\033[0m"
 BOLD = "\033[1m"
 STATE_COLOUR = {
     "working": "\033[30;42m",
     "needs-action": "\033[1;37;41m",
+    "unavailable": "\033[1;37;41m",
     "waiting": "\033[30;43m",
+    "hibernated": "\033[37;44m",
     "finished": "\033[37;100m",
 }
 HOST_COLOUR = {
@@ -50,9 +53,11 @@ def column_header(sessions):
     sessions = [item.session for item in sessions]
     working = sum(1 for session in sessions if session.state == "working")
     waiting = sum(1 for session in sessions if session.state == "waiting")
+    hibernated = sum(1 for session in sessions if session.state == "hibernated")
+    asleep = f"  {hibernated} hibernated" if hibernated else ""
     return (f"{icon['machine']} {icon['agent']} {icon['time']:^4} {icon['status']} "
             f"{'':4} {icon['title']:<20} {icon['summary']}  "
-            f"{working} working  {waiting} waiting  {len(sessions)} total")
+            f"{working} working  {waiting} waiting{asleep}  {len(sessions)} total")
 
 
 def header_text(projected, usage, unavailable):
@@ -77,8 +82,9 @@ def rows_text(projected, unavailable, width, now=None, revision=None):
         elapsed = ("?" if not timestamp else
                    f"{age // 60}m" if age < 3600 else f"{age // 3600}h")
         marker = ("?" if session.ref.server.source in unavailable else
-                  {"needs-action": "!", "working": "*", "waiting": ".",
-                   "finished": "-"}[session.state])
+                  {"needs-action": "!", "unavailable": "!",
+                   "working": "*", "waiting": ".",
+                   "hibernated": "z", "finished": "-"}[session.state])
         agent = {"codex": "X", "shell": ""}.get(
             session.agent, session.agent[:1].upper())
         summary = " ".join(
@@ -92,7 +98,7 @@ def rows_text(projected, unavailable, width, now=None, revision=None):
         host_colour = HOST_COLOUR.get(session.ref.server.host, "")
         agent_colour = AGENT_COLOUR.get(session.agent, "")
         state_colour = ("\033[37;41m" if marker == "?" else STATE_COLOUR[session.state])
-        emphasis = BOLD if session.state in {"working", "needs-action"} else ""
+        emphasis = BOLD if session.state in {"working", "needs-action", "unavailable"} else ""
         visible = (f"{emphasis}{host_colour}{machine(session.ref.server.host)}{RESET}{emphasis} "
                    f"{agent_colour}{agent:1}{RESET}{emphasis} {elapsed:>4} "
                    f"{state_colour}{marker}{RESET}{emphasis} "

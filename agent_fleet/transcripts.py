@@ -354,6 +354,8 @@ def project_native(sessions, transcripts=None):
             result.append(replace(
                 session, transcript_path=str(item.path) if item else "",
                 summary=latest_assistant_text(item) if item else "",
+                recency=max(session.recency, last_event_time(item.path))
+                if item else session.recency,
                 human_activity=max(session.human_activity, last_human_time(item))
                 if item else session.human_activity,
             ))
@@ -730,6 +732,12 @@ def fold_adopted(sessions):
                 f"found {len(actors)} and {len(native)}"
             )
         if not native:
+            actor = actors[0]
+            if (actor.state == "unavailable" and actor.transcript_path
+                    and actor.hibernation == "transcript" and not actor.managed):
+                replacements[actor.ref] = replace(
+                    actor,
+                    summary="provider presentation absent; hibernation recovery required")
             continue
         actor = actors[0]
         if len(native) > 1:
@@ -749,7 +757,8 @@ def fold_adopted(sessions):
             replacements[provider.ref] = replace(provider, name=actor.name)
             continue
         replacements[actor.ref] = replace(
-            actor, attachment=provider.ref,
+            actor, attachment=provider.ref, attached=provider.attached,
+            recency=max(actor.recency, provider.recency),
             reported_state=(provider.state if actor.state in {"retired", "unavailable"}
                             else actor.reported_state))
         consumed.add(provider.ref)

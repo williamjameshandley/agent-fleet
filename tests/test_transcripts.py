@@ -383,7 +383,8 @@ def test_adopted_actor_folds_the_provider_row_but_retains_its_attachment():
     )
 
     assert fold_adopted([provider, actor]) == [
-        __import__("dataclasses").replace(actor, attachment=provider.ref)
+        __import__("dataclasses").replace(
+            actor, attachment=provider.ref, attached=1)
     ]
 
 
@@ -397,7 +398,9 @@ def test_inactive_adopted_actor_folds_according_to_its_lifecycle_state():
     retired = Session(SessionRef(alan_server, f"codex-{identity}@newton"), "actor",
                       1, 0, 0, 1, "alan", "", "/work", "codex", "retired",
                       transcript_id=identity)
-    unavailable = replace(retired, reported_state="unavailable")
+    unavailable = replace(retired, reported_state="unavailable",
+                          evaluator="native", transcript_path="/transcript",
+                          hibernation="transcript")
 
     assert fold_adopted([retired]) == []
     [historic] = fold_adopted([retired, provider])
@@ -405,7 +408,9 @@ def test_inactive_adopted_actor_folds_according_to_its_lifecycle_state():
     assert historic.name == "actor"
     assert historic.attachment is None
 
-    assert fold_adopted([unavailable]) == []
+    [recovery] = fold_adopted([unavailable])
+    assert recovery.state == "unavailable"
+    assert "hibernation recovery" in recovery.summary
     [folded] = fold_adopted([unavailable, provider])
     assert folded.ref == unavailable.ref
     assert folded.attachment == provider.ref

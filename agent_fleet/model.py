@@ -55,6 +55,9 @@ class Session:
     worked: bool = True
     attachment: SessionRef | None = None
     attachment_ambiguous: bool = False
+    evaluator: str = ""
+    managed: bool = False
+    hibernation: str = "unsupported"
 
     @property
     def agent(self):
