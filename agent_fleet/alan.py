@@ -265,7 +265,8 @@ def inventory(source, actor_descriptors):
     source = ServerRef(source, "", 0, 0, "alan")
     sessions = []
     for actor in actor_descriptors:
-        if actor["state"] in {"retired", "unavailable"}:
+        if (actor["state"] in {"retired", "unavailable"}
+                and actor.get("evaluator") != "native"):
             continue
         transcript_id = address_identity(actor["addr"], actor["kind"])
         sessions.append(Session(
