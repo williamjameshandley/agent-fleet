@@ -528,6 +528,8 @@ def native_actor(pids):
             path = Path(os.fsdecode(root)) / "actor"
             try:
                 actor = path.read_text().strip()
+            except FileNotFoundError:
+                continue
             except OSError as error:
                 raise RuntimeError(f"cannot read published native actor {path}: {error}")
             if not actor:
