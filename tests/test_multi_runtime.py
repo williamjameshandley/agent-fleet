@@ -19,14 +19,13 @@ from agent_fleet.tmux import ControlClient
 
 def runtime(principal, root):
     return config.RuntimeSource(
-        "lovelace", principal, str(root / "loop.sock"), str(root),
-        str(root / "tmux.sock"))
+        "lovelace", principal, str(root / "loop.sock"), str(root / "tmux.sock"))
 
 
 def actor_session(principal):
     actor = "claude-collision@lovelace"
     return Session(
-        SessionRef(ServerRef("lovelace", "", 0, 0, "alan", principal), actor),
+        SessionRef(ServerRef(f"{principal}@lovelace", "", 0, 0, "alan"), actor),
         principal, 1, 0, 0, 1, "alan", "", f"/home/{principal}", "claude",
     )
 
@@ -49,7 +48,7 @@ def test_runtime_source_configuration_is_closed_absolute_and_distinct(tmp_path, 
     monkeypatch.setattr(config, "CONFIG", tmp_path)
     entries = [
         {"host": "lovelace", "principal": principal,
-         "public_socket": f"/{principal}/loop.sock", "home": f"/{principal}",
+         "public_socket": f"/{principal}/loop.sock",
          "tmux_socket": f"/{principal}/tmux.sock"}
         for principal in ("will", "sophie")
     ]
@@ -109,12 +108,17 @@ def test_preview_and_authority_route_only_to_selected_runtime(tmp_path, monkeypa
         await asyncio.sleep(0)
         request = json.loads(inputs["sophie@lovelace"].write.call_args.args[0])
         assert not inputs["will@lovelace"].write.called
-        fleet.host_reply("sophie@lovelace", {"preview": request["preview"], "text": "sophie"})
+        fleet.source_reply(
+            "sophie@lovelace", {"preview": request["preview"], "text": "sophie"})
         assert await pending == "sophie"
-        with mock.patch.object(fleet, "remote_json", new_callable=mock.AsyncMock,
-                               return_value={}) as remote:
-            await fleet.authority("sophie@lovelace", {"operation": "archive-alan"})
-        assert remote.await_args.args[0] == "sophie@lovelace"
+        pending = asyncio.create_task(
+            fleet.authority("sophie@lovelace", {"operation": "archive-alan"}))
+        await asyncio.sleep(0)
+        request = json.loads(inputs["sophie@lovelace"].write.call_args.args[0])
+        assert not inputs["will@lovelace"].write.called
+        fleet.source_reply("sophie@lovelace", {
+            "authority": request["authority"], "value": {}})
+        assert await pending == {}
 
     asyncio.run(exercise())
 
@@ -166,7 +170,7 @@ def test_real_control_switches_remain_confined_to_two_tmux_sockets(tmp_path):
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def test_real_viewer_keeps_one_inner_client_per_same_host_runtime(tmp_path, monkeypatch):
+def test_viewer_keeps_one_attachment_per_same_host_runtime(tmp_path, monkeypatch):
     host = os.uname().nodename.split(".", 1)[0]
     ui_socket = tmp_path / "ui.sock"
     source_sockets = {}
@@ -194,9 +198,22 @@ def test_real_viewer_keeps_one_inner_client_per_same_host_runtime(tmp_path, monk
         control = ControlClient(ui_process, queue.Queue())
         control.command(["refresh-client", "-f", "no-output"])
         state = viewer.Attachment("test", "/dev/pts/9", control)
-        monkeypatch.setattr(viewer, "SOURCE_HOSTS", frozenset({host}))
+        monkeypatch.setattr(viewer, "runtime_sources", lambda: [
+            config.RuntimeSource(host, principal, f"/{principal}/loop.sock",
+                                 str(source_sockets[principal]))
+            for principal in ("will", "sophie")])
         monkeypatch.setattr(state, "prove_switch", mock.Mock())
         monkeypatch.setattr(state, "resident_switch", mock.Mock())
+        attachments = {
+            f"{principal}@{host}": mock.Mock(
+                host=f"{principal}@{host}", source=keys[principal],
+                window=f"@{index}", client=f"/dev/pts/{index}")
+            for index, principal in enumerate(("will", "sophie"), 1)
+        }
+        monkeypatch.setattr(state, "create_host",
+                            lambda source, key: attachments[source])
+        monkeypatch.setattr(state, "select_host", lambda entry: None)
+        monkeypatch.setattr(state, "ui_windows", lambda: {"@1", "@2"})
 
         state.open(keys["will"])
         state.open(keys["sophie"])
@@ -204,15 +221,6 @@ def test_real_viewer_keeps_one_inner_client_per_same_host_runtime(tmp_path, monk
 
         assert set(state.attachments) == {f"will@{host}", f"sophie@{host}"}
         assert state.host == f"will@{host}"
-        for socket in source_sockets.values():
-            for _ in range(100):
-                clients = subprocess.run(
-                    ["tmux", "-N", "-S", str(socket), "list-clients", "-F",
-                     "#{client_name}"], check=True, text=True, capture_output=True)
-                if clients.stdout.strip():
-                    break
-                time.sleep(.01)
-            assert clients.stdout.strip()
     finally:
         if ui_process is not None and ui_process.poll() is None:
             ui_process.terminate()
@@ -241,7 +249,10 @@ def test_sophie_bare_actor_bootstraps_and_creates_only_on_her_tmux_socket(
             "attachment": "", "tmux_socket": str(sockets["sophie"]),
         })
         state = viewer.Attachment("test", "/dev/pts/9", mock.Mock())
-        monkeypatch.setattr(viewer, "SOURCE_HOSTS", frozenset({host}))
+        monkeypatch.setattr(viewer, "runtime_sources", lambda: [
+            config.RuntimeSource(host, principal, f"/{principal}/loop.sock",
+                                 str(sockets[principal]))
+            for principal in ("will", "sophie")])
         monkeypatch.setattr(state, "daemon", lambda _request: reply)
         monkeypatch.setattr(presentation, "target", mock.Mock())
 

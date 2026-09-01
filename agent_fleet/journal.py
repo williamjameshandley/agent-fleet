@@ -21,11 +21,13 @@ VALUES = {
 }
 ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 EVENTS = {
-    "daemon_ready": ("daemon", INFO, "Fleet daemon ready", ("socket", "hosts_text")),
-    "daemon_stopping": ("daemon", INFO, "Fleet daemon stopping", ("socket", "hosts_text")),
-    "host_connected": ("daemon", INFO, "Fleet host connected", ("host", "pid")),
-    "host_disconnected": (
-        "daemon", WARNING, "Fleet host disconnected", ("host", "pid", "status")),
+    "daemon_ready": ("daemon", INFO, "Fleet daemon ready", ("socket", "sources_text")),
+    "daemon_stopping": (
+        "daemon", INFO, "Fleet daemon stopping", ("socket", "sources_text")),
+    "source_connected": (
+        "daemon", INFO, "Fleet source connected", ("source", "pid")),
+    "source_disconnected": (
+        "daemon", WARNING, "Fleet source disconnected", ("source", "pid", "status")),
     "daemon_task_failed": (
         "daemon", ERROR, "Fleet daemon task failed", ("task", "error_type")),
     "action_completed": (

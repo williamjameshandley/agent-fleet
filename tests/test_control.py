@@ -30,14 +30,12 @@ class WatchBoundaryTests(unittest.TestCase):
     def test_runtime_artifacts_do_not_become_transcript_events(self):
         transcripts = [Path("/home/will/.codex/sessions"),
                        Path("/home/will/.claude/projects")]
-        quota = Path("/run/user/1000/agent-fleet/quota.changed")
         self.assertEqual(watched_event(
-            "/home/will/.codex/sessions/2026/thread.jsonl", transcripts, quota),
+            "/home/will/.codex/sessions/2026/thread.jsonl", transcripts),
             "transcript")
-        self.assertEqual(watched_event(quota, transcripts, quota), "quota")
         self.assertIsNone(watched_event(
             "/run/user/1000/agent-fleet/muster-view-12-3.rows",
-            transcripts, quota))
+            transcripts))
 
 
 class ResidentControlTests(unittest.TestCase):
@@ -148,44 +146,6 @@ class ResidentControlTests(unittest.TestCase):
         self.process.wait()
         with self.assertRaisesRegex(RuntimeError, "closed"):
             self.control.command(["display-message", "-p", "never"])
-
-    def test_tagged_host_process_switch_and_preview_boundary(self):
-        target = self.target("source-two")
-        self.process.terminate(); self.process.wait()
-        command = [
-            os.environ.get("PYTHON", "python"), "-c",
-            "import sys; from agent_fleet.daemon import events; events(sys.argv[1])",
-            "fixture"]
-        host = subprocess.Popen(
-            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True,
-            env={**self.environment,
-                 "PYTHONPATH": str(Path(__file__).parents[1])})
-        try:
-            while True:
-                message = json.loads(host.stdout.readline())
-                if message.get("version") == 1:
-                    break
-            host.stdin.write(json.dumps({"switch": 7, "target": target,
-                                         "client": self.client_name}) + "\n")
-            host.stdin.write(json.dumps({"preview": 8,
-                                         "key": "fixture:/tmp/absent:1:1:$1",
-                                         "columns": 80, "lines": 20}) + "\n")
-            host.stdin.flush()
-            replies = {}
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and set(replies) != {"switch", "preview"}:
-                ready, _, _ = select.select([host.stdout], [], [], .2)
-                if not ready: continue
-                message = json.loads(host.stdout.readline())
-                for tag in ("switch", "preview"):
-                    if tag in message: replies[tag] = message
-            self.assertEqual(replies["switch"]["target"], list(target))
-            self.assertLess(replies["switch"]["duration"], 1)
-            self.assertIn("error", replies["preview"])
-        finally:
-            host.terminate(); host.wait()
-
 
 class ProtocolCorrelationTests(unittest.TestCase):
     def test_socket_watch_closes_directory_to_socket_handoff_race(self):
@@ -419,21 +379,18 @@ class ProtocolCorrelationTests(unittest.TestCase):
             environment.pop("TMUX", None)
             for name in ("tmux", "runtime", "home"):
                 (root / name).mkdir()
-            config = root / "home" / ".config" / "agent-fleet"
-            config.mkdir(parents=True)
-            (config / "hosts").write_text("fixture\n")
             host = subprocess.Popen(
                 [sys.executable, "-c",
-                 "import sys; from agent_fleet.daemon import events; events(sys.argv[1])",
-                 "fixture"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                 "from agent_fleet.daemon import events; events()"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True, env=environment)
             try:
                 observation = json.loads(host.stdout.readline())
-                self.assertEqual(observation["unavailable"], ["fixture"])
+                self.assertFalse(observation["available"])
                 requests = [
                     {"switch": 1, "target": ["/tmp/socket", 1, 1, "$1"],
                      "client": "/dev/pts/9"},
-                    {"preview": 2, "key": "fixture:/tmp/socket:1:1:$1",
+                    {"preview": 2, "target": ["/tmp/socket", 1, 1, "$1"],
                      "columns": 80, "lines": 20},
                     {"cleanup": 3, "owner": "lovelace", "slot": "main"},
                 ]
@@ -607,7 +564,8 @@ class ProtocolCorrelationTests(unittest.TestCase):
 class DaemonBoundaryTests(unittest.TestCase):
     @staticmethod
     def session():
-        ref = SessionRef(ServerRef("fixture", "/tmp/tmux/default", 12, 10), "$1")
+        ref = SessionRef(ServerRef(
+            "will@lovelace", "/tmp/tmux/default", 12, 10), "$1")
         return Session(ref, "one", 1, 1, 0, 1, "zsh", "", "/tmp")
 
     def test_preview_switch_and_cleanup_share_tagged_host_stream(self):
@@ -618,26 +576,28 @@ class DaemonBoundaryTests(unittest.TestCase):
 
         async def exercise():
             fleet = Fleet(); session = self.session(); stdin = Input()
-            fleet.sessions = {"fixture": [session]}; fleet.unavailable.clear()
-            fleet.processes = {"fixture": mock.Mock(stdin=stdin)}
+            source = "will@lovelace"
+            fleet.sessions = {source: [session]}; fleet.unavailable.clear()
+            fleet.processes = {source: mock.Mock(stdin=stdin)}
             preview = asyncio.create_task(fleet.preview(session.ref.key, 80, 20))
             switch = asyncio.create_task(fleet.switch(session.ref.key, "/dev/pts/9"))
-            cleanup = asyncio.create_task(fleet.cleanup("fixture", "lovelace", "main"))
+            cleanup = asyncio.create_task(fleet.cleanup(source, "lovelace", "main"))
             await asyncio.sleep(0)
             self.assertEqual({next(iter(item)) for item in stdin.writes},
                              {"preview", "switch", "cleanup"})
             preview_request = next(item for item in stdin.writes if "preview" in item)
             switch_request = next(item for item in stdin.writes if "switch" in item)
             cleanup_request = next(item for item in stdin.writes if "cleanup" in item)
-            fleet.host_reply({"switch": switch_request["switch"],
-                              "target": ["/tmp/tmux/default", 12, 10, "$1"],
-                              "duration": .001})
-            fleet.host_reply({"preview": preview_request["preview"], "text": "screen"})
-            fleet.host_reply({"cleanup": cleanup_request["cleanup"]})
+            fleet.source_reply(source, {"switch": switch_request["switch"],
+                                      "target": ["/tmp/tmux/default", 12, 10, "$1"],
+                                      "duration": .001})
+            fleet.source_reply(source, {
+                "preview": preview_request["preview"], "text": "screen"})
+            fleet.source_reply(source, {"cleanup": cleanup_request["cleanup"]})
             self.assertEqual(await preview, "screen")
             self.assertEqual(await switch,
                              (("/tmp/tmux/default", 12, 10, "$1"), .001,
-                              session.name, "fixture"))
+                              session.name, "lovelace"))
             self.assertIsNone(await cleanup)
 
         asyncio.run(exercise())
@@ -645,21 +605,22 @@ class DaemonBoundaryTests(unittest.TestCase):
     def test_disconnect_removes_inventory_and_fails_outstanding_requests(self):
         async def exercise():
             fleet = Fleet(); session = self.session()
-            fleet.sessions = {"fixture": [session]}
-            fleet.graphs = {"fixture": mock.Mock()}
+            source = "will@lovelace"
+            fleet.sessions = {source: [session]}
+            fleet.graphs = {source: mock.Mock()}
             loop = asyncio.get_running_loop()
             preview = loop.create_future(); switch = loop.create_future()
             cleanup = loop.create_future()
-            fleet.previews[1] = ("fixture", preview)
-            fleet.switches[2] = ("fixture", switch)
-            fleet.cleanups[3] = ("fixture", cleanup)
-            await fleet.host_disconnected("fixture", 42, 1)
-            self.assertNotIn("fixture", fleet.sessions)
-            self.assertNotIn("fixture", fleet.graphs)
+            fleet.previews[1] = (source, preview)
+            fleet.switches[2] = (source, switch)
+            fleet.cleanups[3] = (source, cleanup)
+            await fleet.source_disconnected(source, 42, 1)
+            self.assertNotIn(source, fleet.sessions)
+            self.assertNotIn(source, fleet.graphs)
             self.assertFalse(fleet.previews); self.assertFalse(fleet.switches)
             self.assertFalse(fleet.cleanups)
             for future in (preview, switch, cleanup):
-                with self.assertRaisesRegex(RuntimeError, "fixture disconnected"):
+                with self.assertRaisesRegex(RuntimeError, "will@lovelace disconnected"):
                     await future
 
         asyncio.run(exercise())

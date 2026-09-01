@@ -19,29 +19,16 @@ COMPONENT = re.compile(r"[a-z0-9][a-z0-9_.-]*")
 class RuntimeSource:
     host: str
     principal: str
-    public_socket: str = ""
-    home: str = ""
-    tmux_socket: str = ""
+    public_socket: str
+    tmux_socket: str
 
     @property
     def key(self):
-        return f"{self.principal}@{self.host}" if self.principal else self.host
+        return f"{self.principal}@{self.host}"
 
     def environment(self):
-        values = {}
-        if self.public_socket:
-            values["LOOP_SOCKET"] = self.public_socket
-        if self.home:
-            values.update({
-                "HOME": self.home,
-                "XDG_STATE_HOME": str(Path(self.home) / ".local/state"),
-                "CLAUDE_CONFIG_DIR": str(Path(self.home) / ".claude"),
-                "CODEX_HOME": str(Path(self.home) / ".codex"),
-                "GROK_HOME": str(Path(self.home) / ".grok"),
-            })
-        if self.tmux_socket:
-            values["FLEET_TMUX_SOCKET"] = self.tmux_socket
-        return values
+        return {"LOOP_SOCKET": self.public_socket,
+                "FLEET_TMUX_SOCKET": self.tmux_socket}
 
 
 def ssh_environment():
@@ -50,20 +37,12 @@ def ssh_environment():
             "SSH_AUTH_SOCK": f"/run/user/{os.getuid()}/gnupg/S.gpg-agent.ssh"}
 
 
-def hosts():
-    path = CONFIG / "hosts"
-    return [line.split("#", 1)[0].strip() for line in path.read_text().splitlines()
-            if line.split("#", 1)[0].strip()]
-
-
 def runtime_sources():
     path = CONFIG / "runtime-sources.json"
-    if not path.exists():
-        return [RuntimeSource(host, "") for host in hosts()]
     value = json.loads(path.read_text())
     if not isinstance(value, list) or not value:
         raise ValueError("runtime-sources.json must contain a non-empty list")
-    fields = {"host", "principal", "public_socket", "home", "tmux_socket"}
+    fields = {"host", "principal", "public_socket", "tmux_socket"}
     sources = []
     for item in value:
         if not isinstance(item, dict) or set(item) != fields:
@@ -73,7 +52,7 @@ def runtime_sources():
             raise ValueError("invalid runtime source")
         if not COMPONENT.fullmatch(item["host"]) or not COMPONENT.fullmatch(item["principal"]):
             raise ValueError("invalid runtime source identity")
-        for name in ("public_socket", "home", "tmux_socket"):
+        for name in ("public_socket", "tmux_socket"):
             if not Path(item[name]).is_absolute():
                 raise ValueError("runtime source paths must be absolute")
         sources.append(RuntimeSource(**item))

@@ -540,6 +540,10 @@ def actor_session(addr, kind):
     )
 
 
+def projected_key(addr):
+    return f'alan:{addr.rsplit("@", 1)[1]}:{addr}'
+
+
 def principal_root(current, root, principal="will@newton"):
     current.graph["actors"].append({"addr": principal, "kind": "principal"})
     current.add_node(f"{principal}#0", stream=principal, op="create")
@@ -571,15 +575,15 @@ def test_projection_includes_adopted_native_root_and_descendants():
 
     [projected] = alan.project(sessions, current)
 
-    assert projected.session.ref.key == f"alan:{actor}"
+    assert projected.session.ref.key == projected_key(actor)
     assert projected.depth == 0
     assert projected.child_count == 1
     assert [item.session.ref.key for item in alan.project(
         sessions, current, expanded={actor}
-    )] == [f"alan:{actor}", f"alan:{llm}"]
+    )] == [projected_key(actor), projected_key(llm)]
     assert [item.session.ref.key for item in alan.project(
         sessions, current, expanded={actor, python}, show_python=True
-    )] == [f"alan:{actor}", f"alan:{python}", f"alan:{llm}"]
+    )] == [projected_key(actor), projected_key(python), projected_key(llm)]
 
 
 def test_projection_derives_recursive_visible_tree():
@@ -639,7 +643,7 @@ def test_projection_derives_recursive_visible_tree():
     assert [(item.session.ref.key, item.depth, item.child_count, item.expanded)
             for item in collapsed] == [
         (standalone.ref.key, 0, 0, False),
-        (f"alan:{root}", 0, 2, False),
+        (projected_key(root), 0, 2, False),
     ]
     assert alan.project(sessions, current, expanded={language}) == collapsed
 
@@ -647,21 +651,21 @@ def test_projection_derives_recursive_visible_tree():
     assert [(item.session.ref.key, item.depth, item.child_count)
             for item in root_open] == [
         (standalone.ref.key, 0, 0),
-        (f"alan:{root}", 0, 2),
-        (f"alan:{language}", 1, 1),
-        (f"alan:{python_nested}", 1, 0),
+        (projected_key(root), 0, 2),
+        (projected_key(language), 1, 1),
+        (projected_key(python_nested), 1, 0),
     ]
 
     nested_open = alan.project(sessions, current, expanded={root, language})
     assert [(item.session.ref.key, item.depth) for item in nested_open] == [
         (standalone.ref.key, 0),
-        (f"alan:{root}", 0),
-        (f"alan:{language}", 1),
-        (f"alan:{nested}", 2),
-        (f"alan:{python_nested}", 1),
+        (projected_key(root), 0),
+        (projected_key(language), 1),
+        (projected_key(nested), 2),
+        (projected_key(python_nested), 1),
     ]
     assert [item.session.ref.key for item in alan.project(sessions, current)] == [
-        standalone.ref.key, f"alan:{root}",
+        standalone.ref.key, projected_key(root),
     ]
 
     python_open = alan.project(
@@ -670,11 +674,11 @@ def test_projection_derives_recursive_visible_tree():
     assert [(item.session.ref.key, item.depth, item.child_count)
             for item in python_open] == [
         (standalone.ref.key, 0, 0),
-        (f"alan:{root}", 0, 2),
-        (f"alan:{language}", 1, 1),
-        (f"alan:{python}", 1, 1),
-        (f"alan:{python_nested}", 2, 0),
-        (f"alan:{direct_python}", 0, 0),
+        (projected_key(root), 0, 2),
+        (projected_key(language), 1, 1),
+        (projected_key(python), 1, 1),
+        (projected_key(python_nested), 2, 0),
+        (projected_key(direct_python), 0, 0),
     ]
     compact = alan.projection_graph(current)
     assert all(set(operation) <= {
@@ -707,8 +711,8 @@ def test_projection_compresses_an_absent_intermediate_inside_an_eligible_tree():
     projected = alan.project(sessions, current, expanded={root})
     assert [(item.session.ref.key, item.depth, item.child_count)
             for item in projected] == [
-        (f"alan:{root}", 0, 1),
-        (f"alan:{child}", 1, 0),
+        (projected_key(root), 0, 1),
+        (projected_key(child), 1, 0),
     ]
 
 
@@ -738,10 +742,10 @@ def test_projection_folds_beneath_the_nearest_creator_across_ancestry_lines():
 
     collapsed = alan.project(sessions, current)
     assert [(item.session.ref.key, item.child_count) for item in collapsed] == [
-        (f"alan:{adopted}", 1)]
+        (projected_key(adopted), 1)]
     assert [item.session.ref.key for item in alan.project(
         sessions, current, expanded={adopted}
-    )] == [f"alan:{adopted}", f"alan:{chained}"]
+    )] == [projected_key(adopted), projected_key(chained)]
 
 
 def test_projection_composes_spawn_ancestry_from_separate_hosts():
@@ -766,10 +770,10 @@ def test_projection_composes_spawn_ancestry_from_separate_hosts():
     sessions = [actor_session(parent, "codex"), actor_session(child, "claude")]
 
     assert [item.session.ref.key for item in alan.project(sessions, current)] == [
-        f"alan:{parent}"]
+        projected_key(parent)]
     assert [item.session.ref.key for item in alan.project(
         sessions, current, expanded={parent}
-    )] == [f"alan:{parent}", f"alan:{child}"]
+    )] == [projected_key(parent), projected_key(child)]
 
 
 def test_projection_omits_multiple_principals_and_keeps_their_trees_independent():
@@ -793,11 +797,11 @@ def test_projection_omits_multiple_principals_and_keeps_their_trees_independent(
 
     assert [(item.session.ref.key, item.depth) for item in
             alan.project(sessions, current)] == [
-        (f"alan:{first}", 0), (f"alan:{second}", 0)]
+        (projected_key(first), 0), (projected_key(second), 0)]
     assert [(item.session.ref.key, item.depth) for item in
             alan.project(sessions, current, expanded={first})] == [
-        (f"alan:{first}", 0), (f"alan:{child}", 1),
-        (f"alan:{second}", 0)]
+        (projected_key(first), 0), (projected_key(child), 1),
+        (projected_key(second), 0)]
 
 
 def test_outstanding_principal_requests_follow_recursive_folds_and_reply_edges():

@@ -3,16 +3,15 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, order=True)
 class ServerRef:
-    host: str
+    source: str
     socket: str
     pid: int
     started: int
     kind: str = "tmux"
-    runtime: str = ""
 
     @property
-    def source(self):
-        return f"{self.runtime}@{self.host}" if self.runtime else self.host
+    def host(self):
+        return self.source.rsplit("@", 1)[-1]
 
     @property
     def key(self):
@@ -29,8 +28,7 @@ class SessionRef:
     @property
     def key(self):
         if self.server.kind == "alan":
-            return (f"alan:{self.server.source}:{self.session_id}"
-                    if self.server.runtime else f"alan:{self.session_id}")
+            return f"alan:{self.server.source}:{self.session_id}"
         return f"{self.server.key}:{self.session_id}"
 
 
@@ -97,4 +95,6 @@ def key_source(key):
 def key_actor(key):
     value = key.removeprefix("alan:")
     source, separator, actor = value.partition(":")
-    return actor if separator and "@" in source else value
+    if not separator or "@" not in source or not actor:
+        raise ValueError("invalid Alan identity")
+    return actor

@@ -10,7 +10,7 @@ import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from .config import HUB, RUNTIME, hosts as configured_hosts, ssh_environment
+from .config import HUB, RUNTIME, runtime_sources, ssh_environment
 from .daemon import request as daemon_request
 from .model import key_actor, key_host, key_source
 from . import alan, journal, presentation, proc, workstation
@@ -19,7 +19,6 @@ from .tmux import ControlClient, split_key
 
 SLOT = re.compile(r"^[A-Za-z0-9_-]+$")
 TMUX_SESSION = re.compile(r"^\$[0-9]+$")
-SOURCE_HOSTS = frozenset(configured_hosts())
 EXPECTED = (LookupError, OSError, RuntimeError, ValueError,
             subprocess.CalledProcessError)
 
@@ -33,16 +32,16 @@ class ViewerFailure(RuntimeError):
 
 
 def source_host(key):
+    sources = {source.key for source in runtime_sources()}
     try:
         if key.startswith("alan:"):
             actor = key_actor(key)
-            host = key_host(key)
-            if not actor or host not in SOURCE_HOSTS:
+            source = key_source(key)
+            if not actor or source not in sources:
                 raise ValueError("incomplete Alan identity")
-            return key_source(key)
+            return source
         source, socket_path, pid, started, session = split_key(key)
-        host = source.rsplit("@", 1)[-1]
-        if (host not in SOURCE_HOSTS or not socket_path.startswith("/") or
+        if (source not in sources or not socket_path.startswith("/") or
                 pid <= 0 or started <= 0 or not TMUX_SESSION.fullmatch(session)):
             raise ValueError("incomplete tmux identity")
         return source
@@ -342,28 +341,17 @@ class Attachment:
 
     def create_host(self, host, key):
         local = os.uname().nodename.split(".", 1)[0]
-        physical = host.rsplit("@", 1)[-1]
-        remote_file = None
-        owner = ""
-        master = None
-        if physical == local:
-            expected = self.resolve(key)
-            command = shlex.join(["env", "-u", "TMUX", "-u", "TMUX_PANE",
-                                  "/usr/lib/agent-fleet/fleet-tmux", "-S", expected[0],
-                                  "attach-session",
-                                  "-t", expected[3]])
-        else:
-            master = self.ensure_master(physical)
-            expected = self.resolve(key, remote=True)
-            owner = local
-            remote_file = (f"${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}/agent-fleet/"
-                           f"viewer-{owner}-{self.slot}-{host}.tty")
-            self.reclaim_marker(host, owner)
-            body = (f"mkdir -p \"$(dirname {remote_file})\"; "
-                    f"chmod 700 \"$(dirname {remote_file})\"; tty > {remote_file}; "
-                    f"exec /usr/lib/agent-fleet/fleet-tmux -S {shlex.quote(str(expected[0]))} attach-session "
-                    f"-t {shlex.quote(expected[3])}")
-            command = shlex.join(["ssh", "-tt", "-o", "BatchMode=yes", physical, body])
+        remote_file = (f"${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}/agent-fleet/"
+                       f"viewer-{local}-{self.slot}-{host}.tty")
+        owner = local
+        master = self.ensure_master(host)
+        expected = self.resolve(key, remote=True)
+        self.reclaim_marker(host, owner)
+        body = (f"mkdir -p \"$(dirname {remote_file})\"; "
+                f"chmod 700 \"$(dirname {remote_file})\"; tty > {remote_file}; "
+                f"exec /usr/lib/agent-fleet/fleet-tmux -S {shlex.quote(str(expected[0]))} attach-session "
+                f"-t {shlex.quote(expected[3])}")
+        command = shlex.join(["ssh", "-tt", "-o", "BatchMode=yes", host, body])
         with boundary("attach", "window"):
             output = self.ui.command(["new-window", "-d", "-P", "-F", "#{window_id}",
                                       "-t", f"fleet@{self.slot}", "-n", host, command])
@@ -371,27 +359,24 @@ class Attachment:
                 raise RuntimeError("UI server did not create one presentation window")
         window = output[0]
         try:
-            if physical == local:
-                client = self.ui_value(window, "#{pane_tty}")
-            else:
-                deadline = time.monotonic() + 3
-                client = ""
-                while time.monotonic() < deadline:
-                    result = self.ssh(physical, f"cat {remote_file} 2>/dev/null || :",
-                                      capture=True)
-                    client = result.stdout.strip()
-                    if client:
-                        break
-                    time.sleep(.02)
-                if not client:
-                    error = RuntimeError("remote tmux did not report the viewer attachment")
-                    raise ViewerFailure("attach", "client_registration", error) from error
+            deadline = time.monotonic() + 3
+            client = ""
+            while time.monotonic() < deadline:
+                result = self.ssh(host, f"cat {remote_file} 2>/dev/null || :",
+                                  capture=True)
+                client = result.stdout.strip()
+                if client:
+                    break
+                time.sleep(.02)
+            if not client:
+                error = RuntimeError("remote tmux did not report the viewer attachment")
+                raise ViewerFailure("attach", "client_registration", error) from error
             self.prove_switch(key, client)
             entry = SimpleNamespace(host=host, window=window, client=client,
                                     source=key, remote_file=remote_file,
                                     owner=owner, master=master)
             journal.record("attachment_created", slot=self.slot, host=host,
-                           route="local" if host == local else "remote",
+                           route="remote",
                            window=window, client=client)
             return entry
         except Exception:
@@ -456,7 +441,7 @@ class Attachment:
                    f"#{{==:#{{session_name}},{name}}}", "-F", fmt]
         def locate():
             if remote:
-                return self.ssh(key_host(key), shlex.join(command), capture=True)
+                return self.ssh(source_host(key), shlex.join(command), capture=True)
             return subprocess.run(command, text=True, capture_output=True, check=True)
         with boundary("resolve", "unavailable"):
             result = locate()
@@ -466,12 +451,12 @@ class Attachment:
                     bootstrap = ["/usr/bin/tmux", "-N", *socket_arguments,
                                  "list-sessions", "-f",
                                  "#{==:#{session_name},fleet@events}", "-F", fmt]
-                    result = (self.ssh(key_host(key), shlex.join(bootstrap), capture=True)
+                    result = (self.ssh(source_host(key), shlex.join(bootstrap), capture=True)
                               if remote else subprocess.run(
                                   bootstrap, text=True, capture_output=True, check=True))
                     values = shlex.split(result.stdout.strip())
                 elif remote:
-                    self.ssh(key_host(key), shlex.join([
+                    self.ssh(source_host(key), shlex.join([
                         "/usr/lib/agent-fleet/fleet-present", actor, session.agent,
                         session.cwd]))
                 else:
@@ -735,8 +720,9 @@ class ViewerWorker:
         error_type = (error.error_type if isinstance(error, ViewerFailure)
                       else type(error).__name__)
         source = job.source or self.state.source
+        source_key = job.host if job.source else self.state.host
         journal.record(event, slot=self.slot, operation=job.kind,
-                       host=job.host if job.source else self.state.host, source=source,
+                       host=key_host(source_key), source=source,
                        stage=stage, cause=cause, error_type=error_type)
 
     def execute(self, job):

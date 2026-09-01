@@ -65,11 +65,8 @@ def split_key(key):
     return source, socket, int(pid), int(started), session_id
 
 
-def mutate(key, operation, arguments):
-    source, socket, pid, started, session_id = split_key(key)
-    host = source.rsplit("@", 1)[-1]
-    if host != os.uname().nodename:
-        raise ValueError(f"identity is for {host}, not {os.uname().nodename}")
+def mutate_target(target, operation, arguments):
+    socket, pid, started, session_id = target
     if operation == "rename":
         command = ["rename-session", "-t", session_id, arguments[0]]
     elif operation == "archive":
@@ -84,7 +81,7 @@ def mutate(key, operation, arguments):
                           shlex.join(command),
                           "display-message -p FLEET_STALE")
     if result.stdout and result.stdout[0] == "FLEET_STALE":
-        raise RuntimeError(f"stale source identity: {key}")
+        raise RuntimeError("stale source identity")
 
 
 def switch_session(socket, pid, started, session_id, client):
@@ -244,6 +241,16 @@ def capture(key, columns=0, lines=0, alan_graph=UNSET):
     return capture_pane(session, columns, lines)
 
 
+def capture_target(target, columns=0, lines=0):
+    socket, pid, started, session_id = target
+    tmux = server()
+    session = TmuxSession.from_session_id(tmux, session_id)
+    if (session.socket_path, int(session.pid), int(session.start_time)) != (
+            socket, pid, started):
+        raise RuntimeError("stale source identity")
+    return capture_pane(session, columns, lines)
+
+
 def capture_pane(session, columns=0, lines=0):
     pane = session.active_pane
     content = pane.capture_pane(start=0, end="-", escape_sequences=True,
@@ -257,7 +264,7 @@ def capture_pane(session, columns=0, lines=0):
     return result.stdout
 
 
-def inventory(host, actor_descriptors, runtime=""):
+def inventory(source, actor_descriptors):
     tmux = server()
     sessions = []
     names = []
@@ -269,21 +276,19 @@ def inventory(host, actor_descriptors, runtime=""):
         if (name.startswith("fleet@")
                 and not name.startswith("fleet@native-")):
             continue
-        source = ServerRef(host, socket, int(pid), int(started), runtime=runtime)
+        server_ref = ServerRef(source, socket, int(pid), int(started))
         sessions.append(Session(
-            SessionRef(source, session_id), name, int(created), int(activity),
+            SessionRef(server_ref, session_id), name, int(created), int(activity),
             int(attached), int(windows), command, title, path,
             human_activity=int(human_activity or 0)))
     actors = [actor for actor in actor_descriptors
               if actor.get("evaluator") == "native"
               or presentation.available(actor["addr"], actor, names)]
-    return sessions + alan_inventory(host, actors, runtime)
+    return sessions + alan_inventory(source, actors)
 
 
-def watched_event(path, transcript_roots, quota_path):
+def watched_event(path, transcript_roots):
     path = Path(path)
-    if path == quota_path:
-        return "quota"
     if any(path.is_relative_to(root) for root in transcript_roots):
         return "transcript"
     return None
@@ -310,8 +315,7 @@ def watch_socket(changed, consumer):
                 break
 
 
-def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=None,
-                 runtime=""):
+def event_stream(source, consumer=None, controls=None, changed=None, alan_watcher=None):
     changed = changed or queue.Queue()
     alan = alan_watcher or AlanWatcher(changed, consumer)
     if consumer:
@@ -331,12 +335,11 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
     paths = transcript_roots + ([RUNTIME] if RUNTIME.exists() else [])
     if paths:
         def transcripts():
-            quota_path = RUNTIME / "quota.changed"
             # One transcript event publishes a full host inventory. Group the
             # short pauses between streamed token writes instead of promoting
             # each burst into a Fleet-wide update.
             for changes in watch(*paths, step=200):
-                events = {watched_event(path, transcript_roots, quota_path)
+                events = {watched_event(path, transcript_roots)
                           for _, path in changes}
                 for event in events - {None}:
                     changed.put(event)
@@ -389,8 +392,7 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
             alan_error = alan.error
             with alan.snapshot() as (actors, graph):
                 try:
-                    current = (inventory(host, actors, runtime) if runtime
-                               else inventory(host, actors)) if control is not None else []
+                    current = inventory(source, actors) if control is not None else []
                 except (subprocess.CalledProcessError, LibTmuxException) as error:
                     if control is None:
                         raise
@@ -436,7 +438,7 @@ def event_stream(host, consumer=None, controls=None, changed=None, alan_watcher=
                 events.append(changed.get_nowait())
             if consumer and consumer.is_set():
                 return
-            force = bool({"alan", "quota"} & set(events))
+            force = "alan" in events
             if control is not None and ("closed" in events or process.poll() is not None):
                 discard_control()
                 force = True
