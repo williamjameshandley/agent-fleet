@@ -40,14 +40,25 @@ def test_native_actor_is_derived_from_the_published_runtime_identity(tmp_path, m
     assert transcripts.native_actor([42]) == "claude-session@lovelace"
 
 
-def test_native_actor_rejects_a_declared_root_without_an_actor(tmp_path, monkeypatch):
+def test_native_actor_accepts_a_standalone_root_without_an_actor(tmp_path, monkeypatch):
     root = tmp_path / "native"
     root.mkdir()
     monkeypatch.setattr(Path, "read_bytes", lambda path: (
         f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
         else b""))
 
-    with pytest.raises(RuntimeError, match="cannot read published native actor"):
+    assert transcripts.native_actor([42]) == ""
+
+
+def test_native_actor_rejects_an_empty_published_actor(tmp_path, monkeypatch):
+    root = tmp_path / "native"
+    root.mkdir()
+    (root / "actor").write_text("")
+    monkeypatch.setattr(Path, "read_bytes", lambda path: (
+        f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
+        else b""))
+
+    with pytest.raises(RuntimeError, match="published native actor is empty"):
         transcripts.native_actor([42])
 
 
