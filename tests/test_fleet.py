@@ -174,11 +174,28 @@ class IdentityTests(unittest.TestCase):
         placed.assert_called_once_with("place actor:first")
         run.assert_not_called()
 
+    def test_absent_ui_server_means_no_slots_but_query_failure_is_visible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = Path(directory) / "agent-fleet-ui"
+            with mock.patch.object(viewer, "ui_server_socket",
+                                   return_value=socket_path):
+                self.assertEqual(viewer.slots(), [])
+                socket_path.touch()
+                failed = subprocess.CompletedProcess(
+                    [], 1, stdout="", stderr="server exited unexpectedly")
+                with mock.patch.object(viewer.subprocess, "run",
+                                       return_value=failed):
+                    with self.assertRaisesRegex(RuntimeError,
+                                                "server exited unexpectedly"):
+                        viewer.slots()
+
     def test_unresponsive_viewer_slot_remains_occupied(self):
         listed = subprocess.CompletedProcess([], 0, stdout="fleet@side\n",
                                              stderr="")
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(viewer, "RUNTIME", Path(directory)), \
+                mock.patch.object(viewer, "ui_server_socket",
+                                  return_value=Path(directory)), \
                 mock.patch.object(viewer.journal, "record") as recorded, \
                 mock.patch.object(viewer.subprocess, "run",
                                   return_value=listed) as run:

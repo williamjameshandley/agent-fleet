@@ -8,6 +8,7 @@ import time
 import queue
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 from .config import HUB, RUNTIME, runtime_sources, ssh_environment
@@ -118,11 +119,21 @@ def request(slot, key):
     exchange(slot, f"OPEN {key}" if key else "CLEAR")
 
 
+def ui_server_socket():
+    base = Path(os.environ.get("TMUX_TMPDIR") or "/tmp")
+    return base / f"tmux-{os.getuid()}" / "agent-fleet-ui"
+
+
 def slots():
+    if not ui_server_socket().exists():
+        return []
     sessions = subprocess.run(
         ["/usr/bin/tmux", "-L", "agent-fleet-ui", "list-sessions",
          "-F", "#{session_name}"], text=True, capture_output=True)
-    names = sessions.stdout.splitlines() if sessions.returncode == 0 else []
+    if sessions.returncode:
+        raise RuntimeError(sessions.stderr.strip()
+                           or "UI tmux server is unavailable")
+    names = sessions.stdout.splitlines()
     found = []
     for name in sorted(names):
         slot = name.removeprefix("fleet@")
