@@ -152,6 +152,7 @@ def test_unavailable_recovery_requires_catalogued_full_native_transcript():
 def test_concurrent_hibernated_opens_share_one_alan_resume():
     actor = replace(session(state="hibernated"), evaluator="native",
                     transcript_path="/transcript")
+    unavailable = replace(actor, reported_state="unavailable")
     restored = replace(actor, reported_state="waiting",
                        attachment=SessionRef(
                            ServerRef("will@lovelace", "/tmp/tmux", 1, 2), "$1"))
@@ -165,6 +166,7 @@ def test_concurrent_hibernated_opens_share_one_alan_resume():
         fleet.sessions[actor.ref.server.source] = [restored]
 
     async def wait(predicate, _description):
+        assert not predicate(unavailable)
         assert predicate(restored)
         return restored
 
@@ -181,6 +183,33 @@ def test_concurrent_hibernated_opens_share_one_alan_resume():
         waiting.assert_awaited_once()
 
     asyncio.run(exercise())
+
+
+def test_restore_waits_for_a_live_alan_actor():
+    actor = replace(session(state="hibernated"), evaluator="native", managed=True)
+    unavailable = replace(actor, reported_state="unavailable")
+    restored = replace(actor, reported_state="waiting")
+    graph = __import__("networkx").MultiDiGraph()
+    graph.graph["actors"] = [{"addr": actor.ref.key, "evaluator": "native",
+                              "managed": True}]
+    fleet = fleet_with(actor)
+
+    async def wait(predicate, _description):
+        assert not predicate(actor)
+        assert not predicate(unavailable)
+        assert predicate(restored)
+        return restored
+
+    with mock.patch.object(fleet, "composed_graph", return_value=graph), \
+            mock.patch.object(fleet, "authority", return_value={}) as execute, \
+            mock.patch.object(fleet, "wait_for_source", side_effect=wait):
+        value = asyncio.run(fleet.action({
+            "operation": "restore", "history": actor.ref.key, "name": ""}))
+
+    assert value == {"source": actor.ref.key}
+    execute.assert_awaited_once_with(
+        actor.ref.server.source,
+        {"operation": "restore-alan", "actor": actor.ref.session_id})
 
 
 def test_policy_dry_run_reports_reasons_without_mutation(monkeypatch, capsys):

@@ -1015,6 +1015,7 @@ class Fleet:
                                                   "actor": actor})
                 await self.wait_for_source(
                     lambda session: session.ref.key == key
+                    and session.state in {"waiting", "working"}
                     and (not native or session.attachment is not None),
                     f"restore {key}")
                 return {"source": key}
@@ -1363,7 +1364,7 @@ class Fleet:
         })
         await self.wait_for_source(
             lambda current: current.ref == session.ref
-            and current.state != "hibernated"
+            and current.state in {"waiting", "working"}
             and (current.agent == "python" or current.attachment is not None),
             f"restore {session.ref.key}")
 
