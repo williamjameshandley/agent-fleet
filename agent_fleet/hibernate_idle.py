@@ -1,4 +1,5 @@
 import argparse
+import sys
 import time
 
 from .actions import hibernate
@@ -50,10 +51,17 @@ def main():
     now = int(time.time())
     selected = list(candidates(sessions, args.older_than, now))
     rows = sessions if args.dry_run else selected
+    failed = False
     for session in rows:
         activity = session.recency or session.human_activity or session.created
         status = reason(session, args.older_than, now)
         print(f"{session.ref.key}\t{session.name}\t{session.agent}\t"
               f"{session.ref.server.host}\t{activity}\t{status}")
         if not args.dry_run and status == "eligible":
-            hibernate(session.ref.key)
+            try:
+                hibernate(session.ref.key)
+            except RuntimeError as error:
+                failed = True
+                print(f"{session.ref.key}: {error}", file=sys.stderr)
+    if failed:
+        raise SystemExit(1)
