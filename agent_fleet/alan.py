@@ -274,7 +274,7 @@ def inventory(source, actor_descriptors):
             actor["created"], 0, 0, 1, "alan", "",
             actor.get("cwd") or "", actor["kind"], actor["state"],
             actor.get("summary") or actor.get("last_error", ""),
-            actor["last_operation_activity"],
+            _timestamp(actor["last_operation_activity"]),
             transcript_id,
             actor["human_activity"], actor.get("active_evaluation") or "",
             actor["evaluation_started"], "",
