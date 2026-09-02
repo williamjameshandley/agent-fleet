@@ -895,6 +895,38 @@ def test_outstanding_principal_requests_follow_recursive_folds_and_reply_edges()
     assert composed_collapsed == collapsed
 
 
+def test_cross_principal_delivery_does_not_request_attention_from_actor_owner():
+    root = "codex-root@newton"
+    child = "python-child@newton"
+    owner = "will@newton"
+    phone = "will-phone@newton"
+    current = nx.MultiDiGraph()
+    current.graph["actors"] = [
+        {"addr": root, "kind": "codex"},
+        {"addr": child, "kind": "python"},
+        {"addr": owner, "kind": "principal"},
+        {"addr": phone, "kind": "principal"},
+    ]
+    for actor in (root, child, owner, phone):
+        current.add_node(f"{actor}#0", stream=actor, op="create",
+                         time="2026-07-30T12:00:00Z")
+    current.add_node(f"{owner}#1", stream=owner, op="spawn")
+    current.add_edge(f"{owner}#1", f"{root}#0", key="spawn")
+    current.add_node(f"{root}#1", stream=root, op="spawn")
+    current.add_edge(f"{root}#1", f"{child}#0", key="spawn")
+    current.add_node(f"{child}#1", stream=child, op="send", to=phone,
+                     payload="delivery complete", time="2026-07-30T12:00:01Z")
+    current.add_node(f"{phone}#1", stream=phone, op="input",
+                     send=f"{child}#1", payload="delivery complete")
+    current.add_edge(f"{child}#1", f"{phone}#1", key="send")
+
+    [projected] = alan.project([
+        actor_session(root, "codex"), actor_session(child, "python")
+    ], current)
+    assert projected.session.state == "waiting"
+    assert projected.session.summary == ""
+
+
 def test_compact_requests_reconcile_a_principal_descriptor_from_another_host():
     actor = "codex-child@lovelace"
     principal = "will@newton"

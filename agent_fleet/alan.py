@@ -404,12 +404,14 @@ def project(sessions, graph, expanded=(), show_python=False):
         emitted.update(visible(root))
 
     attention = {}
-    for source, request in _outstanding_requests(graph, descriptors):
+    for source, target, request in _outstanding_requests(graph, descriptors):
         candidates = (nx.ancestors(ancestry, source) | {source}) & emitted
         if not candidates:
             continue
         anchor = min(candidates, key=lambda actor: nx.shortest_path_length(
             ancestry, actor, source))
+        if roots[anchor] != target:
+            continue
         attention.setdefault(anchor, []).append(request)
 
     def emit(actor, depth):
@@ -464,7 +466,7 @@ def _outstanding_requests(graph, descriptors):
             (json.dumps(payload, sort_keys=True) if not isinstance(payload, str)
              else payload).split()
         )
-        requests.append((operation["stream"],
+        requests.append((operation["stream"], operation["to"],
                          (operation["time"], _timestamp(operation["time"]), preview)))
     return requests
 
