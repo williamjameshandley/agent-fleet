@@ -2,6 +2,8 @@ from dataclasses import replace
 import asyncio
 from unittest import mock
 
+import pytest
+
 from agent_fleet import actions, alan, authority
 from agent_fleet.daemon import Fleet
 from agent_fleet.hibernate_idle import candidates, duration, reason
@@ -247,6 +249,24 @@ def test_policy_submits_only_eligible_exact_keys(monkeypatch, capsys):
     hibernate_idle.main()
     assert capsys.readouterr().out.count("\n") == 1
     mutate.assert_called_once_with(old.ref.key)
+
+
+def test_policy_reports_failure_and_continues(monkeypatch, capsys):
+    from agent_fleet import hibernate_idle
+    first = session(last_activity=10)
+    second = replace(first, ref=SessionRef(first.ref.server, "codex-old@lovelace"))
+    monkeypatch.setattr(hibernate_idle, "snapshot", lambda: "snapshot")
+    monkeypatch.setattr(hibernate_idle, "decode_message",
+                        lambda _raw: ([first, second], {}, []))
+    mutate = mock.Mock(side_effect=[RuntimeError("actor_not_idle"), None])
+    monkeypatch.setattr(hibernate_idle, "hibernate", mutate)
+    monkeypatch.setattr("sys.argv", ["fleet-hibernate-idle", "--older-than", "50"])
+    monkeypatch.setattr(hibernate_idle.time, "time", lambda: 100)
+    with pytest.raises(SystemExit) as error:
+        hibernate_idle.main()
+    assert error.value.code == 1
+    assert capsys.readouterr().err == f"{first.ref.key}: actor_not_idle\n"
+    assert mutate.call_args_list == [mock.call(first.ref.key), mock.call(second.ref.key)]
 
 
 def test_hibernation_capability_schema_is_protocol_version_three():
