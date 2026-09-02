@@ -32,7 +32,7 @@ MARKER_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 def remove_viewer_marker(host, owner, slot):
     if not MARKER_COMPONENT.fullmatch(owner) or not MARKER_COMPONENT.fullmatch(slot):
         raise ValueError("invalid viewer marker identity")
-    path = RUNTIME / f"viewer-{owner}-{slot}-{host}.tty"
+    path = RUNTIME / f"viewer-{owner}-{slot}.tty"
     path.unlink(missing_ok=True)
 
 

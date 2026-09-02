@@ -269,12 +269,12 @@ def test_policy_reports_failure_and_continues(monkeypatch, capsys):
     assert mutate.call_args_list == [mock.call(first.ref.key), mock.call(second.ref.key)]
 
 
-def test_hibernation_capability_schema_is_protocol_version_three():
+def test_hibernation_capability_schema_is_protocol_version_four():
     import json
     import pytest
 
     message = json.loads(encode([session()]))
-    assert message["version"] == 3
-    message["version"] = 2
-    with pytest.raises(ValueError, match="unsupported Fleet protocol version 2"):
+    assert message["version"] == 4
+    message["version"] = 3
+    with pytest.raises(ValueError, match="unsupported Fleet protocol version 3"):
         decode_message(json.dumps(message))

@@ -342,7 +342,7 @@ class Attachment:
     def create_host(self, host, key):
         local = os.uname().nodename.split(".", 1)[0]
         remote_file = (f"${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}/agent-fleet/"
-                       f"viewer-{local}-{self.slot}-{host}.tty")
+                       f"viewer-{local}-{self.slot}.tty")
         owner = local
         master = self.ensure_master(host)
         expected = self.resolve(key, remote=True)
