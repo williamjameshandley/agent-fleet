@@ -934,7 +934,7 @@ class IdentityTests(unittest.TestCase):
             descriptor = {
                 "addr": addr, "kind": "codex", "host": host,
                 "state": "waiting", "cwd": str(root),
-                "last_operation_activity": 1, "hibernation": "transcript",
+                "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript",
             }
 
             principal = f"will@{host}"
@@ -1171,22 +1171,23 @@ class IdentityTests(unittest.TestCase):
              "cwd": "/work", "created": 1, "human_activity": 2,
              "native_id": "persisted-native-id",
              "active_evaluation": f"{codex}#2", "evaluation_started": 3,
-             "last_operation_activity": 3, "hibernation": "transcript",
+             "last_operation_activity": "2026-07-30T12:00:03Z", "hibernation": "transcript",
              "native": {"path": f"/native/rollout-{identity}.jsonl"}},
             {"addr": "python-1@newton", "kind": "python", "state": "waiting",
              "cwd": "/work", "created": 1, "human_activity": 0,
              "active_evaluation": None, "evaluation_started": 0,
-             "last_operation_activity": 1, "hibernation": "exact",
+             "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "exact",
              "native": {"kind": "ipython", "path": "/native/history.sqlite"}},
             {"addr": "claude-old@newton", "kind": "claude", "state": "retired",
              "cwd": "/work", "created": 1, "human_activity": 0,
              "active_evaluation": None, "evaluation_started": 0,
-             "last_operation_activity": 1, "hibernation": "transcript"},
+             "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript"},
         ]
         projected = alan_inventory("newton", descriptors)
         self.assertEqual([item.ref.session_id for item in projected],
                          [codex, "python-1@newton"])
         self.assertEqual(projected[0].state, "working")
+        self.assertEqual(projected[0].recency, 1785412803)
         self.assertEqual(projected[0].transcript_id, identity)
         self.assertEqual(projected[0].transcript_path, "")
         self.assertEqual(projected[0].evaluation, f"{codex}#2")
@@ -1208,7 +1209,7 @@ class IdentityTests(unittest.TestCase):
                     "addr": addr, "kind": kind, "state": "waiting",
                     "cwd": cwd, "created": 1, "human_activity": 0,
                     "label": "same human label", "active_evaluation": None,
-                    "evaluation_started": 0, "last_operation_activity": 1,
+                    "evaluation_started": 0, "last_operation_activity": "2026-07-30T12:00:01Z",
                     "hibernation": "transcript" if kind in {"claude", "codex"}
                     else "exact" if kind == "python" else "unsupported",
                 })
@@ -1240,7 +1241,7 @@ class IdentityTests(unittest.TestCase):
             "addr": actor, "kind": "codex", "evaluator": "native",
             "state": "waiting", "cwd": "/work", "created": 1,
             "human_activity": 0, "active_evaluation": None,
-            "evaluation_started": 0, "last_operation_activity": 1,
+            "evaluation_started": 0, "last_operation_activity": "2026-07-30T12:00:01Z",
             "hibernation": "transcript",
         }
         server = mock.Mock()
@@ -1300,7 +1301,7 @@ class IdentityTests(unittest.TestCase):
                 "addr": addr, "kind": kind, "state": "waiting",
                 "cwd": str(cwd), "created": 1, "human_activity": 0,
                 "label": "colliding label", "active_evaluation": None,
-                "evaluation_started": 0, "last_operation_activity": 1,
+                "evaluation_started": 0, "last_operation_activity": "2026-07-30T12:00:01Z",
                 "hibernation": "transcript" if kind in {"claude", "codex"}
                 else "exact" if kind == "python" else "unsupported",
             } for addr, kind in specifications]
@@ -2170,7 +2171,7 @@ class IdentityTests(unittest.TestCase):
             "addr": f"llm-1@{host}", "kind": "llm", "state": "waiting",
             "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
-            "last_operation_activity": 1, "hibernation": "unsupported",
+            "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "unsupported",
         }])[0]
 
         async def exercise():
@@ -2200,7 +2201,7 @@ class IdentityTests(unittest.TestCase):
             "addr": f"antigravity-1@{host}", "kind": "antigravity",
             "state": "waiting", "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
-            "last_operation_activity": 1, "hibernation": "unsupported",
+            "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "unsupported",
         }])[0]
 
         async def exercise():
@@ -2229,7 +2230,7 @@ class IdentityTests(unittest.TestCase):
             "addr": f"codex-1@{host}", "kind": "codex", "state": "waiting",
             "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
-            "last_operation_activity": 1, "hibernation": "transcript",
+            "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript",
         }])[0]
         provider = Session(
             SessionRef(ServerRef(source, "/tmp/tmux/default", 12, 10), "$7"),
