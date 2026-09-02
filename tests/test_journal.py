@@ -86,6 +86,7 @@ def test_an_accepted_action_is_journaled_with_its_target(monkeypatch):
         "FLEET_ACTION": "rename",
         "FLEET_TARGET": "lovelace:/tmp/tmux-1000/default:1:2:$3",
     }]
+    assert journal._value("action", "hibernate") == "hibernate"
 
 
 def test_service_declares_its_journal_streams_and_identifier():
