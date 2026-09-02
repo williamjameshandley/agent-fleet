@@ -427,12 +427,14 @@ class IdentityTests(unittest.TestCase):
         graph = nx.MultiDiGraph()
         graph.graph["actors"] = []
         source = RuntimeSource("lovelace", "will", "/run/alan", "/run/tmux")
-        raw = encode_observation([self.session("lovelace")], True, graph)
+        session = replace(self.session("lovelace"), attachment_ambiguous=True)
+        raw = encode_observation([session], True, graph)
         with mock.patch("agent_fleet.protocol.json.loads",
                         wraps=json.loads) as loads:
             sessions, available, decoded = decode_observation(raw, source)
         loads.assert_called_once_with(raw)
         self.assertEqual(len(sessions), 1)
+        self.assertTrue(sessions[0].attachment_ambiguous)
         self.assertTrue(available)
         self.assertEqual(decoded.graph["actors"], [])
 
@@ -2001,6 +2003,11 @@ class IdentityTests(unittest.TestCase):
         switch.assert_called_once_with("newton:/tmp/tmux:12:10:$1", "/dev/pts/8")
         reclaim.assert_called_once_with("newton", os.uname().nodename.split(".", 1)[0])
         self.assertEqual(len(ssh.call_args_list), 2)
+        marker = f"viewer-{os.uname().nodename.split('.', 1)[0]}-main.tty"
+        self.assertIn(marker, ui.command.call_args.args[0][-1])
+        self.assertIn(marker, ssh.call_args_list[0].args[1])
+        self.assertNotIn(f"{marker.removesuffix('.tty')}-newton.tty",
+                         ui.command.call_args.args[0][-1])
 
     def test_non_hub_actor_lookup_reuses_one_forward_to_the_fleet_daemon(self):
         state = viewer.Attachment("side", "/dev/pts/9", mock.Mock())

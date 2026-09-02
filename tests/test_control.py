@@ -628,8 +628,8 @@ class DaemonBoundaryTests(unittest.TestCase):
     def test_resident_host_removes_only_its_exact_viewer_marker(self):
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch.object(daemon, "RUNTIME", Path(directory)):
-            marker = Path(directory) / "viewer-lovelace-main-fixture.tty"
-            other = Path(directory) / "viewer-lovelace-side-fixture.tty"
+            marker = Path(directory) / "viewer-lovelace-main.tty"
+            other = Path(directory) / "viewer-lovelace-side.tty"
             marker.write_text("/dev/pts/8\n"); other.write_text("/dev/pts/9\n")
             daemon.remove_viewer_marker("fixture", "lovelace", "main")
             self.assertFalse(marker.exists())
