@@ -32,7 +32,11 @@ def test_stopped_claude_agents_without_pids_are_ignored():
 def test_native_actor_is_derived_from_the_published_runtime_identity(tmp_path, monkeypatch):
     root = tmp_path / "native"
     root.mkdir()
-    (root / "actor").write_text("claude-session@lovelace\n")
+    (root / "identity.json").write_text(json.dumps({
+        "actor": "claude-session@lovelace",
+        "provider": "claude",
+        "transcript_id": "session",
+    }))
     monkeypatch.setattr(Path, "read_bytes", lambda path: (
         f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
         else b""))
@@ -40,7 +44,7 @@ def test_native_actor_is_derived_from_the_published_runtime_identity(tmp_path, m
     assert transcripts.native_actor([42]) == "claude-session@lovelace"
 
 
-def test_native_actor_accepts_a_standalone_root_without_an_actor(tmp_path, monkeypatch):
+def test_native_actor_accepts_a_standalone_root_without_an_identity(tmp_path, monkeypatch):
     root = tmp_path / "native"
     root.mkdir()
     monkeypatch.setattr(Path, "read_bytes", lambda path: (
@@ -50,15 +54,28 @@ def test_native_actor_accepts_a_standalone_root_without_an_actor(tmp_path, monke
     assert transcripts.native_actor([42]) == ""
 
 
-def test_native_actor_rejects_an_empty_published_actor(tmp_path, monkeypatch):
+def test_native_actor_rejects_an_invalid_published_actor(tmp_path, monkeypatch):
     root = tmp_path / "native"
     root.mkdir()
-    (root / "actor").write_text("")
+    (root / "identity.json").write_text(json.dumps({"actor": ""}))
     monkeypatch.setattr(Path, "read_bytes", lambda path: (
         f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
         else b""))
 
-    with pytest.raises(RuntimeError, match="published native actor is empty"):
+    with pytest.raises(RuntimeError, match="published native actor is invalid"):
+        transcripts.native_actor([42])
+
+
+@pytest.mark.parametrize("identity", ["{", "null"])
+def test_native_actor_rejects_a_malformed_identity(tmp_path, monkeypatch, identity):
+    root = tmp_path / "native"
+    root.mkdir()
+    (root / "identity.json").write_text(identity)
+    monkeypatch.setattr(Path, "read_bytes", lambda path: (
+        f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
+        else b""))
+
+    with pytest.raises(RuntimeError, match="published native actor"):
         transcripts.native_actor([42])
 
 

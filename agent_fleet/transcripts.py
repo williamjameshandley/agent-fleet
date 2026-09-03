@@ -527,15 +527,16 @@ def native_actor(pids):
         roots = [value.split(b"=", 1)[1] for value in environment
                  if value.startswith(b"ALAN_NATIVE_ROOT=")]
         for root in roots:
-            path = Path(os.fsdecode(root)) / "actor"
+            path = Path(os.fsdecode(root)) / "identity.json"
             try:
-                actor = path.read_text().strip()
+                identity = json.loads(path.read_text())
+                actor = identity["actor"] if isinstance(identity, dict) else None
             except FileNotFoundError:
                 continue
-            except OSError as error:
+            except (OSError, json.JSONDecodeError, KeyError) as error:
                 raise RuntimeError(f"cannot read published native actor {path}: {error}")
-            if not actor:
-                raise RuntimeError(f"published native actor is empty: {path}")
+            if not isinstance(actor, str) or not actor:
+                raise RuntimeError(f"published native actor is invalid: {path}")
             actors.add(actor)
     if len(actors) > 1:
         raise RuntimeError("provider process tree carries multiple Alan actors: "
