@@ -26,13 +26,14 @@ from .authority import execute as authority_execute
 from . import journal, proc, render
 
 
-MARKER_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
+MARKER_COMPONENT = re.compile(r"^[A-Za-z0-9_.@-]+$")
 
 
-def remove_viewer_marker(host, owner, slot):
-    if not MARKER_COMPONENT.fullmatch(owner) or not MARKER_COMPONENT.fullmatch(slot):
+def remove_viewer_marker(source, owner, slot):
+    if not all(MARKER_COMPONENT.fullmatch(value)
+               for value in (source, owner, slot)):
         raise ValueError("invalid viewer marker identity")
-    path = RUNTIME / f"viewer-{owner}-{slot}-{host}.tty"
+    path = RUNTIME / f"viewer-{owner}-{slot}-{source}.tty"
     path.unlink(missing_ok=True)
 
 
@@ -84,9 +85,10 @@ def events():
                         response = {"switch": request["switch"], "duration": duration,
                                     "target": target}
                     elif "cleanup" in request:
-                        if set(request) != {"cleanup", "owner", "slot"}:
+                        if set(request) != {"cleanup", "source", "owner", "slot"}:
                             raise ValueError("invalid cleanup request")
-                        remove_viewer_marker(host, request["owner"], request["slot"])
+                        remove_viewer_marker(
+                            request["source"], request["owner"], request["slot"])
                         response = {"cleanup": request["cleanup"]}
                     elif "authority" in request:
                         if set(request) != {"authority", "request"}:
@@ -1378,7 +1380,8 @@ class Fleet:
         self.cleanups[number] = (source_key, future)
         process = self.processes[source_key]
         assert process.stdin
-        process.stdin.write((json.dumps({"cleanup": number, "owner": owner,
+        process.stdin.write((json.dumps({"cleanup": number, "source": source_key,
+                                         "owner": owner,
                                          "slot": slot}) + "\n").encode())
         await process.stdin.drain()
         await future

@@ -392,7 +392,8 @@ class ProtocolCorrelationTests(unittest.TestCase):
                      "client": "/dev/pts/9"},
                     {"preview": 2, "target": ["/tmp/socket", 1, 1, "$1"],
                      "columns": 80, "lines": 20},
-                    {"cleanup": 3, "owner": "lovelace", "slot": "main"},
+                    {"cleanup": 3, "source": "sophie@lovelace",
+                     "owner": "lovelace", "slot": "main"},
                 ]
                 for request in requests:
                     host.stdin.write(json.dumps(request) + "\n")
@@ -588,6 +589,7 @@ class DaemonBoundaryTests(unittest.TestCase):
             preview_request = next(item for item in stdin.writes if "preview" in item)
             switch_request = next(item for item in stdin.writes if "switch" in item)
             cleanup_request = next(item for item in stdin.writes if "cleanup" in item)
+            self.assertEqual(cleanup_request["source"], source)
             fleet.source_reply(source, {"switch": switch_request["switch"],
                                       "target": ["/tmp/tmux/default", 12, 10, "$1"],
                                       "duration": .001})
@@ -628,14 +630,14 @@ class DaemonBoundaryTests(unittest.TestCase):
     def test_resident_host_removes_only_its_exact_viewer_marker(self):
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch.object(daemon, "RUNTIME", Path(directory)):
-            marker = Path(directory) / "viewer-lovelace-main-fixture.tty"
-            other = Path(directory) / "viewer-lovelace-side-fixture.tty"
+            marker = Path(directory) / "viewer-lovelace-main-sophie@fixture.tty"
+            other = Path(directory) / "viewer-lovelace-main-will@fixture.tty"
             marker.write_text("/dev/pts/8\n"); other.write_text("/dev/pts/9\n")
-            daemon.remove_viewer_marker("fixture", "lovelace", "main")
+            daemon.remove_viewer_marker("sophie@fixture", "lovelace", "main")
             self.assertFalse(marker.exists())
             self.assertTrue(other.exists())
             with self.assertRaisesRegex(ValueError, "invalid"):
-                daemon.remove_viewer_marker("fixture", "../escape", "main")
+                daemon.remove_viewer_marker("../escape", "lovelace", "main")
 
 
 if __name__ == "__main__":
