@@ -104,7 +104,7 @@ def hibernate(key):
 
 def next_waiting():
     from .daemon import request
-    key = request("next-waiting\t" + dict(viewer.slots()).get("main", "")).strip()
+    key = request("next-waiting\t" + (dict(viewer.slots()).get("main") or "")).strip()
     if not key:
         subprocess.run(["/usr/bin/tmux", "-N", "display-message", "-t", "fleet@muster",
                         "No waiting sessions"])
@@ -159,7 +159,7 @@ def arrive(profile, available=False):
     subprocess.run(["/usr/bin/tmux", "-N", "set-option", "-g", "@fleet_epoch", epoch],
                    check=True)
     placements = viewer.slots()
-    free = [slot for slot, source in placements if not source]
+    free = [slot for slot, source in placements if source == ""]
     shown = {source for _, source in placements if source}
     ranked = sorted((session for session in sessions
                      if session.windows == 1

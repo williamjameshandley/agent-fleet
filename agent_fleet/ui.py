@@ -4,7 +4,6 @@ import shlex
 import socket
 import subprocess
 import textwrap
-import time
 
 from .config import RUNTIME
 from .daemon import request
@@ -99,20 +98,11 @@ def footer():
                          break_on_hyphens=False)
 
 
-def select():
-    path = RUNTIME / "muster.sock"
-    if not path.exists():
-        return
-    # A reload arriving alongside the placement discards it, so assert the
-    # position again once that reload has settled.
-    for attempt in range(2):
-        if attempt:
-            time.sleep(.3)
-        subprocess.run(
-            ["curl", "-fsS", "--max-time", "2", "--unix-socket", str(path),
-             "-XPOST", "-d", "transform(/usr/lib/agent-fleet/ui cursor)", "http://localhost"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+def select(key):
+    reply = request(f"place {key}").strip()
+    if reply != "OK":
+        raise RuntimeError(reply.removeprefix("ERROR ")
+                           or "Muster placement failed")
 
 
 def history():

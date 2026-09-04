@@ -33,12 +33,16 @@ across machines, operable with one hand and eventually none.
 
 ## Safety and spatial behavior
 
-- Fleet never invokes `kill-window` or `unlink-window`, and never destroys a
-  session implicitly. Explicit user-approved archive records the vendor
-  conversation identity in recoverable History before closing the live tmux
-  session, and refuses to close if recovery cannot be established. Restore
-  resumes the full vendor conversation rather than requesting compression.
-  There is no permanent purge.
+- Fleet never invokes `kill-window` or `unlink-window` against a source tmux
+  server. Fleet's viewer lifecycle alone removes Fleet-owned disposable
+  presentation windows from its UI tmux server. Sessions are never destroyed
+  implicitly. Existing sessions close only through explicit
+  `fleet-viewer --destroy` or explicit user-approved archive. A newly created
+  `fleet@muster` is discarded if its initial registration fails. Archive
+  records the vendor conversation identity in recoverable History before
+  closing the live tmux session and refuses to close if recovery cannot be
+  established. Restore resumes the full vendor conversation rather than
+  requesting compression. There is no permanent purge.
 - Rename, create, open and archive target revalidated source identities.
 - Existing occupied deck slots do not move or get reclaimed automatically.
   An empty slot may be filled; replacement is explicit. Failure to resurface an

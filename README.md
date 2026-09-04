@@ -306,8 +306,9 @@ the same host.
 Runtime boundaries are listed in
 `~/.config/agent-fleet/runtime-sources.json`. Each closed entry names `host`,
 `principal`, `public_socket`, and `tmux_socket`, with absolute socket paths.
-Fleet connects to the exact `<principal>@<host>` OpenSSH login for each entry;
-that login supplies the Unix identity, home and XDG paths. The Lovelace hub
+An entry naming the daemon's own login runs its collector directly. Every other
+entry is reached through the exact `<principal>@<host>` OpenSSH login; that
+login supplies the Unix identity, home and XDG paths. The Lovelace hub
 qualifies each collector's source-relative observations by the configured
 source, and ordinary Unix access failures remain visible.
 

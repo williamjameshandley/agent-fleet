@@ -15,10 +15,13 @@ if [ "${1:-}" = --destroy ]; then
     fi
     runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet
     if tmux has-session -t "fleet@$slot" 2>/dev/null; then
-        reply=$(printf 'SHUTDOWN\n' | /usr/bin/nc -U "$runtime/viewer-$slot.sock") || exit
-        if [ "$reply" != OK ]; then
-            printf '%s\n' "${reply:-viewer shutdown returned no response}" >&2
-            exit 1
+        if reply=$(printf 'SHUTDOWN\n' | /usr/bin/nc -U "$runtime/viewer-$slot.sock" 2>/dev/null); then
+            if [ "$reply" != OK ]; then
+                printf '%s\n' "${reply:-viewer shutdown returned no response}" >&2
+                exit 1
+            fi
+        else
+            printf 'viewer %s controller is unreachable; destroying its UI session\n' "$slot" >&2
         fi
         tmux kill-session -t "fleet@$slot"
     fi
@@ -31,7 +34,8 @@ if [ "$(hostname -s)" != lovelace ]; then
 fi
 if [ "$slot" = main ]; then
     if tmux has-session -t fleet@main 2>/dev/null && ! printf 'STATUS\n' | /usr/bin/nc -U "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet/viewer-main.sock" >/dev/null 2>&1; then
-        tmux kill-session -t fleet@main
+        printf 'fleet@main controller is unresponsive; fleet-viewer --destroy main rebuilds it\n' >&2
+        exit 1
     fi
     if ! tmux has-session -t fleet@main 2>/dev/null; then
         tmux new-session -d -s fleet@main 'exec sleep infinity'
@@ -48,7 +52,8 @@ if [ "$slot" = main ]; then
     exec /usr/bin/tmux -N -L agent-fleet-ui -u attach-session -t fleet@main
 fi
 if tmux has-session -t "fleet@$slot" 2>/dev/null && ! printf 'STATUS\n' | /usr/bin/nc -U "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/agent-fleet/viewer-$slot.sock" >/dev/null 2>&1; then
-    tmux kill-session -t "fleet@$slot"
+    printf 'viewer %s controller is unresponsive; fleet-viewer --destroy %s rebuilds it\n' "$slot" "$slot" >&2
+    exit 1
 fi
 if ! tmux has-session -t "fleet@$slot" 2>/dev/null; then
     tmux new-session -d -s "fleet@$slot" 'exec sleep infinity'
