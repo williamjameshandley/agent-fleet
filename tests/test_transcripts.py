@@ -32,34 +32,70 @@ def test_stopped_claude_agents_without_pids_are_ignored():
 def test_native_actor_is_derived_from_the_published_runtime_identity(tmp_path, monkeypatch):
     root = tmp_path / "native"
     root.mkdir()
-    (root / "actor").write_text("claude-session@lovelace\n")
+    (root / "identity.json").write_text(json.dumps({
+        "actor": "claude-session@lovelace",
+        "provider": "claude",
+        "transcript_id": "session",
+    }))
     monkeypatch.setattr(Path, "read_bytes", lambda path: (
         f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
         else b""))
 
-    assert transcripts.native_actor([42]) == "claude-session@lovelace"
+    assert transcripts.native_identity([42]) == (
+        "claude-session@lovelace", "claude", "session")
 
 
-def test_native_actor_accepts_a_standalone_root_without_an_actor(tmp_path, monkeypatch):
+def test_native_actor_accepts_a_standalone_root_without_an_identity(tmp_path, monkeypatch):
     root = tmp_path / "native"
     root.mkdir()
     monkeypatch.setattr(Path, "read_bytes", lambda path: (
         f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
         else b""))
 
-    assert transcripts.native_actor([42]) == ""
+    assert transcripts.native_identity([42]) is None
 
 
-def test_native_actor_rejects_an_empty_published_actor(tmp_path, monkeypatch):
+def test_native_actor_rejects_an_invalid_published_actor(tmp_path, monkeypatch):
     root = tmp_path / "native"
     root.mkdir()
-    (root / "actor").write_text("")
+    (root / "identity.json").write_text(json.dumps({
+        "actor": "", "provider": "claude", "transcript_id": "session",
+    }))
     monkeypatch.setattr(Path, "read_bytes", lambda path: (
         f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
         else b""))
 
-    with pytest.raises(RuntimeError, match="published native actor is empty"):
-        transcripts.native_actor([42])
+    with pytest.raises(RuntimeError, match="published native actor is invalid"):
+        transcripts.native_identity([42])
+
+
+def test_native_identity_rejects_a_non_alan_provider(tmp_path, monkeypatch):
+    root = tmp_path / "native"
+    root.mkdir()
+    (root / "identity.json").write_text(json.dumps({
+        "actor": "antigravity-session@lovelace",
+        "provider": "antigravity",
+        "transcript_id": "session",
+    }))
+    monkeypatch.setattr(Path, "read_bytes", lambda path: (
+        f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
+        else b""))
+
+    with pytest.raises(RuntimeError, match="published native actor is invalid"):
+        transcripts.native_identity([42])
+
+
+@pytest.mark.parametrize("identity", ["{", "null"])
+def test_native_actor_rejects_a_malformed_identity(tmp_path, monkeypatch, identity):
+    root = tmp_path / "native"
+    root.mkdir()
+    (root / "identity.json").write_text(identity)
+    monkeypatch.setattr(Path, "read_bytes", lambda path: (
+        f"ALAN_NATIVE_ROOT={root}\0".encode() if str(path) == "/proc/42/environ"
+        else b""))
+
+    with pytest.raises(RuntimeError, match="published native actor"):
+        transcripts.native_identity([42])
 
 
 def test_claude_observe_accepts_optional_status(monkeypatch):
@@ -479,28 +515,28 @@ def test_native_wrapper_derives_provider_from_its_process_tree(monkeypatch):
     monkeypatch.setattr(transcripts, "process_tree", lambda: {100: [101]})
     monkeypatch.setattr(transcripts.os, "readlink", lambda path: (
         "/usr/bin/codex" if path == "/proc/101/exe" else "/usr/bin/python3"))
-    monkeypatch.setattr(transcripts, "native_actor",
-                        lambda _tree: f"codex-{identity}@newton")
+    monkeypatch.setattr(transcripts, "native_identity",
+                        lambda _tree: (f"codex-{identity}@newton", "codex", identity))
     monkeypatch.setattr(transcripts, "codex_candidates", lambda _tree: (["rollout.jsonl"], set()))
     monkeypatch.setattr(transcripts, "transcript", lambda _agent, _path: item)
     monkeypatch.setattr(transcripts, "codex_state",
                         lambda _item: ("waiting", "native reply", 3))
     monkeypatch.setattr(transcripts, "last_human_time", lambda _item: 2)
 
-    [projected] = transcripts.observe([session], {})
+    [projected] = transcripts.observe([session], {("codex", identity): item})
 
     assert projected.agent == "codex"
     assert projected.transcript_id == identity
 
-    monkeypatch.setattr(transcripts, "native_actor", lambda _tree: "")
-    [historic] = transcripts.observe([session], {})
+    monkeypatch.setattr(transcripts, "native_identity", lambda _tree: None)
+    [historic] = transcripts.observe([session], {("codex", identity): item})
     assert historic.transcript_id == identity
 
     def invalid_actor(_tree):
         raise RuntimeError("published native actor is empty")
 
-    monkeypatch.setattr(transcripts, "native_actor", invalid_actor)
-    [invalid] = transcripts.observe([session], {})
+    monkeypatch.setattr(transcripts, "native_identity", invalid_actor)
+    [invalid] = transcripts.observe([session], {("codex", identity): item})
     assert invalid.reported_state == "needs-action"
     assert invalid.summary == "published native actor is empty"
 
@@ -530,10 +566,9 @@ def test_native_claude_missing_from_registry_folds_by_published_actor(tmp_path, 
 
     monkeypatch.setattr(transcripts.subprocess, "run", run)
     monkeypatch.setattr(transcripts, "process_tree", lambda: {100: [101]})
-    monkeypatch.setattr(transcripts.os, "readlink", lambda path: (
-        "/usr/bin/claude" if path == "/proc/101/exe" else "/usr/bin/python3"))
-    monkeypatch.setattr(transcripts, "native_actor",
-                        lambda _tree: f"claude-{identity}@newton")
+    monkeypatch.setattr(transcripts.os, "readlink", lambda _path: "/usr/bin/node")
+    monkeypatch.setattr(transcripts, "native_identity", lambda _tree: (
+        f"claude-{identity}@newton", "claude", identity))
     monkeypatch.setattr(transcripts, "last_event_time", lambda _path: 3)
     monkeypatch.setattr(transcripts, "last_human_time", lambda _item: 2)
     monkeypatch.setattr(transcripts, "latest_assistant_text", lambda _item: "reply")
