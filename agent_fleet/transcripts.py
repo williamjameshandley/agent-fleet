@@ -21,6 +21,7 @@ CODEX = Path.home() / ".codex/sessions"
 ANTIGRAVITY = Path.home() / ".gemini/antigravity-cli"
 GROK = Path.home() / ".grok/sessions"
 AGENTS = {"claude", "codex", "grok", "antigravity"}
+NATIVE_PROVIDERS = {"claude", "codex", "grok"}
 PRIORITY = {"needs-action": 0, "working": 1, "waiting": 2, "finished": 3}
 PANE_FORMAT = ("name=#{q:session_name} session=#{q:session_id} pid=#{q:pane_pid} "
                "command=#{q:pane_current_command} title=#{q:pane_title}")
@@ -517,8 +518,8 @@ def indexed_claude_agents(output):
     return {item["pid"]: item for item in json.loads(output) if item.get("pid") is not None}
 
 
-def native_actor(pids):
-    actors = set()
+def native_identity(pids):
+    identities = set()
     for pid in pids:
         try:
             environment = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
@@ -531,17 +532,23 @@ def native_actor(pids):
             try:
                 identity = json.loads(path.read_text())
                 actor = identity["actor"] if isinstance(identity, dict) else None
+                provider = identity["provider"] if isinstance(identity, dict) else None
+                transcript_id = (identity["transcript_id"]
+                                 if isinstance(identity, dict) else None)
             except FileNotFoundError:
                 continue
             except (OSError, json.JSONDecodeError, KeyError) as error:
                 raise RuntimeError(f"cannot read published native actor {path}: {error}")
-            if not isinstance(actor, str) or not actor:
+            if (not isinstance(actor, str) or not actor
+                    or provider not in NATIVE_PROVIDERS
+                    or not isinstance(transcript_id, str) or not transcript_id
+                    or actor.rsplit("@", 1)[0] != f"{provider}-{transcript_id}"):
                 raise RuntimeError(f"published native actor is invalid: {path}")
-            actors.add(actor)
-    if len(actors) > 1:
+            identities.add((actor, provider, transcript_id))
+    if len(identities) > 1:
         raise RuntimeError("provider process tree carries multiple Alan actors: "
-                           + ", ".join(sorted(actors)))
-    return next(iter(actors), "")
+                           + ", ".join(sorted(actor for actor, _, _ in identities)))
+    return next(iter(identities), None)
 
 
 def observe(sessions, transcripts=None):
@@ -563,24 +570,30 @@ def observe(sessions, transcripts=None):
             agent = "antigravity"
         tree = [int(pid), *descendants(int(pid), children)]
         if name.startswith("fleet@native-"):
-            agents = set()
-            for item in tree:
-                try:
-                    executable = os.readlink(f"/proc/{item}/exe")
-                except OSError:
-                    continue
-                if (candidate := Path(executable).name) in AGENTS:
-                    agents.add(candidate)
-            if len(agents) != 1:
+            try:
+                published = native_identity(tree)
+            except RuntimeError as error:
+                rows.append((session_id, agent, "needs-action", str(error), 0, "", 0))
                 continue
-            [agent] = agents
+            if published:
+                _actor, agent, _transcript_id = published
+            else:
+                agents = set()
+                for item in tree:
+                    try:
+                        executable = os.readlink(f"/proc/{item}/exe")
+                    except OSError:
+                        continue
+                    if (candidate := Path(executable).name) in AGENTS:
+                        agents.add(candidate)
+                if len(agents) != 1:
+                    continue
+                [agent] = agents
         elif agent not in AGENTS or "@" in name:
             continue
-        try:
-            actor = native_actor(tree)
-        except RuntimeError as error:
-            rows.append((session_id, agent, "needs-action", str(error), 0, "", 0))
-            continue
+        else:
+            published = native_identity(tree)
+        actor = published[0] if published else ""
         expected = f"{agent}-"
         suffix = f"@{sessions_by_id[session_id].ref.server.host}"
         if actor and (not actor.startswith(expected) or not actor.endswith(suffix)):
@@ -593,7 +606,7 @@ def observe(sessions, transcripts=None):
             entry = next((claude[item] for item in tree if item in claude), None)
             if entry is None and not actor_identity:
                 continue
-            identity = actor_identity or entry["sessionId"]
+            identity = published[2] if published else entry["sessionId"]
             if entry is not None and actor_identity and entry["sessionId"] != actor_identity:
                 rows.append((session_id, agent, "needs-action",
                              "Claude registry identity does not match Alan actor", 0,
@@ -614,14 +627,23 @@ def observe(sessions, transcripts=None):
                 updated = int(path.stat().st_mtime)
                 human_activity = 0
         elif agent == "grok":
-            identities = grok_candidates(tree)
-            if len(identities) != 1:
+            if published:
+                identity = published[2]
+                item = transcripts.get(("grok", identity))
+            else:
+                identities = grok_candidates(tree)
+                if len(identities) != 1:
+                    continue
+                [(identity, directory)] = identities.items()
+                path = directory / "updates.jsonl"
+                if not path.exists():
+                    continue
+                item = transcript("grok", path)
+            if item is None:
+                rows.append((session_id, agent,
+                             "waiting" if title.startswith("✳") else "working",
+                             "", 0, identity, 0))
                 continue
-            [(identity, directory)] = identities.items()
-            path = directory / "updates.jsonl"
-            if not path.exists():
-                continue
-            item = transcript("grok", path)
             try:
                 state, summary, updated = grok_state(item)
                 human_activity = last_human_time(item)
@@ -648,25 +670,35 @@ def observe(sessions, transcripts=None):
                 updated = int(item.mtime)
                 human_activity = 0
         else:
-            targets, resumed = codex_candidates(tree)
-            try:
-                item = transcript("codex", select_codex(targets, resumed))
-            except RuntimeError:
-                continue
-            except (json.JSONDecodeError, ValueError) as error:
-                identity = ""
-                state = "needs-action"
-                summary = f"Codex transcript selection failed: {error}"
-                updated = max((int(Path(path).stat().st_mtime) for path in targets), default=0)
-                human_activity = 0
-                rows.append((session_id, agent, state, " ".join(summary.split()), updated,
-                             identity, human_activity))
-                continue
-            identity = item.session_id
+            if published:
+                identity = published[2]
+                item = transcripts.get(("codex", identity))
+            else:
+                targets, resumed = codex_candidates(tree)
+                try:
+                    item = transcript("codex", select_codex(targets, resumed))
+                except RuntimeError:
+                    continue
+                except (json.JSONDecodeError, ValueError) as error:
+                    identity = ""
+                    state = "needs-action"
+                    summary = f"Codex transcript selection failed: {error}"
+                    updated = max((int(Path(path).stat().st_mtime)
+                                   for path in targets), default=0)
+                    human_activity = 0
+                    rows.append((session_id, agent, state, " ".join(summary.split()),
+                                 updated, identity, human_activity))
+                    continue
+                identity = item.session_id
             if actor_identity and identity != actor_identity:
                 rows.append((session_id, agent, "needs-action",
                              "Codex rollout identity does not match Alan actor", 0,
                              actor_identity, 0))
+                continue
+            if item is None:
+                rows.append((session_id, agent,
+                             "waiting" if title.startswith("✳") else "working",
+                             "", 0, identity, 0))
                 continue
             try:
                 state, summary, updated = codex_state(item)
