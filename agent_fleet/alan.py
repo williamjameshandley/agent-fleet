@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 
 import loop
-import networkx as nx
 from watchfiles import watch
 
 from .model import ServerRef, Session, SessionRef
@@ -28,8 +27,6 @@ class Projected:
 class Watcher:
     def __init__(self, changed, consumer=None):
         self.actors = []
-        self.graph = None
-        self.projected = None
         self._descriptors = {}
         self.available = False
         self.error = None
@@ -47,10 +44,17 @@ class Watcher:
         while not (self._consumer and self._consumer.is_set()):
             stream = None
             try:
-                stream = loop.observe(stream=True)
+                stream = loop.observe(stream=True, actors=True)
                 while True:
-                    stream.next(self.refresh, self._lock)
-                    self._changed.put("alan")
+                    catalogue_changed = False
+
+                    def refresh(observation, change):
+                        nonlocal catalogue_changed
+                        catalogue_changed = self.refresh(observation, change)
+
+                    stream.next(refresh, self._lock)
+                    if catalogue_changed:
+                        self._changed.put("alan")
                     if self._consumer and self._consumer.is_set():
                         return
             except StopIteration:
@@ -66,40 +70,18 @@ class Watcher:
                 if stream is not None:
                     stream.close()
 
-    def refresh(self, graph, change):
+    def refresh(self, actors, change):
         with self._lock:
-            if change["kind"] == "replace":
-                self._descriptors = {
-                    actor["addr"]: actor for actor in actors(graph)}
-                self.projected = projection_graph(graph)
-            else:
-                raw = {actor["addr"]: actor
-                       for actor in graph.graph.get("actors", [])}
-                nodes = {}
-                for node in change["nodes"]:
-                    nodes.setdefault(node["stream"], []).append(node)
-                changed = {actor["addr"] for actor in change["actors"]}
-                changed.update(nodes)
-                for addr in changed:
-                    descriptor = raw.get(addr)
-                    if descriptor is None or descriptor["kind"] == "principal":
-                        self._descriptors.pop(addr, None)
-                    else:
-                        self._descriptors[addr] = update_actor_descriptor(
-                            graph, raw, self._descriptors.get(addr), descriptor,
-                            nodes.get(addr, ()))
-                apply_projection_delta(self.projected, graph, change)
-            current = list(self._descriptors.values())
-            self.projected.graph["actors"] = [
-                actor for actor in graph.graph.get("actors", [])
-                if actor["kind"] == "principal"
-            ] + current
-            self.actors = current
-            self.graph = graph
+            descriptors = {
+                actor["addr"]: canonical_actor(actor) for actor in actors
+            }
+            changed = descriptors != self._descriptors or not self.available
+            self._descriptors = descriptors
+            self.actors = list(self._descriptors.values())
             self.available = True
             self.error = None
             self.initialized.set()
-            return current, graph
+            return changed
 
     def _watch_labels(self):
         directory = _state_dir() / "labels"
@@ -117,31 +99,20 @@ class Watcher:
                         changed = True
                 if changed:
                     self.actors = list(self._descriptors.values())
-                    if self.projected is not None:
-                        principals = [actor for actor in self.projected.graph.get("actors", [])
-                                      if actor["kind"] == "principal"]
-                        self.projected.graph["actors"] = principals + self.actors
             if changed:
                 self._changed.put("alan")
 
     @contextmanager
     def snapshot(self):
         with self._lock:
-            yield self.actors, self.projected
-
-    @contextmanager
-    def full_graph(self):
-        with self._lock:
-            yield self.graph
+            yield self.actors
 
     def _unavailable(self, error):
         self.error = error
         self.initialized.set()
-        if self.available or self.actors or self.graph is not None:
+        if self.available or self.actors:
             self.available = False
             self.actors = []
-            self.graph = None
-            self.projected = None
             self._changed.put("alan")
 
 
@@ -161,198 +132,114 @@ def address_identity(addr, kind):
     return addr.split("-", 1)[1].rsplit("@", 1)[0]
 
 
-def actor_address(descriptor):
-    return descriptor.get("actor", descriptor["addr"])
+ACTOR_FIELDS = {
+    "addr", "kind", "state", "hibernation", "cwd", "evaluator", "preset",
+    "spawn", "label", "managed", "worked", "created", "last_operation_activity",
+    "evaluation_started", "active_evaluation", "latest_displayable_output",
+    "source_activity", "unresolved_requests",
+}
+REQUIRED_ACTOR_FIELDS = {
+    "addr", "kind", "created", "worked", "active_evaluation",
+    "evaluation_started", "latest_displayable_output", "source_activity",
+    "unresolved_requests",
+}
 
 
-def actors(graph=None, operations=None):
-    if graph is None:
-        graph = loop.observe()
-    all_descriptors = {actor["addr"]: dict(actor)
-                       for actor in graph.graph.get("actors", [])}
-    descriptors = {addr: actor for addr, actor in all_descriptors.items()
-                   if actor["kind"] != "principal"}
-    operations = operation_index(graph) if operations is None else operations
-    return [actor_descriptor(graph, all_descriptors, descriptor,
-                             operations.get(addr, ()))
-            for addr, descriptor in descriptors.items()]
+def canonical_actor(descriptor):
+    missing = REQUIRED_ACTOR_FIELDS - descriptor.keys()
+    if missing:
+        raise ValueError(f"Alan actor descriptor missing {', '.join(sorted(missing))}")
+    defaults = {field: None for field in ACTOR_FIELDS}
+    defaults.update(managed=False, worked=False, source_activity={},
+                    unresolved_requests={})
+    defaults.update({field: descriptor[field] for field in ACTOR_FIELDS - {"label"}
+                     if field in descriptor})
+    defaults["label"] = label(descriptor["addr"])
+    return defaults
 
 
-def operation_index(graph):
-    operations = {}
-    for reference, operation in graph.nodes(data=True):
-        if "stream" in operation:
-            operations.setdefault(operation["stream"], []).append((reference, operation))
-    return operations
-
-
-def actor_descriptor(graph, all_descriptors, descriptor, operations):
-    descriptor = dict(descriptor)
-    addr = descriptor["addr"]
-    stream = sorted(operations, key=lambda item: _position(item[0]))
-    active = None
-    active_started = 0
-    native = None
-    human_activity = 0
-    last_output = None
-    for reference, operation in stream:
-        if operation["op"] == "evaluation":
-            active = reference
-            active_started = _timestamp(operation["time"])
-        elif operation["op"] == "output":
-            active = None
-            active_started = 0
-            if operation.get("status") == "error" or isinstance(operation.get("value"), str):
-                last_output = operation
-            if evidence := operation.get("native"):
-                native = evidence
-        elif operation["op"] == "input" and "send" in operation:
-            source = graph.nodes.get(operation["send"], {})
-            source_actor = all_descriptors.get(source.get("stream"), {})
-            if source_actor.get("kind") == "principal":
-                human_activity = _timestamp(operation["time"])
-
-    descriptor["created"] = _timestamp(stream[0][1]["time"]) if stream else 0
-    descriptor["worked"] = any(operation["op"] == "input" for _, operation in stream)
-    descriptor["label"] = label(addr)
-    descriptor["native_id"] = address_identity(addr, descriptor["kind"])
-    working = descriptor["state"] == "working"
-    descriptor["active_evaluation"] = active if working else None
-    descriptor["evaluation_started"] = active_started if working else 0
-    descriptor["human_activity"] = human_activity
-    if native:
-        descriptor["native"] = native
-    if last_output and last_output.get("status") == "error":
-        descriptor["last_error"] = last_output.get("error", "")
-    elif last_output and isinstance(last_output.get("value"), str):
-        descriptor["summary"] = " ".join(last_output["value"].split())
-    return descriptor
-
-
-def update_actor_descriptor(graph, all_descriptors, current, raw, nodes):
-    if current is None:
-        operations = operation_index(graph).get(raw["addr"], ())
-        return actor_descriptor(graph, all_descriptors, raw, operations)
-    descriptor = {**current, **raw}
-    for node in sorted(nodes, key=lambda item: _position(item["id"])):
-        operation = node["op"]
-        if operation == "evaluation":
-            descriptor["active_evaluation"] = node["id"]
-            descriptor["evaluation_started"] = _timestamp(node["time"])
-        elif operation == "output":
-            descriptor["active_evaluation"] = None
-            descriptor["evaluation_started"] = 0
-            if evidence := node.get("native"):
-                descriptor["native"] = evidence
-            if node.get("status") == "error":
-                descriptor.pop("summary", None)
-                descriptor["last_error"] = node.get("error", "")
-            elif isinstance(node.get("value"), str):
-                descriptor.pop("last_error", None)
-                descriptor["summary"] = " ".join(node["value"].split())
-        elif operation == "input" and "send" in node:
-            source = graph.nodes.get(node["send"], {})
-            source_actor = all_descriptors.get(source.get("stream"), {})
-            if source_actor.get("kind") == "principal":
-                descriptor["human_activity"] = _timestamp(node["time"])
-    if descriptor["state"] != "working":
-        descriptor["active_evaluation"] = None
-        descriptor["evaluation_started"] = 0
-    return descriptor
-
-
-def inventory(source, actor_descriptors):
+def inventory(source, actor_descriptors, principals=None):
     source = ServerRef(source, "", 0, 0, "alan")
+    principals = principals or set()
     sessions = []
     for actor in actor_descriptors:
+        if actor["kind"] == "principal":
+            continue
         if (actor["state"] in {"retired", "unavailable"}
                 and actor.get("evaluator") != "native"):
             continue
+        output = actor["latest_displayable_output"] or {}
+        summary = output.get("value", output.get("error", ""))
+        human_activity = max((_timestamp(time) for addr, time in
+                              actor["source_activity"].items() if addr in principals),
+                             default=0)
         transcript_id = address_identity(actor["addr"], actor["kind"])
         sessions.append(Session(
-            SessionRef(source, actor["addr"]), actor.get("label") or label(actor["addr"]),
-            actor["created"], 0, 0, 1, "alan", "",
+            SessionRef(source, actor["addr"]), actor.get("label") or actor["addr"],
+            _timestamp(actor["created"]), 0, 0, 1, "alan", "",
             actor.get("cwd") or "", actor["kind"], actor["state"],
-            actor.get("summary") or actor.get("last_error", ""),
+            " ".join(summary.split()),
             _timestamp(actor["last_operation_activity"]),
             transcript_id,
-            actor["human_activity"], actor.get("active_evaluation") or "",
-            actor["evaluation_started"], "",
-            worked=actor.get("worked", True),
+            human_activity, actor.get("active_evaluation") or "",
+            _timestamp(actor["evaluation_started"]) if actor["evaluation_started"] else 0, "",
+            worked=actor["worked"],
             evaluator=actor.get("evaluator", ""),
             managed=actor.get("managed", False),
-            hibernation=actor["hibernation"]))
+            hibernation=actor["hibernation"] or "unsupported"))
     return sessions
 
 
-def projection_graph(graph):
-    if graph is None:
+def project(sessions, descriptors, expanded=(), show_python=False):
+    """Fold centrally qualified actor catalogue entries into Muster rows."""
+    raw_index = {}
+    for key, descriptor in descriptors.items():
+        raw_index.setdefault(descriptor["addr"], []).append(key)
+
+    def resolve(runtime, addr):
+        candidates = raw_index.get(addr, [])
+        local = [key for key in candidates if key.split(":", 2)[1] == runtime]
+        if local:
+            return local[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            raise RuntimeError(f"ambiguous Alan actor reference {addr}")
         return None
-    projected = nx.MultiDiGraph()
-    projected.graph["actors"] = graph.graph.get("actors", [])
 
-    def add_reference(reference):
-        stream = graph.nodes[reference].get("stream")
-        projected.add_node(reference, **({"stream": stream}
-                                         if stream is not None else {}))
+    parents = {}
+    for key, descriptor in descriptors.items():
+        spawn = descriptor.get("spawn")
+        if spawn:
+            runtime = key.split(":", 2)[1]
+            raw_parent = spawn.rsplit("#", 1)[0]
+            parent = resolve(runtime, raw_parent)
+            if parent is not None:
+                parents[key] = parent
 
-    for source, target, relation in graph.edges(keys=True):
-        if relation not in {"spawn", "send", "reply"}:
-            continue
-        add_reference(source)
-        add_reference(target)
-        projected.add_edge(source, target, key=relation)
-    fields = {"op", "to", "reply", "stream", "time", "payload"}
-    for reference, operation in graph.nodes(data=True):
-        if operation.get("op") == "send":
-            projected.add_node(reference, **{
-                key: operation[key] for key in fields if key in operation})
-    return projected
+    def ancestors(actor):
+        result = []
+        seen = {actor}
+        while actor in parents:
+            actor = parents[actor]
+            if actor in seen:
+                raise RuntimeError("cycle in Alan actor ancestry")
+            seen.add(actor)
+            result.append(actor)
+        return result
 
-
-def apply_projection_delta(projected, graph, change):
-    projected.graph["actors"] = graph.graph.get("actors", [])
-    fields = {"op", "to", "reply", "stream", "time", "payload"}
-    for node in change["nodes"]:
-        if node.get("op") == "send":
-            projected.add_node(node["id"], **{
-                key: node[key] for key in fields if key in node})
-    for edge in change["edges"]:
-        relation = edge["key"]
-        if relation not in {"spawn", "send", "reply"}:
-            continue
-        for reference in (edge["source"], edge["target"]):
-            operation = graph.nodes.get(reference, {})
-            stream = operation.get("stream")
-            projected.add_node(reference, **({"stream": stream}
-                                              if stream is not None else {}))
-        projected.add_edge(edge["source"], edge["target"], key=relation)
-
-
-def project(sessions, graph, expanded=(), show_python=False):
-    descriptors = {actor["addr"]: actor for actor in graph.graph.get("actors", [])}
-    ancestry = nx.DiGraph()
-    ancestry.add_nodes_from(descriptors)
-    for source, target, relation in graph.edges(keys=True):
-        if relation != "spawn":
-            continue
-        child = graph.nodes[target]["stream"]
-        parent = graph.nodes[source].get("stream") or source.rsplit("#", 1)[0]
-        ancestry.add_edge(parent, child)
-
-    def graph_actor(session):
-        return (session.ref.key if session.ref.key in descriptors
-                else session.ref.session_id)
+    def catalogue_actor(session):
+        return session.ref.key
 
     actor_sessions = {
-        graph_actor(session): session
+        catalogue_actor(session): session
         for session in sessions
         if session.ref.server.kind == "alan"
     }
     expanded = set(expanded)
     children = {}
     eligible = set()
-    session_order = [graph_actor(session) for session in sessions
+    session_order = [catalogue_actor(session) for session in sessions
                      if session.ref.server.kind == "alan"
                      and (show_python or session.agent != "python"
                           or session.state == "hibernated")]
@@ -362,14 +249,18 @@ def project(sessions, graph, expanded=(), show_python=False):
                     if descriptor.get("evaluator") == "native"}
     roots = {}
     for actor in session_order:
-        ancestors = nx.ancestors(ancestry, actor)
-        candidates = ancestors & principals
+        lineage = ancestors(actor)
+        candidates = set(lineage) & principals
         if not candidates:
-            if (ancestors | {actor}) & native_roots:
+            terminal = lineage[-1] if lineage else actor
+            if (set(lineage) | {actor}) & native_roots:
                 roots[actor] = actor
+            elif descriptors[terminal].get("spawn") and terminal not in parents:
+                roots[actor] = terminal
             continue
-        [principal] = candidates
-        first = nx.shortest_path(ancestry, principal, actor)[1]
+        principal = next(item for item in lineage if item in candidates)
+        path = list(reversed(lineage[:lineage.index(principal)])) + [actor]
+        first = path[0]
         if descriptors[first].get("preset") == "commander" or (
             descriptors[first]["kind"] == "python" and not show_python
         ):
@@ -383,10 +274,9 @@ def project(sessions, graph, expanded=(), show_python=False):
                     or descriptors[actor]["state"] == "hibernated")]
     visible_set = set(visible)
     for actor in visible:
-        candidates = nx.ancestors(ancestry, actor) & visible_set
+        candidates = set(ancestors(actor)) & visible_set
         if candidates:
-            parent = min(candidates, key=lambda item: nx.shortest_path_length(
-                ancestry, item, actor))
+            parent = next(item for item in ancestors(actor) if item in candidates)
             children.setdefault(parent, []).append(actor)
         else:
             eligible.add(actor)
@@ -404,12 +294,11 @@ def project(sessions, graph, expanded=(), show_python=False):
         emitted.update(visible(root))
 
     attention = {}
-    for source, target, request in _outstanding_requests(graph, descriptors):
-        candidates = (nx.ancestors(ancestry, source) | {source}) & emitted
+    for source, target, request in _outstanding_requests(descriptors, resolve):
+        candidates = (set(ancestors(source)) | {source}) & emitted
         if not candidates:
             continue
-        anchor = min(candidates, key=lambda actor: nx.shortest_path_length(
-            ancestry, actor, source))
+        anchor = next(actor for actor in [source] + ancestors(source) if actor in candidates)
         if roots[anchor] != target:
             continue
         attention.setdefault(anchor, []).append(request)
@@ -436,38 +325,29 @@ def project(sessions, graph, expanded=(), show_python=False):
         if session.ref.server.kind != "alan":
             result.append(Projected(session, 0, 0, False))
             continue
-        actor = graph_actor(session)
+        actor = catalogue_actor(session)
         if actor in eligible:
             result.extend(emit(actor, 0))
     return result
 
 
-def _outstanding_requests(graph, descriptors):
-    principals = {addr for addr, actor in descriptors.items()
-                  if actor["kind"] == "principal"}
-    replied = {source for source, _target, relation in graph.edges(keys=True)
-               if relation == "reply"}
+def _outstanding_requests(descriptors, resolve):
     requests = []
-    for reference, operation in graph.nodes(data=True):
-        if operation.get("op") != "send" or operation.get("to") not in principals \
-                or operation.get("reply") or reference in replied:
+    for target, descriptor in descriptors.items():
+        if descriptor["kind"] != "principal":
             continue
-        accepted = any(
-            relation == "send"
-            and graph.nodes[target].get("stream") == operation["to"]
-            for _source, target, relation in graph.out_edges(reference, keys=True)
-        )
-        if not accepted:
-            continue
-        payload = operation.get("payload", "")
-        if isinstance(payload, dict):
-            payload = payload.get("text", payload.get("code", payload))
-        preview = " ".join(
-            (json.dumps(payload, sort_keys=True) if not isinstance(payload, str)
-             else payload).split()
-        )
-        requests.append((operation["stream"], operation["to"],
-                         (operation["time"], _timestamp(operation["time"]), preview)))
+        runtime = target.split(":", 2)[1]
+        for reference, request in descriptor["unresolved_requests"].items():
+            source = resolve(runtime, reference.rsplit("#", 1)[0])
+            if source is None:
+                continue
+            payload = request["payload"]
+            if isinstance(payload, dict):
+                payload = payload.get("text", payload.get("code", payload))
+            preview = " ".join((json.dumps(payload, sort_keys=True)
+                                if not isinstance(payload, str) else payload).split())
+            requests.append((source, target, (request["time"],
+                            _timestamp(request["time"]), preview)))
     return requests
 
 
@@ -500,10 +380,14 @@ def hibernate(addr):
 
 
 def verify_pristine(addr):
-    graph = loop.observe(actor=addr)
-    for _reference, operation in graph.nodes(data=True):
-        if operation.get("stream") == addr and operation.get("op") == "input":
-            raise RuntimeError(f"actor has conversational work: {addr}")
+    observation = loop.observe(stream=True, actor=addr)
+    try:
+        graph = next(observation)
+        for _reference, operation in graph.nodes(data=True):
+            if operation.get("stream") == addr and operation.get("op") == "input":
+                raise RuntimeError(f"actor has conversational work: {addr}")
+    finally:
+        observation.close()
 
 
 def resume(addr):
@@ -554,15 +438,18 @@ def wait_output(actor, result_reference, observations=None):
             observations.close()
 
 
-def preview(addr, columns=0, lines=0, graph=None):
-    if graph is None:
-        graph = loop.observe()
-    operations = sorted(
-        ((reference, operation)
-         for reference, operation in graph.nodes(data=True)
-         if operation.get("stream") == addr and operation["op"] in {"input", "output"}),
-        key=lambda item: _position(item[0]),
-    )
+def preview(addr, columns=0, lines=0):
+    observation = loop.observe(stream=True, actor=addr)
+    try:
+        graph = next(observation)
+        operations = sorted(
+            ((reference, operation)
+             for reference, operation in graph.nodes(data=True)
+             if operation.get("stream") == addr and operation["op"] in {"input", "output"}),
+            key=lambda item: _position(item[0]),
+        )
+    finally:
+        observation.close()
     rendered = []
     for _reference, operation in operations:
         if operation["op"] == "input":
@@ -594,10 +481,10 @@ def commander_actor():
         fcntl.flock(lock, fcntl.LOCK_EX)
         observation = loop.observe(stream=True, actors=True)
         try:
-            graph = next(observation)
+            actors = next(observation)
         finally:
             observation.close()
-        commanders = [actor["addr"] for actor in graph.graph.get("actors", [])
+        commanders = [actor["addr"] for actor in actors
                       if actor.get("preset") == "commander"
                       and actor.get("state") != "retired"]
         if len(commanders) > 1:

@@ -436,8 +436,7 @@ def test_actor_view_dispatches_python_to_jupyter_console():
     actor = "python-a@newton"
     details = {"addr": actor, "kind": "python", "state": "waiting"}
     connection = Path("/state/actors") / actor / "native/kernel.json"
-    with mock.patch.object(presentation.alan, "actors", return_value=[details]), \
-         mock.patch.object(presentation.alan, "native_dir",
+    with mock.patch.object(presentation.alan, "native_dir",
                            return_value=connection.parent), \
          mock.patch.object(presentation, "python_console") as console:
         presentation.run(actor, details)

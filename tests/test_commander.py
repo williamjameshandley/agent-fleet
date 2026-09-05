@@ -146,13 +146,19 @@ class CommanderContextTests(unittest.TestCase):
 
     def test_history_retains_bare_language_actor_and_native_actor_authority(self):
         identity = "00000000-0000-4000-8000-000000000001"
+        def actor(addr, kind, **values):
+            item = {field: None for field in alan.ACTOR_FIELDS}
+            item.update(addr=addr, kind=kind, state="retired", managed=False,
+                        worked=True, created="2026-01-01T00:00:02Z",
+                        source_activity={}, unresolved_requests={})
+            item.update(values)
+            return item
         observations = [{"actors": [
-            {"addr": "llm-review@lovelace", "kind": "llm", "state": "retired",
-             "label": "review", "cwd": "/work", "created": 2,
-             "human_activity": 3},
-            {"addr": f"codex-{identity}@lovelace", "kind": "codex", "state": "retired",
-             "label": "work", "cwd": "/work", "created": 2,
-             "human_activity": 4, "native_id": "persisted-native-id"},
+            actor("will@lovelace", "principal", state="waiting"),
+            actor("llm-review@lovelace", "llm", label="review", cwd="/work",
+                  source_activity={"will@lovelace": "2026-01-01T00:00:03Z"}),
+            actor(f"codex-{identity}@lovelace", "codex", label="work", cwd="/work",
+                  source_activity={"will@lovelace": "2026-01-01T00:00:04Z"}),
         ], "transcripts": [{
             "agent": "codex", "session_id": identity, "mtime": 4,
             "name": "duplicate", "cwd": "/work",
@@ -161,6 +167,7 @@ class CommanderContextTests(unittest.TestCase):
         self.assertEqual([item["key"] for item in history], [
             f"alan:will@newton:codex-{identity}@lovelace",
             "alan:will@newton:llm-review@lovelace"])
+        self.assertEqual([item["mtime"] for item in history], [1767225604, 1767225603])
 
     def test_mdjudge_search_joins_exact_retired_tablet_actor(self):
         identity = "00000000-0000-4000-8000-000000000001"
@@ -356,35 +363,29 @@ class CommanderActorTests(unittest.TestCase):
         self.environment.stop()
         self.tempdir.cleanup()
 
-    @staticmethod
-    def graph(*actors):
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = list(actors)
-        return graph
-
     class Stream:
-        def __init__(self, graph):
-            self.graph = graph
+        def __init__(self, actors):
+            self.actors = actors
 
         def __iter__(self):
-            return iter((self.graph,))
+            return iter((self.actors,))
 
         def __next__(self):
-            graph, self.graph = self.graph, None
-            if graph is None:
+            actors, self.actors = self.actors, None
+            if actors is None:
                 raise StopIteration
-            return graph
+            return actors
 
         def close(self):
             pass
 
     @classmethod
-    def stream(cls, graph):
-        return cls.Stream(graph)
+    def stream(cls, actors):
+        return cls.Stream(list(actors))
 
     def test_first_request_creates_and_reuses_an_ordinary_actor(self):
         with mock.patch.object(alan.loop, "observe",
-                               return_value=self.stream(self.graph())), \
+                               return_value=self.stream([])), \
              mock.patch.object(alan.loop, "spawn",
                                return_value="llm-commander@newton") as spawn:
             self.assertEqual(alan.commander_actor(), "llm-commander@newton")
@@ -392,7 +393,7 @@ class CommanderActorTests(unittest.TestCase):
 
         existing = {"addr": "llm-commander@newton", "preset": "commander"}
         with mock.patch.object(alan.loop, "observe",
-                               return_value=self.stream(self.graph(existing))), \
+                               return_value=self.stream([existing])), \
              mock.patch.object(alan.loop, "spawn") as spawn:
             self.assertEqual(alan.commander_actor(), "llm-commander@newton")
         spawn.assert_not_called()
@@ -401,17 +402,17 @@ class CommanderActorTests(unittest.TestCase):
         retired = {"addr": "llm-old@newton", "preset": "commander",
                    "state": "retired"}
         with mock.patch.object(alan.loop, "observe",
-                               return_value=self.stream(self.graph(retired))), \
+                               return_value=self.stream([retired])), \
              mock.patch.object(alan.loop, "spawn",
                                return_value="llm-fresh@newton") as spawn:
             self.assertEqual(alan.commander_actor(), "llm-fresh@newton")
         spawn.assert_called_once_with({"kind": "llm", "preset": "commander"})
 
     def test_multiple_commanders_fail_visibly(self):
-        current = self.graph(
+        current = [
             {"addr": "llm-first@newton", "preset": "commander"},
             {"addr": "llm-second@newton", "preset": "commander"},
-        )
+        ]
 
         with mock.patch.object(alan.loop, "observe",
                                return_value=self.stream(current)):
@@ -434,7 +435,7 @@ class CommanderActorTests(unittest.TestCase):
             self.assertEqual(kwargs, {"stream": True, "actors": True})
             actors = ([{"addr": "llm-commander@newton", "preset": "commander"}]
                       if created else [])
-            return self.stream(self.graph(*actors))
+            return self.stream(actors)
 
         def resolve():
             results.append(alan.commander_actor())

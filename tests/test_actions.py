@@ -368,10 +368,8 @@ def test_composite_archive_projection_leaves_no_actor_or_raw_provider():
     fleet = Fleet()
     fleet.sessions = {"lovelace": [composite]}
     fleet.unavailable.clear()
-    graph = daemon.nx.MultiDiGraph()
-    graph.graph["actors"] = [{"addr": actor.ref.key, "kind": "codex",
-                              "evaluator": "native"}]
-    fleet._composed = (fleet.observed, graph)
+    fleet.catalogues = {actor.ref.server.source: [{"addr": actor.ref.session_id, "kind": "codex",
+                                      "evaluator": "native"}]}
     assert [item.session for item in fleet.projected()] == [composite]
 
     async def remove_components(_host, request):
@@ -400,10 +398,8 @@ def test_composite_retire_failure_leaves_the_bare_actor_visible():
     fleet = Fleet()
     fleet.sessions = {"lovelace": [composite]}
     fleet.unavailable.clear()
-    graph = daemon.nx.MultiDiGraph()
-    graph.graph["actors"] = [{"addr": actor.ref.key, "kind": "codex",
-                              "evaluator": "native"}]
-    fleet._composed = (fleet.observed, graph)
+    fleet.catalogues = {actor.ref.server.source: [{"addr": actor.ref.session_id, "kind": "codex",
+                                      "evaluator": "native"}]}
 
     async def fail_after_provider_removal(_host, request):
         if request["operation"] == "archive-composite":
@@ -489,11 +485,8 @@ def test_daemon_native_actor_restore_waits_for_its_provider_attachment():
     fleet.unavailable.clear()
     actor = session(agent="codex", transcript="1")
     provider = session(kind="tmux", agent="codex", transcript="1")
-    graph = daemon.nx.MultiDiGraph()
-    graph.graph["actors"] = [{"addr": actor.ref.key, "actor": actor.ref.session_id,
-                               "runtime": "will", "kind": "codex",
-                               "evaluator": "native"}]
-    fleet._composed = (fleet.observed, graph)
+    fleet.catalogues = {"will@lovelace": [{"addr": actor.ref.session_id,
+                                            "kind": "codex", "evaluator": "native"}]}
 
     async def exercise():
         with mock.patch.object(fleet, "authority", return_value={"source": actor.ref.key}):
@@ -521,10 +514,7 @@ def test_daemon_bare_llm_restore_does_not_wait_for_provider_attachment():
     fleet = Fleet()
     fleet.unavailable.clear()
     actor = session(agent="llm", transcript="")
-    graph = daemon.nx.MultiDiGraph()
-    graph.graph["actors"] = [{"addr": actor.ref.key, "actor": actor.ref.session_id,
-                               "runtime": "will", "kind": "llm"}]
-    fleet._composed = (fleet.observed, graph)
+    fleet.catalogues = {"will@lovelace": [{"addr": actor.ref.session_id, "kind": "llm"}]}
 
     async def exercise():
         with mock.patch.object(fleet, "authority", return_value={"source": actor.ref.key}):
@@ -544,11 +534,9 @@ def test_daemon_managed_codex_restore_does_not_wait_for_provider_attachment():
     fleet = Fleet()
     fleet.unavailable.clear()
     actor = session(agent="codex", transcript="1")
-    graph = daemon.nx.MultiDiGraph()
-    graph.graph["actors"] = [{"addr": actor.ref.key, "actor": actor.ref.session_id,
-                               "runtime": "will", "kind": "codex", "capabilities": "read",
-                               "evaluator": "native", "managed": True}]
-    fleet._composed = (fleet.observed, graph)
+    fleet.catalogues = {"will@lovelace": [{"addr": actor.ref.session_id,
+                                            "kind": "codex", "evaluator": "native",
+                                            "managed": True}]}
 
     async def exercise():
         with mock.patch.object(fleet, "authority", return_value={"source": actor.ref.key}):

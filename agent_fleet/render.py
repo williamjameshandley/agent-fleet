@@ -37,13 +37,13 @@ def recency(session):
     return session.human_activity or session.created
 
 
-def order(sessions, unavailable, graph, expanded=(), show_python=False):
+def order(sessions, unavailable, catalogue, expanded=(), show_python=False):
     sessions = sorted(sessions,
                       key=lambda s: (s.ref.server.source in unavailable,
                                      STATE_ORDER.get(s.state, 2),
                                      -recency(s), s.ref.key))
-    if graph is not None:
-        return alan.project(sessions, graph, expanded=expanded,
+    if catalogue is not None:
+        return alan.project(sessions, catalogue, expanded=expanded,
                             show_python=show_python)
     return [alan.Projected(session, 0, 0, False) for session in sessions]
 

@@ -178,7 +178,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
         consumer = threading.Event()
         changed = queue.Queue()
         alan = mock.Mock(error=None)
-        alan.snapshot.return_value = contextlib.nullcontext(([], None))
+        alan.snapshot.return_value = contextlib.nullcontext([])
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
         control = mock.Mock(closed=False)
@@ -194,7 +194,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
              mock.patch("agent_fleet.tmux.inventory",
                         side_effect=LibTmuxException("server disappeared")):
             stream = event_stream("fixture", consumer, changed=changed)
-            self.assertEqual(next(stream), ([], None, False))
+            self.assertEqual(next(stream), ([], [], False))
             consumer.set()
             changed.put("consumer")
             with self.assertRaises(StopIteration):
@@ -204,7 +204,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
         consumer = threading.Event()
         changed = queue.Queue()
         alan = mock.Mock(error=None)
-        alan.snapshot.return_value = contextlib.nullcontext(([], None))
+        alan.snapshot.return_value = contextlib.nullcontext([])
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
         control = mock.Mock(closed=False)
@@ -219,7 +219,6 @@ class ProtocolCorrelationTests(unittest.TestCase):
              mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
              mock.patch("agent_fleet.tmux.server", return_value=tmux), \
              mock.patch("agent_fleet.tmux.inventory", return_value=[item]), \
-             mock.patch("agent_fleet.tmux.alan_inventory", return_value=[]), \
              mock.patch("agent_fleet.tmux.observe", side_effect=failure):
             stream = event_stream("fixture", consumer, changed=changed)
             sessions, _, available = next(stream)
@@ -235,7 +234,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
         consumer = threading.Event()
         changed = queue.Queue()
         alan = mock.Mock(error=None)
-        alan.snapshot.return_value = contextlib.nullcontext(([], None))
+        alan.snapshot.return_value = contextlib.nullcontext([])
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
         control = mock.Mock(closed=False)
@@ -274,7 +273,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
         consumer = threading.Event()
         changed = queue.Queue()
         alan = mock.Mock(error=None)
-        alan.snapshot.return_value = contextlib.nullcontext(([], None))
+        alan.snapshot.return_value = contextlib.nullcontext([])
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
         control = mock.Mock(closed=False)
@@ -332,7 +331,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
             consumer = threading.Event()
             changed = queue.Queue()
             alan = mock.Mock(error=None)
-            alan.snapshot.return_value = contextlib.nullcontext(([], None))
+            alan.snapshot.return_value = contextlib.nullcontext([])
 
             def advance(stream):
                 result = queue.Queue()
@@ -347,14 +346,14 @@ class ProtocolCorrelationTests(unittest.TestCase):
                  mock.patch("agent_fleet.tmux.AlanWatcher", return_value=alan), \
                  mock.patch("agent_fleet.tmux.RUNTIME", runtime / "agent-fleet"):
                 stream = event_stream("fixture", consumer, changed=changed)
-                self.assertEqual(next(stream), ([], None, False))
+                self.assertEqual(next(stream), ([], [], False))
                 subprocess.run(["tmux", "new-session", "-d", "-s", "source",
                                 "sleep 30"], check=True, env=environment)
                 sessions, _, available = advance(stream)
                 self.assertTrue(available)
                 self.assertEqual([item.name for item in sessions], ["source"])
                 subprocess.run(["tmux", "kill-server"], check=True, env=environment)
-                self.assertEqual(advance(stream), ([], None, False))
+                self.assertEqual(advance(stream), ([], [], False))
                 subprocess.run(["tmux", "new-session", "-d", "-s", "again",
                                 "sleep 30"], check=True, env=environment)
                 sessions, _, available = advance(stream)
@@ -418,7 +417,7 @@ class ProtocolCorrelationTests(unittest.TestCase):
         changed = queue.Queue()
         consumer = threading.Event()
         alan = mock.Mock(error="Alan unavailable", actors=[], graph=None)
-        alan.snapshot.return_value = contextlib.nullcontext(([], None))
+        alan.snapshot.return_value = contextlib.nullcontext([])
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(),
                             stderr=mock.Mock())
         process.poll.return_value = None
@@ -433,13 +432,12 @@ class ProtocolCorrelationTests(unittest.TestCase):
              mock.patch("agent_fleet.tmux.ControlClient", return_value=control), \
              mock.patch("agent_fleet.tmux.server", return_value=tmux), \
              mock.patch("agent_fleet.tmux.inventory", return_value=[item]), \
-             mock.patch("agent_fleet.tmux.alan_inventory", return_value=[]), \
              mock.patch("agent_fleet.tmux.observe",
                         side_effect=lambda current, _catalog: current), \
              mock.patch("agent_fleet.tmux.native_transcripts.catalog",
                         return_value={}):
             stream = event_stream("fixture", consumer, changed=changed)
-            self.assertEqual(next(stream), ([item], None, True))
+            self.assertEqual(next(stream), ([item], [], True))
             consumer.set()
             changed.put("consumer")
             with self.assertRaises(StopIteration):
@@ -450,9 +448,9 @@ class ProtocolCorrelationTests(unittest.TestCase):
         consumer = threading.Event()
         process = mock.Mock(stdout=mock.Mock(), stdin=mock.Mock(), stderr=mock.Mock())
         process.poll.return_value = None
-        alan = mock.Mock(error=None, actors=["stale"], graph="stale graph")
+        alan = mock.Mock(error=None, actors=[])
         alan.snapshot.side_effect = lambda: contextlib.nullcontext(
-            (alan.actors, alan.graph))
+            alan.actors)
         control = mock.Mock()
         tmux = mock.Mock()
         tmux.has_session.return_value = True
@@ -468,12 +466,11 @@ class ProtocolCorrelationTests(unittest.TestCase):
              mock.patch("agent_fleet.tmux.native_transcripts.catalog",
                         return_value={}):
             stream = event_stream("fixture", consumer, changed=changed)
-            self.assertEqual(next(stream), ([], "stale graph", True))
-            alan.actors = ["fresh"]
-            alan.graph = "fresh graph"
+            self.assertEqual(next(stream), ([], [], True))
+            alan.actors = [{"addr": "fresh"}]
             changed.put("alan")
-            self.assertEqual(next(stream), ([], "fresh graph", True))
-            self.assertEqual(inventory.call_args.args, ("fixture", ["fresh"]))
+            self.assertEqual(next(stream), ([], [{"addr": "fresh"}], True))
+            self.assertEqual(inventory.call_args.args, ("fixture",))
             finished = threading.Event()
 
             def resume():
@@ -609,7 +606,8 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet = Fleet(); session = self.session()
             source = "will@lovelace"
             fleet.sessions = {source: [session]}
-            fleet.graphs = {source: mock.Mock()}
+            fleet.tmux_sessions = {source: [session]}
+            fleet.catalogues = {source: []}
             loop = asyncio.get_running_loop()
             preview = loop.create_future(); switch = loop.create_future()
             cleanup = loop.create_future()
@@ -618,7 +616,7 @@ class DaemonBoundaryTests(unittest.TestCase):
             fleet.cleanups[3] = (source, cleanup)
             await fleet.source_disconnected(source, 42, 1)
             self.assertNotIn(source, fleet.sessions)
-            self.assertNotIn(source, fleet.graphs)
+            self.assertNotIn(source, fleet.catalogues)
             self.assertFalse(fleet.previews); self.assertFalse(fleet.switches)
             self.assertFalse(fleet.cleanups)
             for future in (preview, switch, cleanup):

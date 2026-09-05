@@ -1,4 +1,5 @@
 import os
+import json
 import shlex
 import subprocess
 import queue
@@ -16,11 +17,10 @@ from watchfiles import watch
 from .model import ServerRef, Session, SessionRef
 from .agent import observe
 from .config import RUNTIME, tmux_command
-from .alan import Watcher as AlanWatcher, inventory as alan_inventory
+from .alan import Watcher as AlanWatcher
 from . import alan, presentation, transcripts as native_transcripts
 
 PREVIEW = Path("/usr/lib/agent-fleet/fleet-preview")
-UNSET = object()
 SESSION_FORMAT = (
     "socket=x#{q:socket_path} pid=x#{q:pid} started=x#{q:start_time} "
     "id=x#{q:session_id} name=x#{q:session_name} "
@@ -213,7 +213,7 @@ class ControlClient:
         return socket, int(pid), int(started), session_id
 
 
-def capture(key, columns=0, lines=0, alan_graph=UNSET):
+def capture(key, columns=0, lines=0):
     if key.startswith("alan:"):
         addr = key.removeprefix("alan:")
         kind = addr.split("-", 1)[0]
@@ -226,10 +226,7 @@ def capture(key, columns=0, lines=0, alan_graph=UNSET):
                     f"{kind.capitalize()} evaluator terminal is unavailable: {addr}"
                 )
             return capture_pane(session, columns, lines)
-        if alan_graph is None:
-            raise RuntimeError("Alan observation is unavailable")
-        return alan.preview(addr, columns, lines,
-                            None if alan_graph is UNSET else alan_graph)
+        return alan.preview(addr, columns, lines)
     source, socket, pid, started, session_id = split_key(key)
     host = source.rsplit("@", 1)[-1]
     if host != os.uname().nodename:
@@ -264,7 +261,7 @@ def capture_pane(session, columns=0, lines=0):
     return result.stdout
 
 
-def inventory(source, actor_descriptors):
+def inventory(source):
     tmux = server()
     sessions = []
     names = []
@@ -281,10 +278,7 @@ def inventory(source, actor_descriptors):
             SessionRef(server_ref, session_id), name, int(created), int(activity),
             int(attached), int(windows), command, title, path,
             human_activity=int(human_activity or 0)))
-    actors = [actor for actor in actor_descriptors
-              if actor.get("evaluator") == "native"
-              or presentation.available(actor["addr"], actor, names)]
-    return sessions + alan_inventory(source, actors)
+    return sessions
 
 
 def watched_event(path, transcript_roots):
@@ -390,9 +384,9 @@ def event_stream(source, consumer=None, controls=None, changed=None, alan_watche
             if alan.error and alan.error != alan_error:
                 print(alan.error, file=sys.stderr, flush=True)
             alan_error = alan.error
-            with alan.snapshot() as (actors, graph):
+            with alan.snapshot() as actors:
                 try:
-                    current = inventory(source, actors) if control is not None else []
+                    current = inventory(source) if control is not None else []
                 except (subprocess.CalledProcessError, LibTmuxException) as error:
                     if control is None:
                         raise
@@ -424,10 +418,11 @@ def event_stream(source, consumer=None, controls=None, changed=None, alan_watche
                                            transcript_path=cached.transcript_path)
                                    if (cached := agent_cache.get(session.ref)) else session
                                    for session in current]
-                serial = tuple(current)
+                serial = (tuple(current), json.dumps(actors, sort_keys=True,
+                                                     separators=(",", ":")))
                 current_available = control is not None
                 if serial != previous or force or current_available != available:
-                    yield current, graph, current_available
+                    yield current, actors, current_available
                     previous = serial
                     force = False
                     available = current_available
@@ -438,7 +433,6 @@ def event_stream(source, consumer=None, controls=None, changed=None, alan_watche
                 events.append(changed.get_nowait())
             if consumer and consumer.is_set():
                 return
-            force = "alan" in events
             if control is not None and ("closed" in events or process.poll() is not None):
                 discard_control()
                 force = True

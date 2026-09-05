@@ -19,10 +19,8 @@ from unittest import mock
 from pathlib import Path
 
 import loop
-import networkx as nx
-
 from agent_fleet.model import ServerRef, Session, SessionRef
-from agent_fleet.protocol import (decode, decode_graph, decode_observation, encode,
+from agent_fleet.protocol import (decode, decode_observation, encode,
                                   encode_observation)
 from agent_fleet.render import AGENT_COLOUR, STATE_ORDER, recency
 from agent_fleet.transcripts import fold_adopted
@@ -81,21 +79,15 @@ class IdentityTests(unittest.TestCase):
         child = f"claude-child@{host}"
         python = f"python-child@{host}"
         principal = f"will@{host}"
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [
-            {"addr": root, "kind": "codex"},
-            {"addr": child, "kind": "claude"},
-            {"addr": python, "kind": "python"},
-            {"addr": principal, "kind": "principal"},
+        descriptors = [
+            {"addr": root, "kind": "codex", "spawn": f"{principal}#1"},
+            {"addr": child, "kind": "claude", "spawn": f"{root}#1"},
+            {"addr": python, "kind": "python", "spawn": f"{root}#2"},
+            {"addr": principal, "kind": "principal", "spawn": None},
         ]
-        for actor in (root, child, python, principal):
-            graph.add_node(f"{actor}#0", stream=actor, op="create")
-        graph.add_node(f"{principal}#1", stream=principal, op="spawn")
-        graph.add_edge(f"{principal}#1", f"{root}#0", key="spawn")
-        for position, descendant in enumerate((child, python), 1):
-            operation = f"{root}#{position}"
-            graph.add_node(operation, stream=root, op="spawn")
-            graph.add_edge(operation, f"{descendant}#0", key="spawn")
+        for descriptor in descriptors:
+            descriptor.update(state="waiting", preset=None, evaluator=None,
+                              unresolved_requests={})
         server = ServerRef(source.key, "", 0, 0, "alan")
         sessions = [
             Session(SessionRef(server, actor), actor, 1, 0, 0, 1, "alan", "",
@@ -104,13 +96,12 @@ class IdentityTests(unittest.TestCase):
                                 (python, "python"))
         ]
         fleet = Fleet()
-        graph = daemon.qualify_graph(graph, source)
         root, child, python = (f"alan:{source.key}:{actor}"
                                for actor in (root, child, python))
         fleet.sessions = {source.key: sessions}
         fleet.unavailable = set()
         fleet.observed = fleet.view_revision = 1
-        fleet._composed = (fleet.observed, graph)
+        fleet.catalogues = {source.key: descriptors}
         fleet.muster_generation = ("fixture", 1, 1, "$1")
         return fleet, root, child, python
 
@@ -222,11 +213,11 @@ class IdentityTests(unittest.TestCase):
         )
         encoded = json.loads(encode(sessions))
         self.assertEqual(
-            set(encoded), {"version", "sessions", "usage", "unavailable", "alan"})
+            set(encoded), {"version", "sessions", "usage", "unavailable"})
         self.assertEqual(encoded["sessions"][0]["server"]["kind"], "tmux")
         self.assertEqual(decode(json.dumps(encoded)), sessions)
         with self.assertRaisesRegex(ValueError, "unsupported Fleet protocol version"):
-            decode('{"version":1,"sessions":[],"usage":{},"unavailable":[],"alan":null}')
+            decode('{"version":1,"sessions":[],"usage":{},"unavailable":[]}')
 
     def test_composite_actor_operations_use_the_exact_provider_attachment(self):
         fleet = Fleet()
@@ -344,111 +335,6 @@ class IdentityTests(unittest.TestCase):
                           raised.exception.error_type),
                          ("resolve", "invalid_identity", "AttributeError"))
 
-    def test_protocol_round_trip_preserves_the_alan_graph(self):
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [
-            {"addr": "codex-a@newton", "kind": "codex", "host": "newton"}
-        ]
-        graph.add_node(
-            "schedule:550e8400-e29b-41d4-a716-446655440000@newton#0",
-            op="send",
-            to="claude-b@lovelace",
-        )
-        graph.add_edge(
-            "codex-a@newton#3",
-            "claude-b@lovelace#5",
-            key="send",
-            relation="send",
-        )
-
-        restored = decode_graph(encode([], graph=graph))
-
-        self.assertEqual(restored.graph, graph.graph)
-        self.assertEqual(list(restored.nodes(data=True)), list(graph.nodes(data=True)))
-        self.assertEqual(
-            list(restored.edges(keys=True, data=True)),
-            list(graph.edges(keys=True, data=True)),
-        )
-
-    def test_fleet_composes_host_observations_without_losing_semantics(self):
-        newton = nx.MultiDiGraph()
-        newton.graph["actors"] = [
-            {"addr": "codex-a@newton", "kind": "codex", "host": "newton"}
-        ]
-        newton.add_node("codex-a@newton#3", actor="codex-a@newton", op="send")
-        newton.add_node("claude-b@lovelace#5")
-        newton.add_edge(
-            "codex-a@newton#3",
-            "claude-b@lovelace#5",
-            key="send",
-            relation="send",
-        )
-
-        lovelace = nx.MultiDiGraph()
-        lovelace.graph["actors"] = [
-            {"addr": "claude-b@lovelace", "kind": "claude", "host": "lovelace"}
-        ]
-        lovelace.add_node(
-            "claude-b@lovelace#5",
-            actor="claude-b@lovelace",
-            op="input",
-        )
-        lovelace.add_node(
-            "schedule:550e8400-e29b-41d4-a716-446655440000@lovelace#0",
-            op="send",
-            to="codex-a@newton",
-        )
-
-        fleet = Fleet()
-        fleet.graphs = {"will@newton": newton, "will@lovelace": lovelace}
-        fleet.observed = 1
-        composed = fleet.composed_graph()
-
-        self.assertEqual(
-            composed.graph["actors"],
-            newton.graph["actors"] + lovelace.graph["actors"],
-        )
-        self.assertEqual(
-            composed.nodes["claude-b@lovelace#5"]["op"],
-            "input",
-        )
-        self.assertEqual(
-            composed.edges[
-                "codex-a@newton#3", "claude-b@lovelace#5", "send"
-            ]["relation"],
-            "send",
-        )
-        self.assertIn(
-            "schedule:550e8400-e29b-41d4-a716-446655440000@lovelace#0",
-            composed,
-        )
-
-    def test_source_observation_decodes_sessions_and_graph_from_one_json_parse(self):
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = []
-        source = RuntimeSource("lovelace", "will", "/run/alan", "/run/tmux")
-        raw = encode_observation([self.session("lovelace")], True, graph)
-        with mock.patch("agent_fleet.protocol.json.loads",
-                        wraps=json.loads) as loads:
-            sessions, available, decoded = decode_observation(raw, source)
-        loads.assert_called_once_with(raw)
-        self.assertEqual(len(sessions), 1)
-        self.assertTrue(available)
-        self.assertEqual(decoded.graph["actors"], [])
-
-    def test_composed_graph_recomposes_only_per_observation_generation(self):
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": "a@h", "kind": "codex"}]
-        fleet = Fleet()
-        fleet.graphs = {"will@lovelace": graph}
-        fleet.observed = 1
-        first = fleet.composed_graph()
-        self.assertIs(fleet.composed_graph(), first)
-        fleet.graphs["lovelace"] = graph
-        self.assertIs(fleet.composed_graph(), first)
-        fleet.observed = 2
-        self.assertIsNot(fleet.composed_graph(), first)
-
     def test_reply_drops_the_render_when_the_client_disconnected(self):
         fleet = Fleet()
 
@@ -510,11 +396,8 @@ class IdentityTests(unittest.TestCase):
         restored = replace(session, attachment=attachment)
         fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
-                                  "kind": "codex",
-                                  "evaluator": "native", "managed": False}]
-        fleet._composed = (fleet.observed, graph)
+        fleet.catalogues = {session.ref.server.source: [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]}
         writer = mock.Mock()
         writer.drain = mock.AsyncMock()
 
@@ -552,11 +435,8 @@ class IdentityTests(unittest.TestCase):
         restored = replace(session, attachment=attachment)
         fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
-                                  "kind": "codex",
-                                  "evaluator": "native", "managed": False}]
-        fleet._composed = (fleet.observed, graph)
+        fleet.catalogues = {session.ref.server.source: [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]}
         launched = asyncio.Event()
         release = asyncio.Event()
 
@@ -592,11 +472,8 @@ class IdentityTests(unittest.TestCase):
             "will@lovelace", "/tmp/tmux/default", 12, 10), "$9")
         fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
-                                  "kind": "codex",
-                                  "evaluator": "native", "managed": False}]
-        fleet._composed = (fleet.observed, graph)
+        fleet.catalogues = {session.ref.server.source: [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]}
         launched = asyncio.Event()
         release = asyncio.Event()
 
@@ -637,11 +514,8 @@ class IdentityTests(unittest.TestCase):
             "full-id")
         fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
-                                  "kind": "codex",
-                                  "evaluator": "native", "managed": False}]
-        fleet._composed = (fleet.observed, graph)
+        fleet.catalogues = {session.ref.server.source: [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]}
 
         async def exercise():
             with mock.patch.object(fleet, "restore_native", mock.AsyncMock()):
@@ -659,11 +533,8 @@ class IdentityTests(unittest.TestCase):
             "work", 1, 2, 0, 1, "alan", "", "/work", "codex", "waiting")
         fleet.sessions = {"will@lovelace": [session]}
         fleet.unavailable.clear()
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
-                                  "kind": "codex",
-                                  "evaluator": "native", "managed": False}]
-        fleet._composed = (fleet.observed, graph)
+        fleet.catalogues = {session.ref.server.source: [{"addr": actor, "kind": "codex",
+                                  "evaluator": "native", "managed": False}]}
 
         async def exercise():
             with mock.patch.object(fleet, "authority", mock.AsyncMock()) as authority:
@@ -689,11 +560,8 @@ class IdentityTests(unittest.TestCase):
             for number in (8, 9)]
         fleet.sessions = {"will@lovelace": fold_adopted([session, *providers])}
         fleet.unavailable.clear()
-        graph = nx.MultiDiGraph()
-        graph.graph["actors"] = [{"addr": session.ref.key, "actor": actor,
-                                  "kind": "claude",
-                                  "evaluator": "native", "managed": False}]
-        fleet._composed = (fleet.observed, graph)
+        fleet.catalogues = {session.ref.server.source: [{"addr": actor, "kind": "claude",
+                                  "evaluator": "native", "managed": False}]}
 
         async def exercise():
             with mock.patch.object(fleet, "restore_native", mock.AsyncMock()) as restore:
@@ -932,8 +800,13 @@ class IdentityTests(unittest.TestCase):
             emit_update = threading.Event()
             addr = f"codex-one@{host}"
             descriptor = {
-                "addr": addr, "kind": "codex", "host": host,
+                "addr": addr, "kind": "codex",
                 "state": "waiting", "cwd": str(root),
+                "created": "2026-07-30T12:00:00Z", "spawn": f"will@{host}#1",
+                "worked": False, "managed": False, "evaluator": None, "preset": None,
+                "active_evaluation": None, "evaluation_started": None,
+                "latest_displayable_output": None, "source_activity": {},
+                "unresolved_requests": {},
                 "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript",
             }
 
@@ -959,9 +832,12 @@ class IdentityTests(unittest.TestCase):
                 return {
                     "directed": True, "multigraph": True,
                     "graph": {"actors": [
-                        {**descriptor,
+                        {**descriptor, "worked": active,
+                         "active_evaluation": f"{addr}#2" if active else None,
+                         "evaluation_started": "2026-07-30T12:00:02Z" if active else None,
                          "state": "working" if active else "waiting"},
-                        {"addr": principal, "kind": "principal", "host": host},
+                        {**descriptor, "addr": principal, "kind": "principal",
+                         "spawn": None, "state": "waiting"},
                     ]},
                     "nodes": nodes,
                     "edges": [{"source": f"{principal}#1",
@@ -989,6 +865,7 @@ class IdentityTests(unittest.TestCase):
                             reader = connection.makefile("rb")
                             request = json.loads(reader.readline())
                             if request.get("stream"):
+                                self.assertEqual(request.get("scope"), "actors")
                                 initial = observed(False)
                                 initial.update({"generation": 1, "revision": 0})
                                 connection.sendall((json.dumps({
@@ -1181,8 +1058,15 @@ class IdentityTests(unittest.TestCase):
             {"addr": "claude-old@newton", "kind": "claude", "state": "retired",
              "cwd": "/work", "created": 1, "human_activity": 0,
              "active_evaluation": None, "evaluation_started": 0,
-             "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript"},
+            "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript"},
         ]
+        for descriptor in descriptors:
+            descriptor.update(
+                created="2026-07-30T12:00:00Z",
+                evaluation_started=("2026-07-30T12:00:03Z"
+                                    if descriptor["active_evaluation"] else None),
+                latest_displayable_output=None, source_activity={},
+                unresolved_requests={}, worked=False, managed=False)
         projected = alan_inventory("newton", descriptors)
         self.assertEqual([item.ref.session_id for item in projected],
                          [codex, "python-1@newton"])
@@ -1191,11 +1075,11 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(projected[0].transcript_id, identity)
         self.assertEqual(projected[0].transcript_path, "")
         self.assertEqual(projected[0].evaluation, f"{codex}#2")
-        self.assertEqual(projected[0].evaluation_started, 3)
+        self.assertEqual(projected[0].evaluation_started, 1785412803)
         self.assertEqual(projected[1].transcript_id, "")
         self.assertEqual(projected[1].transcript_path, "")
 
-    def test_host_inventory_projects_only_actors_with_current_presentations(self):
+    def test_host_inventory_does_not_derive_alan_actor_sessions(self):
         with tempfile.TemporaryDirectory() as cwd:
             actors = []
             for addr, kind in [
@@ -1226,16 +1110,10 @@ class IdentityTests(unittest.TestCase):
             with mock.patch("agent_fleet.tmux.server", return_value=server), \
                  mock.patch("agent_fleet.presentation.alan.native_dir",
                             return_value=native):
-                projected = tmux.inventory("newton", actors)
-        self.assertEqual(
-            [session.ref.session_id for session in projected],
-            ["codex-full@newton", "claude-full@newton",
-             "python-one@newton", "llm-one@newton"],
-        )
-        self.assertNotIn("codex-read-reviewer@newton",
-                         [session.ref.session_id for session in projected])
+                projected = tmux.inventory("newton")
+        self.assertEqual(projected, [])
 
-    def test_host_inventory_retains_native_provider_and_adopted_actor(self):
+    def test_host_inventory_retains_only_the_ordinary_native_provider(self):
         actor = "codex-00000000-0000-4000-8000-000000000001@newton"
         descriptor = {
             "addr": actor, "kind": "codex", "evaluator": "native",
@@ -1249,10 +1127,10 @@ class IdentityTests(unittest.TestCase):
             tmux_session_row("$7", "fleet@native-test")]
 
         with mock.patch("agent_fleet.tmux.server", return_value=server):
-            projected = tmux.inventory("newton", [descriptor])
+            projected = tmux.inventory("newton")
 
         self.assertEqual([session.ref.session_id for session in projected],
-                         ["$7", actor])
+                         ["$7"])
 
     def test_host_inventory_is_one_coherent_tmux_snapshot(self):
         server = mock.Mock()
@@ -1263,7 +1141,7 @@ class IdentityTests(unittest.TestCase):
             path="/work with spaces")]
 
         with mock.patch("agent_fleet.tmux.server", return_value=server):
-            [projected] = tmux.inventory("newton", [])
+            [projected] = tmux.inventory("newton")
 
         server.cmd.assert_called_once_with(
             "list-sessions", "-F", tmux.SESSION_FORMAT)
@@ -1279,7 +1157,7 @@ class IdentityTests(unittest.TestCase):
 
         with mock.patch("agent_fleet.tmux.server", return_value=server), \
              self.assertRaises(ValueError):
-            tmux.inventory("newton", [])
+            tmux.inventory("newton")
 
     def test_every_rendered_actor_resolves_from_the_same_host_generation(self):
         host = os.uname().nodename
@@ -1299,12 +1177,17 @@ class IdentityTests(unittest.TestCase):
             ]
             descriptors = [{
                 "addr": addr, "kind": kind, "state": "waiting",
-                "cwd": str(cwd), "created": 1, "human_activity": 0,
+                "cwd": str(cwd), "created": "2026-07-30T12:00:00Z",
                 "label": "colliding label", "active_evaluation": None,
-                "evaluation_started": 0, "last_operation_activity": "2026-07-30T12:00:01Z",
+                "evaluation_started": None, "last_operation_activity": "2026-07-30T12:00:01Z",
                 "hibernation": "transcript" if kind in {"claude", "codex"}
                 else "exact" if kind == "python" else "unsupported",
+                "evaluator": None, "preset": None, "spawn": None,
+                "managed": False, "worked": False,
+                "latest_displayable_output": None, "source_activity": {},
+                "unresolved_requests": {},
             } for addr, kind in specifications]
+            descriptors[2]["state"] = descriptors[3]["state"] = "unavailable"
             native = [specifications[0][0], specifications[1][0],
                       specifications[4][0]]
             try:
@@ -1314,22 +1197,20 @@ class IdentityTests(unittest.TestCase):
                         "fleet@alan-" + alan.runtime_name(actor), "sleep", "30",
                     ], check=True, env=environment)
 
-                graph = nx.MultiDiGraph()
                 principal = f"will@{host}"
-                graph.graph["actors"] = [
-                    {"addr": principal, "kind": "principal"}, *descriptors]
                 for number, descriptor in enumerate(descriptors):
-                    source = f"{principal}#{number}"
-                    target = f'{descriptor["addr"]}#0'
-                    graph.add_node(source, stream=principal)
-                    graph.add_node(target, stream=descriptor["addr"])
-                    graph.add_edge(source, target, key="spawn")
+                    descriptor["spawn"] = f"{principal}#{number}"
+                catalogue = [
+                    {**descriptors[0], "addr": principal, "kind": "principal",
+                     "spawn": None}, *descriptors]
 
                 with mock.patch.dict(os.environ, environment, clear=True):
-                    sessions = tmux.inventory(f"will@{host}", descriptors)
-                    projected_graph = alan.projection_graph(graph)
+                    sessions = tmux.inventory(f"will@{host}")
+                    sessions += alan.inventory(f"will@{host}", catalogue, {principal})
+                    projected_catalogue = {
+                        f"alan:will@{host}:{item['addr']}": item for item in catalogue}
                     projected = render.order(
-                        sessions, [], projected_graph, show_python=True)
+                        sessions, [], projected_catalogue, show_python=True)
                     rows = render.rows_text(projected, [], 120)
                     emitted = [item.session for item in projected]
                     emitted_by_key = {session.ref.key: session for session in emitted}
@@ -1337,9 +1218,8 @@ class IdentityTests(unittest.TestCase):
                     excluded = {specifications[2][0], specifications[3][0]}
                     self.assertTrue(excluded.isdisjoint(
                         session.ref.session_id for session in emitted))
-                    graph_actors = {
-                        actor["addr"] for actor in projected_graph.graph["actors"]}
-                    self.assertTrue(excluded <= graph_actors)
+                    catalogue_actors = {actor["addr"] for actor in catalogue}
+                    self.assertTrue(excluded <= catalogue_actors)
 
                     attachment = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
                     with mock.patch.object(
@@ -2169,9 +2049,11 @@ class IdentityTests(unittest.TestCase):
         fleet.unavailable.clear()
         actor = alan_inventory(source, [{
             "addr": f"llm-1@{host}", "kind": "llm", "state": "waiting",
-            "created": 1, "human_activity": 0, "cwd": "/work",
-            "active_evaluation": None, "evaluation_started": 0,
+            "created": "2026-07-30T12:00:00Z", "cwd": "/work",
+            "active_evaluation": None, "evaluation_started": None,
             "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "unsupported",
+            "latest_displayable_output": None, "source_activity": {},
+            "unresolved_requests": {}, "worked": False, "managed": False,
         }])[0]
 
         async def exercise():
@@ -2199,9 +2081,11 @@ class IdentityTests(unittest.TestCase):
         fleet.unavailable.clear()
         actor = alan_inventory(source, [{
             "addr": f"antigravity-1@{host}", "kind": "antigravity",
-            "state": "waiting", "created": 1, "human_activity": 0, "cwd": "/work",
-            "active_evaluation": None, "evaluation_started": 0,
+            "state": "waiting", "created": "2026-07-30T12:00:00Z", "cwd": "/work",
+            "active_evaluation": None, "evaluation_started": None,
             "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "unsupported",
+            "latest_displayable_output": None, "source_activity": {},
+            "unresolved_requests": {}, "worked": False, "managed": False,
         }])[0]
 
         async def exercise():
@@ -2228,9 +2112,11 @@ class IdentityTests(unittest.TestCase):
         fleet.unavailable.clear()
         actor = alan_inventory(source, [{
             "addr": f"codex-1@{host}", "kind": "codex", "state": "waiting",
-            "created": 1, "human_activity": 0, "cwd": "/work",
-            "active_evaluation": None, "evaluation_started": 0,
+            "created": "2026-07-30T12:00:00Z", "cwd": "/work",
+            "active_evaluation": None, "evaluation_started": None,
             "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript",
+            "latest_displayable_output": None, "source_activity": {},
+            "unresolved_requests": {}, "worked": False, "managed": False,
         }])[0]
         provider = Session(
             SessionRef(ServerRef(source, "/tmp/tmux/default", 12, 10), "$7"),
@@ -2703,34 +2589,32 @@ class IdentityTests(unittest.TestCase):
         fleet = Fleet()
         source = RuntimeSource("lovelace", "will", "/run/alan", "/run/tmux")
         fleet._view_cache = ("stale",)
-        raw = encode_observation([self.session("lovelace")], True, None)
+        raw = encode_observation([self.session("lovelace")], True, [])
         fleet.processes[source.key] = mock.Mock(pid=42)
         fleet.update_source(source, raw)
         self.assertNotIn(source.key, fleet.unavailable)
         self.assertIsNone(fleet._view_cache)
         self.assertNotIn("offline will@lovelace", fleet.view(100)[2])
 
-    def test_hidden_orphan_python_does_not_break_the_projection(self):
+    def test_unattached_python_remains_hidden_when_python_is_shown(self):
         fleet, root, _, python = self.fold_fleet()
-        graph = fleet._composed[1]
-        for source, target, relation in list(graph.edges(keys=True)):
-            if relation == "spawn" and graph.nodes[target]["stream"] == python:
-                graph.remove_edge(source, target, relation)
+        raw_python = python.rsplit(":", 1)[1]
+        next(item for item in next(iter(fleet.catalogues.values()))
+             if item["addr"] == raw_python)["spawn"] = None
         self.assertEqual([item.session.ref.key for item in fleet.projected()],
                          [root])
         fleet.show_python = True
         self.assertNotIn(python, [item.session.ref.key
                                   for item in fleet.projected()])
 
-    def test_actor_without_current_principal_ancestry_stays_folded(self):
+    def test_actor_without_spawn_remains_hidden(self):
         fleet, root, child, _ = self.fold_fleet()
-        graph = fleet._composed[1]
-        for source, target, relation in list(graph.edges(keys=True)):
-            if relation == "spawn" and graph.nodes[target]["stream"] == child:
-                graph.remove_edge(source, target, relation)
+        raw_child = child.rsplit(":", 1)[1]
+        next(item for item in next(iter(fleet.catalogues.values()))
+             if item["addr"] == raw_child)["spawn"] = None
         fleet.expanded.add(root)
-        self.assertEqual([item.session.ref.key for item in fleet.projected()],
-                         [root])
+        self.assertEqual({item.session.ref.key for item in fleet.projected()},
+                         {root})
 
     def test_muster_socket_refuses_a_second_live_listener(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2856,16 +2740,10 @@ class IdentityTests(unittest.TestCase):
         fleet, root, _, _ = self.fold_fleet()
         successor = "codex-successor@lovelace"
         successor_key = f"alan:will@lovelace:{successor}"
-        successor_node = f"will@lovelace|{successor}#0"
-        principal_node = "will@lovelace|will@lovelace#2"
-        fleet._composed[1].graph["actors"].append(
-            {"addr": successor_key, "actor": successor, "kind": "codex"})
-        fleet._composed[1].add_node(
-            successor_node, stream=successor_key, op="create")
-        fleet._composed[1].add_node(
-            principal_node, stream="alan:will@lovelace:will@lovelace", op="spawn")
-        fleet._composed[1].add_edge(
-            principal_node, successor_node, key="spawn")
+        fleet.catalogues["will@lovelace"].append(
+            {"addr": successor, "kind": "codex", "state": "waiting",
+             "spawn": "will@lovelace#2", "preset": None, "evaluator": None,
+             "unresolved_requests": {}})
         fleet.sessions["will@lovelace"].append(Session(
             SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), successor),
             successor, 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting"))
@@ -2892,16 +2770,10 @@ class IdentityTests(unittest.TestCase):
         fleet, root, _, _ = self.fold_fleet()
         successor = "codex-successor@lovelace"
         successor_key = f"alan:will@lovelace:{successor}"
-        successor_node = f"will@lovelace|{successor}#0"
-        principal_node = "will@lovelace|will@lovelace#2"
-        fleet._composed[1].graph["actors"].append(
-            {"addr": successor_key, "actor": successor, "kind": "codex"})
-        fleet._composed[1].add_node(
-            successor_node, stream=successor_key, op="create")
-        fleet._composed[1].add_node(
-            principal_node, stream="alan:will@lovelace:will@lovelace", op="spawn")
-        fleet._composed[1].add_edge(
-            principal_node, successor_node, key="spawn")
+        fleet.catalogues["will@lovelace"].append(
+            {"addr": successor, "kind": "codex", "state": "waiting",
+             "spawn": "will@lovelace#2", "preset": None, "evaluator": None,
+             "unresolved_requests": {}})
         fleet.sessions["will@lovelace"].append(Session(
             SessionRef(ServerRef("will@lovelace", "", 0, 0, "alan"), successor),
             successor, 1, 0, 0, 1, "alan", "", "/work", "codex", "waiting"))
@@ -3163,7 +3035,6 @@ class IdentityTests(unittest.TestCase):
 
     def test_resize_width_governs_the_next_observation_projection(self):
         fleet, _, _, _ = self.fold_fleet()
-        graph = fleet._composed[1]
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch("agent_fleet.daemon.RUNTIME", Path(directory)), \
              mock.patch("agent_fleet.daemon.render.rows_text",
@@ -3172,7 +3043,6 @@ class IdentityTests(unittest.TestCase):
             fleet.observed += 1
             fleet.view_revision += 1
             fleet._view_cache = None
-            fleet._composed = (fleet.observed, graph)
             fleet.publish_view(fleet.view_width)
         self.assertEqual(rows.call_args.args[2], 143)
 
@@ -3693,11 +3563,10 @@ class IdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "terminal is unavailable"):
                 tmux.capture("alan:codex-1@newton", 80, 20)
 
-    def test_collector_preview_fails_when_retained_alan_graph_is_unavailable(self):
-        with mock.patch.object(tmux.alan, "preview") as preview:
-            with self.assertRaisesRegex(RuntimeError, "observation is unavailable"):
-                tmux.capture("alan:llm-1@newton", 80, 20, None)
-        preview.assert_not_called()
+    def test_collector_preview_requests_only_the_selected_actor(self):
+        with mock.patch.object(tmux.alan, "preview", return_value="text") as preview:
+            self.assertEqual(tmux.capture("alan:llm-1@newton", 80, 20), "text")
+        preview.assert_called_once_with("llm-1@newton", 80, 20)
 
     def test_viewer_clear_remains_an_internal_primitive(self):
         root = Path(__file__).parents[1]
@@ -4323,7 +4192,7 @@ class IdentityTests(unittest.TestCase):
                                env=environment, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)
 
-    def test_alan_events_force_an_inventory_emit(self):
+    def test_alan_events_do_not_force_an_unchanged_catalogue_emit(self):
         source = (Path(__file__).parents[1] / "agent_fleet/tmux.py").read_text()
-        self.assertIn('force = "alan" in events', source)
+        self.assertNotIn('force = "alan" in events', source)
         self.assertIn("if serial != previous or force or current_available != available:", source)

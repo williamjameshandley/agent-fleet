@@ -16,9 +16,9 @@ across machines, operable with one hand and eventually none.
   There is no Main
   mirror, linked observer, copied window, numbered join or parallel ordering.
 - tmux owns terminal sessions, windows, panes and focus. Alan owns actor
-  lifecycle and append-only operation streams. Fleet derives actor state and
-  native-evidence references from Alan's observation graph and owns labels and
-  presentation. Fleet has no topology DB.
+  lifecycle, append-only operation streams and the current actor catalogue.
+  Fleet observes that catalogue and owns labels and presentation. Fleet has no
+  topology DB and its continuous state never possesses operation history.
 - Canonical identity is a tagged source reference: host, socket, server PID,
   server start time and tmux object ID; or an Alan host-bound actor address. Names,
   indices and rows are never identity.
@@ -27,7 +27,7 @@ across machines, operable with one hand and eventually none.
 - Muster defaults to attachable tmux sessions, including ordinary shells and
   standalone native providers, plus the immediate children of Alan's Unix
   principal actors. Principals are not rows. Further descendants are derived
-  from Alan's graph and recursively folded beneath their nearest visible creator.
+  from catalogue spawn references and recursively folded beneath their nearest visible creator.
   Each visible actor folds independently; Python has one global presentation
   toggle. Fleet stores no parent IDs.
 
