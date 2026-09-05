@@ -90,7 +90,7 @@ def test_principals_are_not_sessions_and_their_sends_are_human_activity():
     assert actor["human_activity"] == 1785412801
 
 
-def test_closed_and_retired_actors_are_reconstructed_without_extra_state():
+def test_waiting_and_closed_actors_are_reconstructed_without_extra_state():
     waiting = alan.actors(graph(
         {"op": "create"},
         {"op": "input"},
@@ -100,8 +100,8 @@ def test_closed_and_retired_actors_are_reconstructed_without_extra_state():
     assert waiting["state"] == "waiting"
     assert waiting["last_error"] == "failed"
 
-    retired = alan.actors(graph({"op": "create"}, state="closed"))[0]
-    assert retired["state"] == "closed"
+    closed = alan.actors(graph({"op": "create"}, state="closed"))[0]
+    assert closed["state"] == "closed"
 
 
 def test_conversational_work_is_derived_from_input_operations():
@@ -270,8 +270,8 @@ def test_watcher_emits_actor_metadata_only_changes():
     stopped = threading.Event()
     changed = queue.Queue()
     live = graph({"op": "create"})
-    unavailable = graph({"op": "create"}, state="failed")
-    observations = ObservationStream((live, unavailable), stopped)
+    failed = graph({"op": "create"}, state="failed")
+    observations = ObservationStream((live, failed), stopped)
 
     def observe(*, stream):
         assert stream

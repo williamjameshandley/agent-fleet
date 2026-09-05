@@ -340,7 +340,7 @@ def test_composite_archive_keeps_bare_actor_and_raw_provider_operations():
         "agent": "codex", "transcript": "thread-1"}
 
 
-def test_retired_native_actor_leaves_a_provider_only_archive_boundary():
+def test_closed_native_actor_leaves_a_provider_only_archive_boundary():
     actor = replace(session(agent="codex"), reported_state="closed",
                     name="historic name")
     provider = session(kind="tmux", agent="codex")

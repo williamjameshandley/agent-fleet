@@ -265,7 +265,7 @@ def inventory(source, actor_descriptors):
     source = ServerRef(source, "", 0, 0, "alan")
     sessions = []
     for actor in actor_descriptors:
-        if (actor["state"] in {"closed", "failed"}
+        if (actor["state"] == "closed"
                 and actor.get("evaluator") != "native"):
             continue
         transcript_id = address_identity(actor["addr"], actor["kind"])
@@ -281,7 +281,7 @@ def inventory(source, actor_descriptors):
             worked=actor.get("worked", True),
             evaluator=actor.get("evaluator", ""),
             managed=actor.get("managed", False),
-            hibernation=actor["stop"]))
+            stop=actor["stop"]))
     return sessions
 
 
@@ -355,7 +355,7 @@ def project(sessions, graph, expanded=(), show_python=False):
     session_order = [graph_actor(session) for session in sessions
                      if session.ref.server.kind == "alan"
                      and (show_python or session.agent != "python"
-                          or session.state == "stopped")]
+                          or session.state in {"stopped", "failed"})]
     principals = {addr for addr, descriptor in descriptors.items()
                   if descriptor["kind"] == "principal"}
     native_roots = {addr for addr, descriptor in descriptors.items()
@@ -372,6 +372,7 @@ def project(sessions, graph, expanded=(), show_python=False):
         first = nx.shortest_path(ancestry, principal, actor)[1]
         if descriptors[first].get("preset") == "commander" or (
             descriptors[first]["kind"] == "python" and not show_python
+            and descriptors[first]["state"] not in {"stopped", "failed"}
         ):
             continue
         roots[actor] = principal
@@ -380,7 +381,7 @@ def project(sessions, graph, expanded=(), show_python=False):
                if actor in roots
                and descriptors[actor].get("preset") != "commander"
                and (descriptors[actor]["kind"] != "python" or show_python
-                    or descriptors[actor]["state"] == "stopped")]
+                    or descriptors[actor]["state"] in {"stopped", "failed"})]
     visible_set = set(visible)
     for actor in visible:
         candidates = nx.ancestors(ancestry, actor) & visible_set

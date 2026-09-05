@@ -1077,12 +1077,12 @@ class Fleet:
             if session.ref.server.kind != "alan":
                 raise ValueError("stop requires an Alan actor")
             if (session.agent not in {"python", "claude", "codex"}
-                    or session.hibernation == "unsupported"):
+                    or session.stop == "unsupported"):
                 raise ValueError("actor does not support stop")
             if session.state not in {"waiting", "failed"}:
                 raise ValueError(f"stop requires a waiting actor: {session.state}")
             if (session.state == "failed"
-                    and (session.hibernation != "transcript" or session.managed
+                    and (session.stop != "transcript" or session.managed
                          or not session.transcript_path)):
                 raise ValueError("stop recovery requires a durable transcript identity")
             if session.attached:

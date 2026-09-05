@@ -57,7 +57,7 @@ class Session:
     attachment_ambiguous: bool = False
     evaluator: str = ""
     managed: bool = False
-    hibernation: str = "unsupported"
+    stop: str = "unsupported"
 
     @property
     def agent(self):

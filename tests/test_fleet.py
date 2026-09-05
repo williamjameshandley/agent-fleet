@@ -320,7 +320,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(sum(call.args[0][0] == "kill-window"
                              for call in ui.command.call_args_list), 1)
 
-    def test_adopted_attachment_does_not_revive_an_unavailable_actor(self):
+    def test_adopted_attachment_does_not_revive_a_failed_actor(self):
         actor = "codex-1@newton"
         session = mock.Mock(
             agent="codex", state="failed", cwd="/work",
@@ -2390,7 +2390,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(rows, [
             ("alan:codex-1@lovelace", "lovelace", "codex", "work", "/work")])
 
-    def test_history_keeps_retired_bare_language_actor_without_native_identity(self):
+    def test_history_keeps_closed_bare_language_actor_without_native_identity(self):
         context = {"history": [{
             "key": "alan:llm-1@lovelace", "host": "lovelace",
             "agent": "llm", "name": "review", "cwd": "/work", "mtime": 20}]}
@@ -2400,7 +2400,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(rows, [
             ("alan:llm-1@lovelace", "lovelace", "llm", "review", "/work")])
 
-    def test_retained_unavailable_actor_remains_the_native_history_authority(self):
+    def test_retained_failed_actor_remains_the_native_history_authority(self):
         context = {"history": [{
             "key": "alan:codex-1@lovelace", "host": "lovelace",
             "agent": "codex", "name": "work", "cwd": "/work", "mtime": 20}]}

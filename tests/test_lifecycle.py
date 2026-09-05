@@ -5,7 +5,8 @@ from unittest import mock
 from agent_fleet import actions, alan, authority
 from agent_fleet.daemon import Fleet
 from agent_fleet.model import ServerRef, Session, SessionRef
-from agent_fleet.protocol import decode_message, encode
+from agent_fleet.protocol import (decode_message, encode, decode_observation,
+                                  encode_observation)
 from agent_fleet.render import column_header, rows_text
 from agent_fleet.transcripts import fold_adopted
 
@@ -16,7 +17,7 @@ def session(agent="codex", state="waiting", *, attached=0, last_activity=1):
     return Session(SessionRef(server, actor), "actor", 1, 0, attached, 1,
                    "alan", "", "/work", agent, state,
                    recency=last_activity, transcript_id="identity",
-                   hibernation="exact" if agent == "python" else
+                   stop="exact" if agent == "python" else
                    "transcript" if agent in {"claude", "codex"} else "unsupported")
 
 
@@ -111,7 +112,7 @@ def test_daemon_stop_refuses_ineligible_rows_before_authority():
     cases = [replace(base, reported_state="working"),
              replace(base, attached=1),
              session("grok"),
-             replace(base, hibernation="unsupported"),
+             replace(base, stop="unsupported"),
              replace(base, reported_state="failed", transcript_path=""),
              replace(base, reported_state="failed", managed=True)]
     for actor in cases:
@@ -123,7 +124,7 @@ def test_daemon_stop_refuses_ineligible_rows_before_authority():
         execute.assert_not_awaited()
 
 
-def test_unavailable_recovery_requires_catalogued_full_native_transcript():
+def test_failed_recovery_requires_catalogued_full_native_transcript():
     actor = replace(session(state="failed"), evaluator="native",
                     transcript_path="/transcript")
     [recovery] = fold_adopted([actor])
@@ -169,7 +170,7 @@ def test_history_reopens_alan_actor_without_waiting_for_an_evaluator():
     waiting.assert_not_called()
 
 
-def test_hibernation_capability_schema_is_protocol_version_three():
+def test_stop_capability_schema_is_protocol_version_three():
     import json
     import pytest
 
@@ -178,3 +179,80 @@ def test_hibernation_capability_schema_is_protocol_version_three():
     message["version"] = 2
     with pytest.raises(ValueError, match="unsupported Fleet protocol version 2"):
         decode_message(json.dumps(message))
+
+
+def test_protocol_accepts_stop_and_rejects_hibernation():
+    import json
+    import pytest
+    from agent_fleet.config import RuntimeSource
+
+    actor = session()
+    source = RuntimeSource("lovelace", "will", "/tmp/alan", "/tmp/tmux")
+    for encoded, decode in (
+        (encode([actor]), decode_message),
+        (encode_observation([actor], True, None),
+         lambda raw: decode_observation(raw, source)),
+    ):
+        message = json.loads(encoded)
+        item = message["sessions"][0]
+        assert item["stop"] == "transcript"
+        assert decode(encoded)[0] == [actor]
+        item["hibernation"] = item["stop"]
+        with pytest.raises(ValueError, match="invalid Fleet session"):
+            decode(json.dumps(message))
+        del item["stop"]
+        with pytest.raises(ValueError, match="invalid Fleet session"):
+            decode(json.dumps(message))
+
+
+def test_lifecycle_rows_preserve_state_without_controlling_actors():
+    from agent_fleet import render
+
+    with mock.patch.object(alan.loop, "control") as control, \
+         mock.patch.object(authority, "execute") as execute:
+        for kind in ("codex", "claude", "grok", "python", "llm"):
+            rows = {}
+            for state, marker in (("working", "*"), ("waiting", "."),
+                                  ("stopped", "z"), ("failed", "!"), ("closed", "")):
+                actor = f"{kind}-identity@lovelace"
+                descriptor = {
+                    "addr": actor, "kind": kind, "state": state,
+                    "created": 1, "human_activity": 0, "evaluation_started": 0,
+                    "last_operation_activity": "2026-07-30T12:00:01Z",
+                    "stop": "exact" if kind == "python" else "transcript",
+                    "evaluator": "native" if kind in {"codex", "claude", "grok"}
+                    else kind,
+                }
+                graph = __import__("networkx").MultiDiGraph()
+                graph.graph["actors"] = [descriptor, {"addr": "will@lovelace",
+                                                       "kind": "principal"}]
+                graph.add_node("will@lovelace#0", stream="will@lovelace")
+                graph.add_node(actor + "#0", stream=actor)
+                graph.add_edge("will@lovelace#0", actor + "#0", key="spawn")
+                inventory = alan.inventory("will@lovelace", [descriptor])
+                decoded, _, _ = decode_message(encode(inventory))
+                projected = render.order(fold_adopted(decoded), [], graph, show_python=True)
+                if state == "closed":
+                    assert projected == []
+                    continue
+                assert projected[0].session.state == state
+                rows[state] = rows_text(projected, [], 120, now=100)
+                assert render.STATE_COLOUR[state] + marker + render.RESET in rows[state]
+                if kind == "python" and state in {"stopped", "failed"}:
+                    assert render.order(fold_adopted(decoded), [], graph) == projected
+            assert rows["failed"] != rows["stopped"]
+        control.assert_not_called()
+        execute.assert_not_called()
+
+
+def test_failed_actor_keeps_failure_with_provider_presentations():
+    actor = replace(session(state="failed"), evaluator="native")
+    provider = Session(
+        SessionRef(ServerRef("will@lovelace", "/tmp/tmux", 1, 2), "$1"),
+        "native", 1, 20, 1, 1, "codex", "", "/work", "codex", "waiting",
+        transcript_id="identity")
+    duplicate = replace(provider, ref=replace(provider.ref, session_id="$2"))
+    for providers in ([], [provider], [provider, duplicate]):
+        projected = fold_adopted([actor, *providers])
+        assert projected[0].ref == actor.ref
+        assert projected[0].state == "failed"

@@ -162,7 +162,7 @@ class CommanderContextTests(unittest.TestCase):
             f"alan:will@newton:codex-{identity}@lovelace",
             "alan:will@newton:llm-review@lovelace"])
 
-    def test_mdjudge_search_joins_exact_retired_tablet_actor(self):
+    def test_mdjudge_search_joins_exact_closed_tablet_actor(self):
         identity = "00000000-0000-4000-8000-000000000001"
         actor = f"codex-{identity}@lovelace"
         fleet = Fleet()
@@ -397,11 +397,11 @@ class CommanderActorTests(unittest.TestCase):
             self.assertEqual(alan.commander_actor(), "llm-commander@newton")
         spawn.assert_not_called()
 
-    def test_a_retired_commander_is_not_treated_as_live(self):
-        retired = {"addr": "llm-old@newton", "preset": "commander",
+    def test_a_closed_commander_is_not_treated_as_live(self):
+        closed = {"addr": "llm-old@newton", "preset": "commander",
                    "state": "closed"}
         with mock.patch.object(alan.loop, "observe",
-                               return_value=self.stream(self.graph(retired))), \
+                               return_value=self.stream(self.graph(closed))), \
              mock.patch.object(alan.loop, "spawn",
                                return_value="llm-fresh@newton") as spawn:
             self.assertEqual(alan.commander_actor(), "llm-fresh@newton")

@@ -431,26 +431,26 @@ def test_inactive_adopted_actor_folds_according_to_its_lifecycle_state():
                        "fleet@native-test", 1, 0, 0, 1, "codex", "", "/work",
                        "codex", "waiting", transcript_id=identity)
 
-    retired = Session(SessionRef(alan_server, f"codex-{identity}@newton"), "actor",
+    closed = Session(SessionRef(alan_server, f"codex-{identity}@newton"), "actor",
                       1, 0, 0, 1, "alan", "", "/work", "codex", "closed",
                       transcript_id=identity)
-    unavailable = replace(retired, reported_state="failed",
+    failed = replace(closed, reported_state="failed",
                           evaluator="native", transcript_path="/transcript",
-                          hibernation="transcript")
+                          stop="transcript")
 
-    assert fold_adopted([retired]) == []
-    [historic] = fold_adopted([retired, provider])
+    assert fold_adopted([closed]) == []
+    [historic] = fold_adopted([closed, provider])
     assert historic.ref == provider.ref
     assert historic.name == "actor"
     assert historic.attachment is None
 
-    [recovery] = fold_adopted([unavailable])
+    [recovery] = fold_adopted([failed])
     assert recovery.state == "failed"
     assert "stop recovery" in recovery.summary
-    [folded] = fold_adopted([unavailable, provider])
-    assert folded.ref == unavailable.ref
+    [folded] = fold_adopted([failed, provider])
+    assert folded.ref == failed.ref
     assert folded.attachment == provider.ref
-    assert folded.state == "waiting"
+    assert folded.state == "failed"
 
 
 def test_multiple_provider_presentations_retain_every_session_without_native_names():
@@ -479,7 +479,7 @@ def test_multiple_provider_presentations_retain_every_session_without_native_nam
                for session in projected[1:])
 
 
-def test_retired_actor_with_multiple_presentations_remains_hidden():
+def test_closed_actor_with_multiple_presentations_remains_hidden():
     identity = "00000000-0000-0000-0000-000000000001"
     actor = Session(SessionRef(ServerRef("newton", "", 0, 0, "alan"),
                                f"claude-{identity}@newton"),
