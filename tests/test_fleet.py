@@ -32,7 +32,6 @@ from agent_fleet import alan
 from agent_fleet.config import RuntimeSource, machine, ssh_environment
 from agent_fleet.alan import inventory as alan_inventory
 from agent_fleet.alan import Watcher as AlanWatcher
-from agent_fleet.alan import resume as alan_resume
 from agent_fleet import hot, render, viewer
 from agent_fleet import workstation
 from agent_fleet import tmux
@@ -321,10 +320,10 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(sum(call.args[0][0] == "kill-window"
                              for call in ui.command.call_args_list), 1)
 
-    def test_adopted_attachment_does_not_revive_an_unavailable_actor(self):
+    def test_adopted_attachment_does_not_revive_a_failed_actor(self):
         actor = "codex-1@newton"
         session = mock.Mock(
-            agent="codex", state="unavailable", cwd="/work",
+            agent="codex", state="failed", cwd="/work",
             attachment="tmux:newton:/tmp/tmux/native:44:12:$9",
         )
         state = viewer.Attachment("main", "/dev/pts/9", mock.Mock())
@@ -934,7 +933,7 @@ class IdentityTests(unittest.TestCase):
             descriptor = {
                 "addr": addr, "kind": "codex", "host": host,
                 "state": "waiting", "cwd": str(root),
-                "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript",
+                "last_operation_activity": "2026-07-30T12:00:01Z", "stop": "transcript",
             }
 
             principal = f"will@{host}"
@@ -1156,11 +1155,13 @@ class IdentityTests(unittest.TestCase):
         )
 
         with mock.patch("agent_fleet.alan.loop.control") as control:
-            alan.retire("claude-1@newton")
-            self.assertEqual(alan_resume("claude-1@newton"), "claude-1@newton")
+            alan.close("claude-1@newton")
+            alan.stop("claude-1@newton")
+            alan.open("claude-1@newton")
         self.assertEqual(control.call_args_list, [
-            mock.call("claude-1@newton", "retire"),
-            mock.call("claude-1@newton", "resume"),
+            mock.call("claude-1@newton", "close"),
+            mock.call("claude-1@newton", "stop"),
+            mock.call("claude-1@newton", "open"),
         ])
 
     def test_inventory_projects_visible_actor_kinds_without_loop_presentation(self):
@@ -1171,17 +1172,17 @@ class IdentityTests(unittest.TestCase):
              "cwd": "/work", "created": 1, "human_activity": 2,
              "native_id": "persisted-native-id",
              "active_evaluation": f"{codex}#2", "evaluation_started": 3,
-             "last_operation_activity": "2026-07-30T12:00:03Z", "hibernation": "transcript",
+             "last_operation_activity": "2026-07-30T12:00:03Z", "stop": "transcript",
              "native": {"path": f"/native/rollout-{identity}.jsonl"}},
             {"addr": "python-1@newton", "kind": "python", "state": "waiting",
              "cwd": "/work", "created": 1, "human_activity": 0,
              "active_evaluation": None, "evaluation_started": 0,
-             "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "exact",
+             "last_operation_activity": "2026-07-30T12:00:01Z", "stop": "exact",
              "native": {"kind": "ipython", "path": "/native/history.sqlite"}},
-            {"addr": "claude-old@newton", "kind": "claude", "state": "retired",
+            {"addr": "claude-old@newton", "kind": "claude", "state": "closed",
              "cwd": "/work", "created": 1, "human_activity": 0,
              "active_evaluation": None, "evaluation_started": 0,
-             "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript"},
+             "last_operation_activity": "2026-07-30T12:00:01Z", "stop": "transcript"},
         ]
         projected = alan_inventory("newton", descriptors)
         self.assertEqual([item.ref.session_id for item in projected],
@@ -1210,7 +1211,7 @@ class IdentityTests(unittest.TestCase):
                     "cwd": cwd, "created": 1, "human_activity": 0,
                     "label": "same human label", "active_evaluation": None,
                     "evaluation_started": 0, "last_operation_activity": "2026-07-30T12:00:01Z",
-                    "hibernation": "transcript" if kind in {"claude", "codex"}
+                    "stop": "transcript" if kind in {"claude", "codex"}
                     else "exact" if kind == "python" else "unsupported",
                 })
             native = ["codex-full@newton", "claude-full@newton"]
@@ -1242,7 +1243,7 @@ class IdentityTests(unittest.TestCase):
             "state": "waiting", "cwd": "/work", "created": 1,
             "human_activity": 0, "active_evaluation": None,
             "evaluation_started": 0, "last_operation_activity": "2026-07-30T12:00:01Z",
-            "hibernation": "transcript",
+            "stop": "transcript",
         }
         server = mock.Mock()
         server.cmd.return_value.stdout = [
@@ -1302,7 +1303,7 @@ class IdentityTests(unittest.TestCase):
                 "cwd": str(cwd), "created": 1, "human_activity": 0,
                 "label": "colliding label", "active_evaluation": None,
                 "evaluation_started": 0, "last_operation_activity": "2026-07-30T12:00:01Z",
-                "hibernation": "transcript" if kind in {"claude", "codex"}
+                "stop": "transcript" if kind in {"claude", "codex"}
                 else "exact" if kind == "python" else "unsupported",
             } for addr, kind in specifications]
             native = [specifications[0][0], specifications[1][0],
@@ -2171,7 +2172,7 @@ class IdentityTests(unittest.TestCase):
             "addr": f"llm-1@{host}", "kind": "llm", "state": "waiting",
             "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
-            "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "unsupported",
+            "last_operation_activity": "2026-07-30T12:00:01Z", "stop": "unsupported",
         }])[0]
 
         async def exercise():
@@ -2201,7 +2202,7 @@ class IdentityTests(unittest.TestCase):
             "addr": f"antigravity-1@{host}", "kind": "antigravity",
             "state": "waiting", "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
-            "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "unsupported",
+            "last_operation_activity": "2026-07-30T12:00:01Z", "stop": "unsupported",
         }])[0]
 
         async def exercise():
@@ -2230,7 +2231,7 @@ class IdentityTests(unittest.TestCase):
             "addr": f"codex-1@{host}", "kind": "codex", "state": "waiting",
             "created": 1, "human_activity": 0, "cwd": "/work",
             "active_evaluation": None, "evaluation_started": 0,
-            "last_operation_activity": "2026-07-30T12:00:01Z", "hibernation": "transcript",
+            "last_operation_activity": "2026-07-30T12:00:01Z", "stop": "transcript",
         }])[0]
         provider = Session(
             SessionRef(ServerRef(source, "/tmp/tmux/default", 12, 10), "$7"),
@@ -2389,7 +2390,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(rows, [
             ("alan:codex-1@lovelace", "lovelace", "codex", "work", "/work")])
 
-    def test_history_keeps_retired_bare_language_actor_without_native_identity(self):
+    def test_history_keeps_closed_bare_language_actor_without_native_identity(self):
         context = {"history": [{
             "key": "alan:llm-1@lovelace", "host": "lovelace",
             "agent": "llm", "name": "review", "cwd": "/work", "mtime": 20}]}
@@ -2399,7 +2400,7 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(rows, [
             ("alan:llm-1@lovelace", "lovelace", "llm", "review", "/work")])
 
-    def test_retained_unavailable_actor_remains_the_native_history_authority(self):
+    def test_retained_failed_actor_remains_the_native_history_authority(self):
         context = {"history": [{
             "key": "alan:codex-1@lovelace", "host": "lovelace",
             "agent": "codex", "name": "work", "cwd": "/work", "mtime": 20}]}

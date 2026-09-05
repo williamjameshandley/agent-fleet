@@ -90,7 +90,7 @@ def test_principals_are_not_sessions_and_their_sends_are_human_activity():
     assert actor["human_activity"] == 1785412801
 
 
-def test_closed_and_retired_actors_are_reconstructed_without_extra_state():
+def test_waiting_and_closed_actors_are_reconstructed_without_extra_state():
     waiting = alan.actors(graph(
         {"op": "create"},
         {"op": "input"},
@@ -100,8 +100,8 @@ def test_closed_and_retired_actors_are_reconstructed_without_extra_state():
     assert waiting["state"] == "waiting"
     assert waiting["last_error"] == "failed"
 
-    retired = alan.actors(graph({"op": "create"}, state="retired"))[0]
-    assert retired["state"] == "retired"
+    closed = alan.actors(graph({"op": "create"}, state="closed"))[0]
+    assert closed["state"] == "closed"
 
 
 def test_conversational_work_is_derived_from_input_operations():
@@ -270,8 +270,8 @@ def test_watcher_emits_actor_metadata_only_changes():
     stopped = threading.Event()
     changed = queue.Queue()
     live = graph({"op": "create"})
-    unavailable = graph({"op": "create"}, state="unavailable")
-    observations = ObservationStream((live, unavailable), stopped)
+    failed = graph({"op": "create"}, state="failed")
+    observations = ObservationStream((live, failed), stopped)
 
     def observe(*, stream):
         assert stream
@@ -282,7 +282,7 @@ def test_watcher_emits_actor_metadata_only_changes():
         watcher = alan.Watcher(changed, stopped)
         watcher._thread.join(1)
 
-    assert watcher.actors[0]["state"] == "unavailable"
+    assert watcher.actors[0]["state"] == "failed"
     assert changed.qsize() == 2
 
 
@@ -462,12 +462,12 @@ def test_actor_lifecycle_delta_updates_without_operation_reconstruction():
     watcher.refresh(current, {"kind": "replace", "graph": {}})
     assert watcher.actors[0]["active_evaluation"] == "codex-a@newton#1"
 
-    current.graph["actors"][0]["state"] = "unavailable"
+    current.graph["actors"][0]["state"] = "failed"
     watcher.refresh(current, {
         "kind": "delta", "generation": 1, "revision": 1,
         "actors": current.graph["actors"], "nodes": [], "edges": [],
     })
-    assert watcher.actors[0]["state"] == "unavailable"
+    assert watcher.actors[0]["state"] == "failed"
     assert watcher.actors[0]["active_evaluation"] is None
 
 

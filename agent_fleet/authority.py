@@ -15,8 +15,8 @@ FIELDS = {
     "archive-composite": {"operation", "actor", "agent", "target", "transcript"},
     "archive-pristine": {"operation", "actor", "agent", "target"},
     "archive-tmux": {"operation", "target", "agent", "transcript"},
-    "hibernate-alan": {"operation", "actor"},
-    "restore-alan": {"operation", "actor"},
+    "stop-alan": {"operation", "actor"},
+    "open-alan": {"operation", "actor"},
     "restore-native": {"operation", "actor", "agent", "transcript"},
     "restore-transcript": {"operation", "agent", "transcript", "name"},
 }
@@ -49,31 +49,32 @@ def execute(request):
             raise ValueError("archive requires a language actor")
         if request["agent"] in {"llm", "antigravity"}:
             presentation.close(request["actor"])
-        alan.retire(request["actor"])
+        alan.close(request["actor"])
         return {}
     if operation == "archive-composite":
         if request["agent"] not in {"claude", "codex", "grok"}:
             raise ValueError("archive requires a natively adopted agent")
         transcripts.verify(request["agent"], request["transcript"])
         tmux.mutate_target(request["target"], "archive", [])
-        alan.retire(request["actor"])
+        alan.close(request["actor"])
         return {}
     if operation == "archive-pristine":
         if request["agent"] not in {"claude", "codex", "grok"}:
             raise ValueError("archive requires a natively adopted agent")
         alan.verify_pristine(request["actor"])
         tmux.mutate_target(request["target"], "archive", [])
-        alan.retire(request["actor"])
+        alan.close(request["actor"])
         return {}
     if operation == "archive-tmux":
         transcripts.verify(request["agent"], request["transcript"])
         tmux.mutate_target(request["target"], "archive", [])
         return {}
-    if operation == "hibernate-alan":
-        alan.hibernate(request["actor"])
+    if operation == "stop-alan":
+        alan.stop(request["actor"])
         return {}
-    if operation == "restore-alan":
-        return {"source": f"alan:{alan.resume(request['actor'])}"}
+    if operation == "open-alan":
+        alan.open(request["actor"])
+        return {}
     if operation == "restore-native":
         if alan.address_identity(request["actor"], request["agent"]) != request["transcript"]:
             raise ValueError("actor and transcript identity differ")

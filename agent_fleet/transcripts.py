@@ -766,19 +766,20 @@ def fold_adopted(sessions):
             )
         if not native:
             actor = actors[0]
-            if (actor.state == "unavailable" and actor.transcript_path
-                    and actor.hibernation == "transcript" and not actor.managed):
+            if (actor.state == "failed" and actor.transcript_path
+                    and actor.stop == "transcript" and not actor.managed):
                 replacements[actor.ref] = replace(
                     actor,
-                    summary="provider presentation absent; hibernation recovery required")
+                    summary="provider presentation absent; stop recovery required")
             continue
         actor = actors[0]
         if len(native) > 1:
             summary = (f"{len(native)} provider presentations share "
                        f"{actor.ref.session_id}")
-            if actor.state != "retired":
+            if actor.state != "closed":
                 replacements[actor.ref] = replace(
-                    actor, reported_state="needs-action", summary=summary,
+                    actor, reported_state=(actor.state if actor.state == "failed"
+                                           else "needs-action"), summary=summary,
                     attachment_ambiguous=True)
             for provider in native:
                 replacements[provider.ref] = replace(
@@ -786,19 +787,17 @@ def fold_adopted(sessions):
                     summary=summary)
             continue
         [provider] = native
-        if actor.state == "retired":
+        if actor.state == "closed":
             replacements[provider.ref] = replace(provider, name=actor.name)
             continue
         replacements[actor.ref] = replace(
             actor, attachment=provider.ref, attached=provider.attached,
-            recency=max(actor.recency, provider.recency),
-            reported_state=(provider.state if actor.state in {"retired", "unavailable"}
-                            else actor.reported_state))
+            recency=max(actor.recency, provider.recency))
         consumed.add(provider.ref)
 
     return [replacements.get(session.ref, session)
             for session in sessions
             if session.ref not in consumed
             and not (session.ref.server.kind == "alan"
-                     and session.state in {"retired", "unavailable"}
+                     and session.state == "closed"
                      and session.ref not in replacements)]

@@ -265,7 +265,7 @@ def inventory(source, actor_descriptors):
     source = ServerRef(source, "", 0, 0, "alan")
     sessions = []
     for actor in actor_descriptors:
-        if (actor["state"] in {"retired", "unavailable"}
+        if (actor["state"] == "closed"
                 and actor.get("evaluator") != "native"):
             continue
         transcript_id = address_identity(actor["addr"], actor["kind"])
@@ -281,7 +281,7 @@ def inventory(source, actor_descriptors):
             worked=actor.get("worked", True),
             evaluator=actor.get("evaluator", ""),
             managed=actor.get("managed", False),
-            hibernation=actor["hibernation"]))
+            stop=actor["stop"]))
     return sessions
 
 
@@ -355,7 +355,7 @@ def project(sessions, graph, expanded=(), show_python=False):
     session_order = [graph_actor(session) for session in sessions
                      if session.ref.server.kind == "alan"
                      and (show_python or session.agent != "python"
-                          or session.state == "hibernated")]
+                          or session.state in {"stopped", "failed"})]
     principals = {addr for addr, descriptor in descriptors.items()
                   if descriptor["kind"] == "principal"}
     native_roots = {addr for addr, descriptor in descriptors.items()
@@ -372,6 +372,7 @@ def project(sessions, graph, expanded=(), show_python=False):
         first = nx.shortest_path(ancestry, principal, actor)[1]
         if descriptors[first].get("preset") == "commander" or (
             descriptors[first]["kind"] == "python" and not show_python
+            and descriptors[first]["state"] not in {"stopped", "failed"}
         ):
             continue
         roots[actor] = principal
@@ -380,7 +381,7 @@ def project(sessions, graph, expanded=(), show_python=False):
                if actor in roots
                and descriptors[actor].get("preset") != "commander"
                and (descriptors[actor]["kind"] != "python" or show_python
-                    or descriptors[actor]["state"] == "hibernated")]
+                    or descriptors[actor]["state"] in {"stopped", "failed"})]
     visible_set = set(visible)
     for actor in visible:
         candidates = nx.ancestors(ancestry, actor) & visible_set
@@ -491,12 +492,16 @@ def runtime_name(actor):
     return hashlib.sha256(actor.encode()).digest()[:16].hex()
 
 
-def retire(addr):
-    loop.control(addr, "retire")
+def close(addr):
+    loop.control(addr, "close")
 
 
-def hibernate(addr):
-    loop.control(addr, "hibernate")
+def open(addr):
+    loop.control(addr, "open")
+
+
+def stop(addr):
+    loop.control(addr, "stop")
 
 
 def verify_pristine(addr):
@@ -504,11 +509,6 @@ def verify_pristine(addr):
     for _reference, operation in graph.nodes(data=True):
         if operation.get("stream") == addr and operation.get("op") == "input":
             raise RuntimeError(f"actor has conversational work: {addr}")
-
-
-def resume(addr):
-    loop.control(addr, "resume")
-    return addr
 
 
 def rename(addr, name):
@@ -599,7 +599,7 @@ def commander_actor():
             observation.close()
         commanders = [actor["addr"] for actor in graph.graph.get("actors", [])
                       if actor.get("preset") == "commander"
-                      and actor.get("state") != "retired"]
+                      and actor.get("state") != "closed"]
         if len(commanders) > 1:
             raise RuntimeError("multiple Commander actors")
         if commanders:

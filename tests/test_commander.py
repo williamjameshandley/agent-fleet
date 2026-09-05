@@ -147,10 +147,10 @@ class CommanderContextTests(unittest.TestCase):
     def test_history_retains_bare_language_actor_and_native_actor_authority(self):
         identity = "00000000-0000-4000-8000-000000000001"
         observations = [{"actors": [
-            {"addr": "llm-review@lovelace", "kind": "llm", "state": "retired",
+            {"addr": "llm-review@lovelace", "kind": "llm", "state": "closed",
              "label": "review", "cwd": "/work", "created": 2,
              "human_activity": 3},
-            {"addr": f"codex-{identity}@lovelace", "kind": "codex", "state": "retired",
+            {"addr": f"codex-{identity}@lovelace", "kind": "codex", "state": "closed",
              "label": "work", "cwd": "/work", "created": 2,
              "human_activity": 4, "native_id": "persisted-native-id"},
         ], "transcripts": [{
@@ -162,7 +162,7 @@ class CommanderContextTests(unittest.TestCase):
             f"alan:will@newton:codex-{identity}@lovelace",
             "alan:will@newton:llm-review@lovelace"])
 
-    def test_mdjudge_search_joins_exact_retired_tablet_actor(self):
+    def test_mdjudge_search_joins_exact_closed_tablet_actor(self):
         identity = "00000000-0000-4000-8000-000000000001"
         actor = f"codex-{identity}@lovelace"
         fleet = Fleet()
@@ -172,7 +172,7 @@ class CommanderContextTests(unittest.TestCase):
         async def observation(host, query):
             self.assertEqual((host, query), ("will@lovelace", "mdjudge"))
             return {"actors": [{
-                "addr": actor, "kind": "codex", "state": "retired",
+                "addr": actor, "kind": "codex", "state": "closed",
                 "label": "tablet", "cwd": "/work",
             }], "hits": [{
                 "agent": "codex", "session_id": identity,
@@ -184,7 +184,7 @@ class CommanderContextTests(unittest.TestCase):
         [result] = asyncio.run(fleet.search_history("mdjudge"))
         self.assertEqual(result["source"], f"alan:will@lovelace:{actor}")
         self.assertEqual(result["name"], "tablet")
-        self.assertEqual(result["lifecycle"], "retired")
+        self.assertEqual(result["lifecycle"], "closed")
 
     def test_unowned_search_hit_remains_standalone_provider_history(self):
         fleet = Fleet()
@@ -397,11 +397,11 @@ class CommanderActorTests(unittest.TestCase):
             self.assertEqual(alan.commander_actor(), "llm-commander@newton")
         spawn.assert_not_called()
 
-    def test_a_retired_commander_is_not_treated_as_live(self):
-        retired = {"addr": "llm-old@newton", "preset": "commander",
-                   "state": "retired"}
+    def test_a_closed_commander_is_not_treated_as_live(self):
+        closed = {"addr": "llm-old@newton", "preset": "commander",
+                   "state": "closed"}
         with mock.patch.object(alan.loop, "observe",
-                               return_value=self.stream(self.graph(retired))), \
+                               return_value=self.stream(self.graph(closed))), \
              mock.patch.object(alan.loop, "spawn",
                                return_value="llm-fresh@newton") as spawn:
             self.assertEqual(alan.commander_actor(), "llm-fresh@newton")

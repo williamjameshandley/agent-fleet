@@ -73,7 +73,7 @@ def test_authority_operations_are_finite_and_direct():
                            "name": "new"})
     mutate.assert_called_once_with(TARGET, "rename", ["new"])
 
-    with mock.patch("agent_fleet.authority.alan.retire") as retire, \
+    with mock.patch("agent_fleet.authority.alan.close") as retire, \
          mock.patch("agent_fleet.authority.presentation.close") as close:
         assert authority.execute({"operation": "archive-alan",
                                   "actor": "codex-1@lovelace",
@@ -81,7 +81,7 @@ def test_authority_operations_are_finite_and_direct():
     retire.assert_called_once_with("codex-1@lovelace")
     close.assert_not_called()
 
-    with mock.patch("agent_fleet.authority.alan.retire"), \
+    with mock.patch("agent_fleet.authority.alan.close"), \
          mock.patch("agent_fleet.authority.presentation.close") as close:
         authority.execute({"operation": "archive-alan",
                            "actor": "llm-1@lovelace", "agent": "llm"})
@@ -90,7 +90,7 @@ def test_authority_operations_are_finite_and_direct():
     calls = []
     with mock.patch("agent_fleet.authority.presentation.close",
                     side_effect=lambda actor: calls.append(("close", actor))), \
-         mock.patch("agent_fleet.authority.alan.retire",
+         mock.patch("agent_fleet.authority.alan.close",
                     side_effect=lambda actor: calls.append(("retire", actor))):
         authority.execute({"operation": "archive-alan",
                            "actor": "llm-ordered@lovelace", "agent": "llm"})
@@ -99,26 +99,24 @@ def test_authority_operations_are_finite_and_direct():
 
     with mock.patch("agent_fleet.authority.presentation.close",
                     side_effect=RuntimeError("tmux failed")), \
-         mock.patch("agent_fleet.authority.alan.retire") as retire:
+         mock.patch("agent_fleet.authority.alan.close") as retire:
         with pytest.raises(RuntimeError, match="tmux failed"):
             authority.execute({"operation": "archive-alan",
                                "actor": "llm-retry@lovelace", "agent": "llm"})
     retire.assert_not_called()
 
     with mock.patch("agent_fleet.authority.presentation.close") as close, \
-         mock.patch("agent_fleet.authority.alan.retire",
+         mock.patch("agent_fleet.authority.alan.close",
                     side_effect=RuntimeError("retire failed")):
         with pytest.raises(RuntimeError, match="retire failed"):
             authority.execute({"operation": "archive-alan",
                                "actor": "llm-rebuild@lovelace", "agent": "llm"})
     close.assert_called_once_with("llm-rebuild@lovelace")
 
-    with mock.patch("agent_fleet.authority.alan.resume",
-                    return_value="codex-1@lovelace") as resume:
-        assert authority.execute({"operation": "restore-alan",
-                                  "actor": "codex-1@lovelace"}) == {
-                                      "source": "alan:codex-1@lovelace"}
-    resume.assert_called_once_with("codex-1@lovelace")
+    with mock.patch("agent_fleet.authority.alan.open") as reopen:
+        assert authority.execute({"operation": "open-alan",
+                                  "actor": "codex-1@lovelace"}) == {}
+    reopen.assert_called_once_with("codex-1@lovelace")
 
 
 def test_authority_archive_verifies_recovery_before_exact_tmux_kill():
@@ -140,7 +138,7 @@ def test_authority_composite_archive_orders_each_authoritative_component(agent):
     calls = mock.Mock()
     with mock.patch("agent_fleet.authority.transcripts.verify") as verify, \
          mock.patch("agent_fleet.authority.tmux.mutate_target") as mutate, \
-         mock.patch("agent_fleet.authority.alan.retire") as retire:
+         mock.patch("agent_fleet.authority.alan.close") as retire:
         calls.attach_mock(verify, "verify")
         calls.attach_mock(mutate, "mutate")
         calls.attach_mock(retire, "retire")
@@ -159,7 +157,7 @@ def test_pristine_archive_verifies_emptiness_then_closes_and_retires(agent):
     calls = mock.Mock()
     with mock.patch("agent_fleet.authority.alan.verify_pristine") as pristine, \
          mock.patch("agent_fleet.authority.tmux.mutate_target") as mutate, \
-         mock.patch("agent_fleet.authority.alan.retire") as retire:
+         mock.patch("agent_fleet.authority.alan.close") as retire:
         calls.attach_mock(pristine, "pristine")
         calls.attach_mock(mutate, "mutate")
         calls.attach_mock(retire, "retire")
@@ -177,7 +175,7 @@ def test_pristine_archive_stops_when_the_actor_has_work():
     with mock.patch("agent_fleet.authority.alan.verify_pristine",
                     side_effect=RuntimeError("actor has conversational work")), \
          mock.patch("agent_fleet.authority.tmux.mutate_target") as mutate, \
-         mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         mock.patch("agent_fleet.authority.alan.close") as retire, \
          pytest.raises(RuntimeError, match="conversational work"):
         authority.execute({"operation": "archive-pristine",
                            "actor": "codex-1@lovelace", "agent": "codex",
@@ -190,7 +188,7 @@ def test_composite_archive_stops_when_transcript_verification_fails():
     with mock.patch("agent_fleet.authority.transcripts.verify",
                     side_effect=LookupError("missing")), \
          mock.patch("agent_fleet.authority.tmux.mutate_target") as mutate, \
-         mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         mock.patch("agent_fleet.authority.alan.close") as retire, \
          pytest.raises(LookupError, match="missing"):
         authority.execute({"operation": "archive-composite",
                            "actor": "codex-1@lovelace", "agent": "codex",
@@ -203,7 +201,7 @@ def test_composite_archive_stops_before_retire_when_tmux_archive_fails():
     with mock.patch("agent_fleet.authority.transcripts.verify"), \
          mock.patch("agent_fleet.authority.tmux.mutate_target",
                     side_effect=RuntimeError("tmux failed")), \
-         mock.patch("agent_fleet.authority.alan.retire") as retire, \
+         mock.patch("agent_fleet.authority.alan.close") as retire, \
          pytest.raises(RuntimeError, match="tmux failed"):
         authority.execute({"operation": "archive-composite",
                            "actor": "codex-1@lovelace", "agent": "codex",
@@ -214,7 +212,7 @@ def test_composite_archive_stops_before_retire_when_tmux_archive_fails():
 def test_composite_archive_removes_provider_before_retire_failure():
     with mock.patch("agent_fleet.authority.transcripts.verify"), \
          mock.patch("agent_fleet.authority.tmux.mutate_target") as mutate, \
-         mock.patch("agent_fleet.authority.alan.retire",
+         mock.patch("agent_fleet.authority.alan.close",
                     side_effect=RuntimeError("retire failed")), \
          pytest.raises(RuntimeError, match="retire failed"):
         authority.execute({"operation": "archive-composite",
@@ -263,13 +261,12 @@ def test_authority_rejects_a_native_restore_for_another_actor():
 def test_authority_rejects_generic_or_extra_operations():
     for request in ({"operation": "exec", "command": "sh"},
                     {"operation": "refresh", "actor": "codex-a@lovelace"},
+                    {"operation": "restore-alan", "actor": "codex-a@lovelace"},
                     {"operation": "archive-alan", "actor": "a", "fallback": True}):
-        with mock.patch("agent_fleet.authority.alan.retire") as retire, \
-             mock.patch("agent_fleet.authority.alan.resume") as resume:
+        with mock.patch("agent_fleet.authority.alan.close") as retire:
             with pytest.raises(ValueError, match="invalid authority action"):
                 authority.execute(request)
         retire.assert_not_called()
-        resume.assert_not_called()
     with pytest.raises(ValueError, match="language actor"):
         authority.execute({"operation": "archive-alan", "actor": "python-a",
                            "agent": "python"})
@@ -343,8 +340,8 @@ def test_composite_archive_keeps_bare_actor_and_raw_provider_operations():
         "agent": "codex", "transcript": "thread-1"}
 
 
-def test_retired_native_actor_leaves_a_provider_only_archive_boundary():
-    actor = replace(session(agent="codex"), reported_state="retired",
+def test_closed_native_actor_leaves_a_provider_only_archive_boundary():
+    actor = replace(session(agent="codex"), reported_state="closed",
                     name="historic name")
     provider = session(kind="tmux", agent="codex")
     [historic] = fold_adopted([actor, provider])
@@ -484,37 +481,24 @@ def test_daemon_restores_transcript_then_reconciles_exact_native_identity():
     asyncio.run(exercise())
 
 
-def test_daemon_native_actor_restore_waits_for_its_provider_attachment():
+def test_daemon_native_actor_restore_reopens_without_waiting_for_a_provider():
     fleet = Fleet()
     fleet.unavailable.clear()
-    actor = session(agent="codex", transcript="1")
-    provider = session(kind="tmux", agent="codex", transcript="1")
+    actor = replace(session(agent="codex", transcript="1"), reported_state="closed")
     graph = daemon.nx.MultiDiGraph()
     graph.graph["actors"] = [{"addr": actor.ref.key, "actor": actor.ref.session_id,
                                "runtime": "will", "kind": "codex",
-                               "evaluator": "native"}]
+                               "evaluator": "native", "state": "closed"}]
     fleet._composed = (fleet.observed, graph)
 
-    async def exercise():
-        with mock.patch.object(fleet, "authority", return_value={"source": actor.ref.key}):
-            pending = asyncio.create_task(fleet.action({
-                "operation": "restore", "history": actor.ref.key, "name": ""}))
-            await asyncio.sleep(0)
-            fleet.sessions = {"will@lovelace": [actor]}
-            fleet.observed += 1
-            async with fleet.changed:
-                fleet.changed.notify_all()
-            await asyncio.sleep(0)
-            assert not pending.done()
-            fleet.sessions = {"will@lovelace": fold_adopted([actor, provider])}
-            fleet.observed += 1
-            async with fleet.changed:
-                fleet.changed.notify_all()
-            value = await pending
-            assert value == {"source": actor.ref.key}
-            assert fleet.source(value["source"]).attachment == provider.ref
-
-    asyncio.run(exercise())
+    with mock.patch.object(fleet, "authority", return_value={}) as reopen, \
+         mock.patch.object(fleet, "wait_for_source", mock.AsyncMock()) as waiting:
+        value = asyncio.run(fleet.action({
+            "operation": "restore", "history": actor.ref.key, "name": ""}))
+    assert value == {"source": actor.ref.key}
+    reopen.assert_awaited_once_with("will@lovelace", {
+        "operation": "open-alan", "actor": actor.ref.session_id})
+    waiting.assert_not_called()
 
 
 def test_daemon_bare_llm_restore_does_not_wait_for_provider_attachment():
@@ -926,7 +910,7 @@ def test_source_command_uses_each_configured_public_socket(
     monkeypatch.setenv("LOOP_SOCKET", str(private))
     monkeypatch.setenv("LOOP_CAPABILITIES", '"full"')
     command = (sys.executable, "-c",
-               "import loop; loop.control('codex-1@target', 'retire'); print('{}')")
+               "import loop; loop.control('codex-1@target', 'close'); print('{}')")
 
     async def exercise():
         fleet = Fleet()
@@ -944,8 +928,8 @@ def test_source_command_uses_each_configured_public_socket(
             server.join(1)
     assert requests == {
         "public": [
-            {"op": "control", "actor": "codex-1@target", "operation": "retire"},
-            {"op": "control", "actor": "codex-1@target", "operation": "retire"},
+            {"op": "control", "actor": "codex-1@target", "operation": "close"},
+            {"op": "control", "actor": "codex-1@target", "operation": "close"},
         ],
         "private": [],
     }

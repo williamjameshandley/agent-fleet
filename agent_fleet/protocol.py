@@ -10,7 +10,7 @@ SESSION_FIELDS = {
     "command", "title", "cwd", "agent_name", "reported_state", "summary",
     "recency", "transcript_id", "human_activity", "evaluation",
     "evaluation_started", "transcript_path", "worked", "attachment",
-    "evaluator", "managed", "hibernation",
+    "evaluator", "managed", "stop",
 }
 SERVER_FIELDS = {"source", "socket", "pid", "started", "kind"}
 RELATIVE_SERVER_FIELDS = SERVER_FIELDS - {"source"}
@@ -46,7 +46,7 @@ def _session(session, relative=False):
                        if session.attachment else None),
         "evaluator": session.evaluator,
         "managed": session.managed,
-        "hibernation": session.hibernation,
+        "stop": session.stop,
     }
 
 
