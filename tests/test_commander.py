@@ -146,13 +146,19 @@ class CommanderContextTests(unittest.TestCase):
 
     def test_history_retains_bare_language_actor_and_native_actor_authority(self):
         identity = "00000000-0000-4000-8000-000000000001"
+        def actor(addr, kind, **values):
+            item = {field: None for field in alan.ACTOR_FIELDS}
+            item.update(addr=addr, kind=kind, state="retired", managed=False,
+                        worked=True, created="2026-01-01T00:00:02Z",
+                        source_activity={}, unresolved_requests={})
+            item.update(values)
+            return item
         observations = [{"actors": [
-            {"addr": "llm-review@lovelace", "kind": "llm", "state": "retired",
-             "label": "review", "cwd": "/work", "created": 2,
-             "human_activity": 3},
-            {"addr": f"codex-{identity}@lovelace", "kind": "codex", "state": "retired",
-             "label": "work", "cwd": "/work", "created": 2,
-             "human_activity": 4, "native_id": "persisted-native-id"},
+            actor("will@lovelace", "principal", state="waiting"),
+            actor("llm-review@lovelace", "llm", label="review", cwd="/work",
+                  source_activity={"will@lovelace": "2026-01-01T00:00:03Z"}),
+            actor(f"codex-{identity}@lovelace", "codex", label="work", cwd="/work",
+                  source_activity={"will@lovelace": "2026-01-01T00:00:04Z"}),
         ], "transcripts": [{
             "agent": "codex", "session_id": identity, "mtime": 4,
             "name": "duplicate", "cwd": "/work",
@@ -161,6 +167,7 @@ class CommanderContextTests(unittest.TestCase):
         self.assertEqual([item["key"] for item in history], [
             f"alan:will@newton:codex-{identity}@lovelace",
             "alan:will@newton:llm-review@lovelace"])
+        self.assertEqual([item["mtime"] for item in history], [1767225604, 1767225603])
 
     def test_mdjudge_search_joins_exact_retired_tablet_actor(self):
         identity = "00000000-0000-4000-8000-000000000001"

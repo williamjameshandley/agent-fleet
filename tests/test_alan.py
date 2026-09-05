@@ -38,11 +38,28 @@ def qualified(source, *items):
 def test_canonical_actor_is_closed_label_enriched_and_discards_viewport(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     alan.rename("codex-a@newton", "work")
-    item = alan.canonical_actor({"addr": "codex-a@newton", "kind": "codex",
+    item = alan.canonical_actor({**actor("codex-a@newton"),
                                  "viewport": {"x": 1}, "future": "no"})
     assert set(item) == FIELDS
     assert item["label"] == "work"
     assert "viewport" not in item
+
+
+def test_watcher_refuses_old_actor_descriptor_contract():
+    changed = queue.Queue(); stop = threading.Event()
+    old = [{"addr": "codex-a@newton", "kind": "codex",
+            "state": "waiting", "cwd": "/work"}]
+    class Stream:
+        def next(self, callback, lock):
+            try:
+                with lock: callback(old, {"kind": "replace"})
+            finally:
+                stop.set()
+        def close(self): pass
+    with mock.patch.object(alan.loop, "observe", return_value=Stream()):
+        watcher = alan.Watcher(changed, stop); watcher._thread.join(1)
+    assert watcher.available is False
+    assert watcher.error.startswith("Alan unavailable: Alan actor descriptor missing ")
 
 
 def test_watcher_requests_actor_only_observation():
@@ -93,6 +110,9 @@ def test_real_actor_stream_viewport_churn_adds_no_host_publication_bytes(
     served = threading.Event()
     item = actor("codex-a@newton", created="2026-01-01T00:00:00Z",
                  last_operation_activity="2026-01-01T00:00:00Z")
+    principal = actor("will@newton", kind="principal",
+                      created="2026-01-01T00:00:00Z")
+    principal.pop("state")
 
     def serve():
         with socket.socket(socket.AF_UNIX) as listener:
@@ -104,7 +124,8 @@ def test_real_actor_stream_viewport_churn_adds_no_host_publication_bytes(
                 assert request == {"op": "observe", "stream": True,
                                    "scope": "actors"}
                 graph = {"directed": True, "multigraph": True,
-                         "graph": {"actors": [{**item, "viewport": {"text": "one"}}]},
+                         "graph": {"actors": [principal,
+                                                {**item, "viewport": {"text": "one"}}]},
                          "nodes": [], "edges": [], "generation": 1, "revision": 0}
                 connection.sendall((json.dumps({"ok": True, "observation": {
                     "kind": "replace", "graph": graph}}) + "\n").encode())
@@ -130,6 +151,8 @@ def test_real_actor_stream_viewport_churn_adds_no_host_publication_bytes(
     assert changed.empty()
     with watcher.snapshot() as catalogue:
         initial = encode_observation([], True, catalogue)
+    assert next(actor for actor in catalogue
+                if actor["kind"] == "principal")["state"] is None
     assert all(word not in initial for word in ('viewport', 'nodes', 'edges'))
 
     alan.rename(item["addr"], "renamed remotely")

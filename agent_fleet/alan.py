@@ -138,9 +138,17 @@ ACTOR_FIELDS = {
     "evaluation_started", "active_evaluation", "latest_displayable_output",
     "source_activity", "unresolved_requests",
 }
+REQUIRED_ACTOR_FIELDS = {
+    "addr", "kind", "created", "worked", "active_evaluation",
+    "evaluation_started", "latest_displayable_output", "source_activity",
+    "unresolved_requests",
+}
 
 
 def canonical_actor(descriptor):
+    missing = REQUIRED_ACTOR_FIELDS - descriptor.keys()
+    if missing:
+        raise ValueError(f"Alan actor descriptor missing {', '.join(sorted(missing))}")
     defaults = {field: None for field in ACTOR_FIELDS}
     defaults.update(managed=False, worked=False, source_activity={},
                     unresolved_requests={})

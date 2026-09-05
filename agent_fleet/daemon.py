@@ -1159,7 +1159,7 @@ class Fleet:
                     )
                 if matches:
                     actor = matches[0]
-                    row_source = f"alan:{source}:{actor.get('actor', actor['addr'])}"
+                    row_source = f"alan:{source}:{actor['addr']}"
                     name = actor.get("label") or actor["addr"]
                     lifecycle = actor.get("state") or ""
                 else:
@@ -1178,6 +1178,9 @@ class Fleet:
                 for item in sessions if item.get("transcript_id")}
         authorities = set(live)
         entries = []
+        principals = {actor["addr"] for observation in observations
+                      for actor in observation["actors"]
+                      if actor["kind"] == "principal"}
         for source, observation in zip(source_hosts, observations):
             host = observation.get("host", source.rsplit("@", 1)[-1])
             claimed = {}
@@ -1191,14 +1194,18 @@ class Fleet:
                 if retained and actor.get("state") in {"retired", "unavailable"}:
                     if native_id:
                         authorities.add(identity)
-                    actor_key = f"alan:{source}:{actor.get('actor', actor['addr'])}"
+                    actor_key = f"alan:{source}:{actor['addr']}"
+                    human_activity = max(
+                        (alan._timestamp(value) for addr, value
+                         in actor["source_activity"].items() if addr in principals),
+                        default=0)
                     entries.append({"key": actor_key, "host": host,
                                     "runtime_source": source,
                                     "agent": actor["kind"],
                                     "name": actor.get("label") or actor["addr"],
                                     "cwd": actor.get("cwd") or "",
-                                    "mtime": max(actor.get("human_activity", 0),
-                                                 actor.get("created", 0))})
+                                    "mtime": max(human_activity,
+                                                 alan._timestamp(actor["created"]))})
             duplicates = {identity: addresses for identity, addresses in claimed.items()
                           if len(addresses) > 1}
             if duplicates:
