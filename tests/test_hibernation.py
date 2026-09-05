@@ -42,19 +42,16 @@ def test_hibernated_python_is_visible_when_live_python_is_hidden():
     live = session("python")
     asleep = replace(live, ref=SessionRef(live.ref.server, "python-asleep@lovelace"),
                      reported_state="hibernated")
-    graph = __import__("networkx").MultiDiGraph()
-    graph.graph["actors"] = [
-        {"addr": item.ref.session_id, "kind": item.agent, "state": item.state,
-         **({"evaluator": "native"} if item is root else {})}
+    catalogue = {
+        item.ref.key: {"addr": item.ref.session_id, "kind": item.agent,
+                       "state": item.state, "preset": None,
+                       "spawn": (None if item is root else f"{root.ref.session_id}#1"),
+                       "evaluator": "native" if item is root else None,
+                       "unresolved_requests": {}}
         for item in (root, live, asleep)
-    ]
-    graph.add_node("codex-identity@lovelace#1", stream=root.ref.session_id)
-    graph.add_node("python-identity@lovelace#0", stream=live.ref.session_id)
-    graph.add_node("python-asleep@lovelace#0", stream=asleep.ref.session_id)
-    graph.add_edge("codex-identity@lovelace#1", "python-identity@lovelace#0", key="spawn")
-    graph.add_edge("codex-identity@lovelace#1", "python-asleep@lovelace#0", key="spawn")
-    projected = alan.project([root, live, asleep], graph,
-                             expanded={root.ref.session_id}, show_python=False)
+    }
+    projected = alan.project([root, live, asleep], catalogue,
+                             expanded={root.ref.key}, show_python=False)
     assert [item.session.ref for item in projected] == [root.ref, asleep.ref]
 
 
@@ -191,10 +188,11 @@ def test_restore_waits_for_a_live_alan_actor():
     actor = replace(session(state="hibernated"), evaluator="native", managed=True)
     unavailable = replace(actor, reported_state="unavailable")
     restored = replace(actor, reported_state="waiting")
-    graph = __import__("networkx").MultiDiGraph()
-    graph.graph["actors"] = [{"addr": actor.ref.key, "evaluator": "native",
-                              "managed": True}]
     fleet = fleet_with(actor)
+    fleet.catalogues = {actor.ref.server.source: [{"addr": actor.ref.session_id,
+                                                   "kind": actor.agent,
+                                                   "evaluator": "native",
+                                                   "managed": True}]}
 
     async def wait(predicate, _description):
         assert not predicate(actor)
@@ -202,8 +200,7 @@ def test_restore_waits_for_a_live_alan_actor():
         assert predicate(restored)
         return restored
 
-    with mock.patch.object(fleet, "composed_graph", return_value=graph), \
-            mock.patch.object(fleet, "authority", return_value={}) as execute, \
+    with mock.patch.object(fleet, "authority", return_value={}) as execute, \
             mock.patch.object(fleet, "wait_for_source", side_effect=wait):
         value = asyncio.run(fleet.action({
             "operation": "restore", "history": actor.ref.key, "name": ""}))
@@ -269,12 +266,12 @@ def test_policy_reports_failure_and_continues(monkeypatch, capsys):
     assert mutate.call_args_list == [mock.call(first.ref.key), mock.call(second.ref.key)]
 
 
-def test_hibernation_capability_schema_is_protocol_version_three():
+def test_hibernation_capability_schema_is_protocol_version_four():
     import json
     import pytest
 
     message = json.loads(encode([session()]))
-    assert message["version"] == 3
-    message["version"] = 2
-    with pytest.raises(ValueError, match="unsupported Fleet protocol version 2"):
+    assert message["version"] == 4
+    message["version"] = 3
+    with pytest.raises(ValueError, match="unsupported Fleet protocol version 3"):
         decode_message(json.dumps(message))

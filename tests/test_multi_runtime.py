@@ -8,11 +8,10 @@ import time
 from pathlib import Path
 from unittest import mock
 
-import networkx as nx
 import pytest
 
 from agent_fleet import alan, config, presentation, viewer
-from agent_fleet.daemon import Fleet, qualify_graph
+from agent_fleet.daemon import Fleet
 from agent_fleet.model import ServerRef, Session, SessionRef
 from agent_fleet.tmux import ControlClient
 
@@ -30,18 +29,13 @@ def actor_session(principal):
     )
 
 
-def actor_graph(principal):
-    graph = nx.MultiDiGraph()
+def actor_catalogue(principal):
     human = f"{principal}@lovelace"
     actor = "claude-collision@lovelace"
-    graph.graph["actors"] = [
-        {"addr": human, "kind": "principal"},
+    return [
+        {"addr": human, "kind": "principal", "state": "waiting"},
         {"addr": actor, "kind": "claude", "state": "waiting"},
     ]
-    graph.add_node(f"{human}#0", stream=human)
-    graph.add_node(f"{actor}#0", stream=actor)
-    graph.add_edge(f"{human}#0", f"{actor}#0", key="spawn")
-    return graph
 
 
 def test_runtime_source_configuration_is_closed_absolute_and_distinct(tmp_path, monkeypatch):
@@ -70,24 +64,20 @@ def test_source_tmux_command_selects_the_exact_configured_socket(monkeypatch):
         "/usr/bin/tmux", "-N", "-S", "/run/user/1004/tmux.sock", "list-sessions"]
 
 
-def test_colliding_same_host_actors_have_distinct_keys_and_projection(tmp_path, monkeypatch):
+def test_colliding_same_host_actor_addresses_fail_visibly(tmp_path, monkeypatch):
     sources = {principal: runtime(principal, tmp_path / principal)
                for principal in ("will", "sophie")}
     monkeypatch.setattr("agent_fleet.daemon.runtime_sources", lambda: list(sources.values()))
     fleet = Fleet()
     fleet.sessions = {source.key: [actor_session(principal)]
                       for principal, source in sources.items()}
-    fleet.graphs = {source.key: qualify_graph(actor_graph(principal), source)
+    fleet.catalogues = {source.key: actor_catalogue(principal)
                     for principal, source in sources.items()}
     fleet.unavailable.clear()
     fleet.observed += 1
 
-    projected = fleet.projected()
-    assert {item.session.ref.key for item in projected} == {
-        "alan:will@lovelace:claude-collision@lovelace",
-        "alan:sophie@lovelace:claude-collision@lovelace",
-    }
-    assert len(fleet.composed_graph().graph["actors"]) == 4
+    with pytest.raises(RuntimeError, match="multiple Alan runtime sources claim"):
+        fleet.projected()
 
 
 def test_preview_and_authority_route_only_to_selected_runtime(tmp_path, monkeypatch):
@@ -128,8 +118,8 @@ def test_one_runtime_disconnect_does_not_hide_same_host_sibling(tmp_path, monkey
     monkeypatch.setattr("agent_fleet.daemon.runtime_sources", lambda: sources)
     fleet = Fleet()
     fleet.sessions = {source.key: [actor_session(source.principal)] for source in sources}
-    fleet.graphs = {source.key: qualify_graph(actor_graph(source.principal), source)
-                    for source in sources}
+    fleet.tmux_sessions = dict(fleet.sessions)
+    fleet.catalogues = {source.key: [] for source in sources}
     fleet.unavailable.clear()
 
     asyncio.run(fleet.source_disconnected("sophie@lovelace", 12, 1))

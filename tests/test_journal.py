@@ -105,10 +105,9 @@ def test_host_events_follow_availability_transitions(monkeypatch):
     fleet = daemon.Fleet()
     source = next(iter(fleet.sources.values()))
     fleet.processes[source.key] = mock.Mock(pid=42)
-    graph = daemon.nx.MultiDiGraph()
     records = []
     monkeypatch.setattr(daemon, "decode_observation",
-                        lambda raw, bound: ([], True, graph))
+                        lambda raw, bound: ([], True, []))
     monkeypatch.setattr(daemon.journal, "record",
                         lambda event, **fields: records.append((event, fields)))
 
@@ -195,7 +194,7 @@ def test_archive_task_failure_is_retrieved_and_recorded_once(monkeypatch):
 def test_connected_host_requires_owned_process_evidence(monkeypatch):
     fleet = daemon.Fleet()
     monkeypatch.setattr(daemon, "decode_observation",
-                        lambda raw, source: ([], True, daemon.nx.MultiDiGraph()))
+                        lambda raw, source: ([], True, []))
     source = next(iter(fleet.sources.values()))
     with pytest.raises(KeyError):
         fleet.update_source(source, b"observation")

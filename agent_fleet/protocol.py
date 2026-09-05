@@ -1,7 +1,5 @@
 import json
 
-import networkx as nx
-
 from .model import ServerRef, Session, SessionRef
 
 
@@ -15,6 +13,12 @@ SESSION_FIELDS = {
 SERVER_FIELDS = {"source", "socket", "pid", "started", "kind"}
 RELATIVE_SERVER_FIELDS = SERVER_FIELDS - {"source"}
 ATTACHMENT_FIELDS = {"server", "id"}
+ACTOR_FIELDS = {
+    "addr", "kind", "state", "hibernation", "cwd", "evaluator", "preset",
+    "spawn", "label", "managed", "worked", "created", "last_operation_activity",
+    "evaluation_started", "active_evaluation", "latest_displayable_output",
+    "source_activity", "unresolved_requests",
+}
 
 
 def _server(server, relative=False):
@@ -50,22 +54,18 @@ def _session(session, relative=False):
     }
 
 
-def encode(sessions, usage=None, unavailable=None, graph=None):
-    message = {"version": 3,
+def encode(sessions, usage=None, unavailable=None):
+    message = {"version": 4,
                "sessions": [_session(session) for session in sessions],
-               "usage": usage or {}, "unavailable": unavailable or [],
-               "alan": (nx.node_link_data(graph, edges="edges")
-                        if graph is not None else None)}
+               "usage": usage or {}, "unavailable": unavailable or []}
     return json.dumps(message, separators=(",", ":"))
 
 
-def encode_observation(sessions, available, graph):
-    return json.dumps({"version": 3,
+def encode_observation(sessions, available, actors):
+    return json.dumps({"version": 4,
                        "sessions": [_session(session, relative=True)
                                     for session in sessions],
-                       "available": available,
-                       "alan": (nx.node_link_data(graph, edges="edges")
-                                if graph is not None else None)},
+                       "available": available, "actors": actors},
                       separators=(",", ":"))
 
 
@@ -108,28 +108,55 @@ def decode(line):
 
 def decode_message(line):
     message = json.loads(line)
-    _exact(message, {"version", "sessions", "usage", "unavailable", "alan"},
+    _exact(message, {"version", "sessions", "usage", "unavailable"},
            "message")
-    if message["version"] != 3:
+    if message["version"] != 4:
         raise ValueError(f"unsupported Fleet protocol version {message['version']}")
     return _sessions(message["sessions"]), message["usage"], message["unavailable"]
 
 
-def decode_graph(line):
-    return graph_value(json.loads(line))
-
-
-def graph_value(message):
-    data = message.get("alan")
-    return nx.node_link_graph(data, edges="edges") if data is not None else None
+def _actors(items):
+    if not isinstance(items, list):
+        raise ValueError("invalid Fleet actors")
+    result = []
+    for actor in items:
+        _exact(actor, ACTOR_FIELDS, "actor")
+        if not isinstance(actor["addr"], str) or not isinstance(actor["kind"], str):
+            raise ValueError("invalid Fleet actor identity")
+        if not isinstance(actor["managed"], bool) or not isinstance(actor["worked"], bool):
+            raise ValueError("invalid Fleet actor flags")
+        if not isinstance(actor["source_activity"], dict) or not isinstance(
+                actor["unresolved_requests"], dict):
+            raise ValueError("invalid Fleet actor mappings")
+        nullable_strings = {"state", "hibernation", "cwd", "evaluator", "preset",
+                            "spawn", "label", "created", "last_operation_activity",
+                            "evaluation_started", "active_evaluation"}
+        if any(actor[field] is not None and not isinstance(actor[field], str)
+               for field in nullable_strings):
+            raise ValueError("invalid Fleet actor scalar")
+        output = actor["latest_displayable_output"]
+        if output is not None and (not isinstance(output, dict)
+                or set(output) not in ({"status", "value"}, {"status", "error"})
+                or not all(isinstance(value, str) for value in output.values())):
+            raise ValueError("invalid Fleet actor output")
+        if not all(isinstance(addr, str) and isinstance(time, str)
+                   for addr, time in actor["source_activity"].items()):
+            raise ValueError("invalid Fleet actor activity")
+        for reference, request in actor["unresolved_requests"].items():
+            if not isinstance(reference, str) or not isinstance(request, dict) \
+                    or set(request) != {"time", "payload"} \
+                    or not isinstance(request["time"], str):
+                raise ValueError("invalid Fleet actor request")
+        result.append(actor)
+    return result
 
 
 def decode_observation(line, source):
     message = json.loads(line)
-    _exact(message, {"version", "sessions", "available", "alan"}, "observation")
-    if message["version"] != 3:
+    _exact(message, {"version", "sessions", "available", "actors"}, "observation")
+    if message["version"] != 4:
         raise ValueError(f"unsupported Fleet protocol version {message['version']}")
     if not isinstance(message["available"], bool):
         raise ValueError("invalid Fleet availability")
     return (_sessions(message["sessions"], source.key), message["available"],
-            graph_value(message))
+            _actors(message["actors"]))

@@ -12,7 +12,6 @@ import queue
 import re
 from pathlib import Path
 
-import networkx as nx
 from watchfiles import awatch
 
 from .config import HUB, KINDS, RUNTIME, RuntimeSource, runtime_sources, ssh_environment
@@ -23,7 +22,7 @@ from .tmux import ControlSlot, capture, capture_target, event_stream, split_key
 from .alan import Watcher as AlanWatcher
 from .quota import read as quota_read
 from .authority import execute as authority_execute
-from . import journal, proc, render
+from . import alan, journal, proc, render
 
 
 MARKER_COMPONENT = re.compile(r"^[A-Za-z0-9_.@-]+$")
@@ -64,9 +63,8 @@ def events():
                         if "target" in request or request["actor"].split("-", 1)[0] in {
                                 "claude", "codex", "grok"}:
                             controls.get()
-                        with alan.full_graph() as graph:
-                            text = (capture(f'alan:{request["actor"]}', request["columns"],
-                                            request["lines"], graph)
+                        text = (capture(f'alan:{request["actor"]}', request["columns"],
+                                        request["lines"])
                                     if "actor" in request else
                                     capture_target(tuple(request["target"]),
                                                    request["columns"], request["lines"]))
@@ -107,40 +105,17 @@ def events():
             consumer.set()
 
     threading.Thread(target=requests, daemon=True).start()
-    for sessions, graph, available in event_stream(
+    for sessions, actors, available in event_stream(
             host, consumer, controls, changes, alan_watcher=alan):
-        emit(encode_observation(sessions, available, graph))
-
-
-def qualify_graph(graph, source):
-    """Namespace one runtime's disposable graph while retaining raw actor identity."""
-    prefix = source.key
-    references = {reference: f"{prefix}|{reference}" for reference in graph.nodes}
-    qualified = nx.relabel_nodes(graph, references, copy=True)
-
-    def actor(addr):
-        return f"alan:{prefix}:{addr}"
-
-    for _reference, operation in qualified.nodes(data=True):
-        for field in ("stream", "to"):
-            if field in operation:
-                operation[field] = actor(operation[field])
-        for field in ("send", "reply", "input", "evaluation"):
-            if operation.get(field) in references:
-                operation[field] = references[operation[field]]
-    qualified.graph["actors"] = [
-        {**descriptor, "actor": descriptor["addr"], "addr": actor(descriptor["addr"])}
-        for descriptor in graph.graph.get("actors", [])
-    ]
-    return qualified
+        emit(encode_observation(sessions, available, actors))
 
 
 class Fleet:
     def __init__(self):
         self.sessions = {}
-        self.graphs = {}
+        self.tmux_sessions = {}
+        self.catalogues = {}
         self.observed = 0
-        self._composed = (None, nx.MultiDiGraph())
         self.usage = quota_read()
         self.sources = {source.key: source for source in runtime_sources()}
         self.unavailable = set(self.sources)
@@ -218,11 +193,12 @@ class Fleet:
             await asyncio.sleep(1)
 
     def update_source(self, source, raw):
-        sessions, available, graph = decode_observation(raw, source)
+        sessions, available, actors = decode_observation(raw, source)
         key = source.key
         connected = key in self.unavailable
-        self.sessions[key] = sessions
-        self.graphs[key] = qualify_graph(graph, source) if graph is not None else None
+        self.tmux_sessions[key] = sessions
+        self.catalogues[key] = actors
+        self.rebuild_sessions()
         self.unavailable.discard(key)
         if available:
             self.tmux_unavailable.discard(key)
@@ -300,8 +276,9 @@ class Fleet:
         if connected and (pid is None or status is None):
             raise RuntimeError("connected source disconnect requires process identity and status")
         self.processes.pop(source, None)
-        self.sessions.pop(source, None)
-        self.graphs.pop(source, None)
+        self.tmux_sessions.pop(source, None)
+        self.catalogues.pop(source, None)
+        self.rebuild_sessions()
         self.unavailable.add(source)
         self.tmux_unavailable.discard(source)
         if connected:
@@ -386,8 +363,7 @@ class Fleet:
             self.schedule_refresh()
         elif request == "snapshot":
             payload = encode([s for group in self.sessions.values() for s in group], self.usage,
-                             sorted(self.presentation_unavailable()),
-                             self.composed_graph())
+                             sorted(self.presentation_unavailable()))
         elif request.startswith("resolve "):
             key = request.removeprefix("resolve ")
             try:
@@ -491,7 +467,7 @@ class Fleet:
     def projected(self):
         ordered = render.order(
             [s for group in self.sessions.values() for s in group],
-            sorted(self.presentation_unavailable()), self.composed_graph(),
+            sorted(self.presentation_unavailable()), self.composed_catalogue(),
             expanded=self.expanded, show_python=self.show_python)
         visible = []
         hidden_depth = None
@@ -751,19 +727,28 @@ class Fleet:
                         if session.ref.key == active), -1)
         return waiting[(current + 1) % len(waiting)].ref.key
 
-    def composed_graph(self):
-        generation, composed = self._composed
-        if generation != self.observed:
-            graphs = [graph for graph in self.graphs.values()
-                      if graph is not None]
-            composed = nx.compose_all(graphs) if graphs else nx.MultiDiGraph()
-            composed.graph["actors"] = [
-                actor
-                for graph in graphs
-                for actor in graph.graph.get("actors", [])
-            ]
-            self._composed = (self.observed, composed)
-        return composed
+    def composed_catalogue(self):
+        result = {}
+        raw = {}
+        for source, actors in self.catalogues.items():
+            for actor in actors:
+                addr = actor["addr"]
+                if addr in raw:
+                    raise RuntimeError(
+                        f"multiple Alan runtime sources claim {addr}: {raw[addr]} and {source}")
+                raw[addr] = source
+                result[f"alan:{source}:{addr}"] = actor
+        return result
+
+    def rebuild_sessions(self):
+        catalogue = self.composed_catalogue()
+        principals = {actor["addr"] for actor in catalogue.values()
+                      if actor["kind"] == "principal"}
+        self.sessions = {source: list(sessions) for source, sessions
+                         in self.tmux_sessions.items()}
+        for source, actors in self.catalogues.items():
+            self.sessions.setdefault(source, []).extend(
+                alan.inventory(source, actors, principals))
 
     async def commander_context(self):
         sessions = sorted(
@@ -1006,9 +991,8 @@ class Fleet:
                 if actor.count("@") != 1 or not all(actor.split("@", 1)):
                     raise ValueError("invalid Alan history identity")
                 self.available(source_key)
-                descriptors = [
-                    item for item in self.composed_graph().graph.get("actors", [])
-                    if item["addr"] == key]
+                descriptors = [self.composed_catalogue().get(key)]
+                descriptors = [item for item in descriptors if item is not None]
                 if len(descriptors) != 1:
                     raise LookupError(f"actor disappeared: {actor}")
                 native = (descriptors[0].get("evaluator") == "native"
@@ -1131,8 +1115,7 @@ class Fleet:
         return json.loads(stdout)
 
     async def history_observation(self, source):
-        graph = self.graphs.get(source)
-        actors = [] if graph is None else graph.graph.get("actors", [])
+        actors = self.catalogues.get(source, [])
         transcripts = await self.remote_json(
             source, sys.executable, "-c",
             "import json; from agent_fleet.transcripts import history; "
@@ -1142,14 +1125,13 @@ class Fleet:
                 "actors": actors, "transcripts": transcripts}
 
     async def search_observation(self, source, query):
-        graph = self.graphs.get(source)
         hits = await self.remote_json(
             source, sys.executable, "-c",
             "import json,sys; from agent_fleet.transcripts import search; "
             "print(json.dumps(search(sys.argv[1])))",
             query,
         )
-        return {"actors": [] if graph is None else graph.graph.get("actors", []),
+        return {"actors": self.catalogues.get(source, []),
                 "hits": hits}
 
     async def search_history(self, query):
@@ -1315,9 +1297,8 @@ class Fleet:
         source_key = session.ref.server.source
         if source_key in self.presentation_unavailable():
             raise RuntimeError(f"{source_key} presentation is unavailable; refusing action")
-        descriptors = [
-            item for item in self.composed_graph().graph.get("actors", [])
-            if item["addr"] == session.ref.key]
+        descriptors = [self.composed_catalogue().get(session.ref.key)]
+        descriptors = [item for item in descriptors if item is not None]
         native = (len(descriptors) == 1
                   and descriptors[0].get("evaluator") == "native"
                   and not descriptors[0].get("managed", False))
