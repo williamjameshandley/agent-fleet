@@ -47,7 +47,7 @@ def test_canonical_actor_is_closed_label_enriched_and_discards_viewport(tmp_path
 
 def test_watcher_requests_actor_only_observation():
     changed = queue.Queue(); stop = threading.Event()
-    observation = mock.Mock(); observation.graph = {"actors": [actor("codex-a@newton")]}
+    observation = [actor("codex-a@newton")]
     class Stream:
         def next(self, callback, lock):
             with lock: callback(observation, {"kind": "replace"})
@@ -66,12 +66,10 @@ def test_viewport_only_stream_delta_does_not_signal_a_catalogue_change():
     watcher.actors = []; watcher.available = False; watcher.error = None
     watcher.initialized = threading.Event()
     watcher._changed = queue.Queue(); watcher._consumer = threading.Event()
-    observations = []
-    for offset in (1, 2):
-        observation = mock.Mock()
-        observation.graph = {"actors": [{**actor("codex-a@newton"),
-                                          "viewport": {"offset": offset}}]}
-        observations.append(observation)
+    observations = [
+        [{**actor("codex-a@newton"), "viewport": {"offset": offset}}]
+        for offset in (1, 2)
+    ]
 
     class Stream:
         def __init__(self): self.index = 0

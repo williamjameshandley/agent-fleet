@@ -70,11 +70,10 @@ class Watcher:
                 if stream is not None:
                     stream.close()
 
-    def refresh(self, observation, change):
+    def refresh(self, actors, change):
         with self._lock:
-            raw = observation.graph.get("actors", [])
             descriptors = {
-                actor["addr"]: canonical_actor(actor) for actor in raw
+                actor["addr"]: canonical_actor(actor) for actor in actors
             }
             changed = descriptors != self._descriptors or not self.available
             self._descriptors = descriptors
@@ -462,10 +461,10 @@ def commander_actor():
         fcntl.flock(lock, fcntl.LOCK_EX)
         observation = loop.observe(stream=True, actors=True)
         try:
-            graph = next(observation)
+            actors = next(observation)
         finally:
             observation.close()
-        commanders = [actor["addr"] for actor in graph.graph.get("actors", [])
+        commanders = [actor["addr"] for actor in actors
                       if actor.get("preset") == "commander"
                       and actor.get("state") != "retired"]
         if len(commanders) > 1:
