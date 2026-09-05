@@ -333,6 +333,29 @@ def test_ambiguous_cross_runtime_parent_fails_visibly():
                      catalogue)
 
 
+def test_central_rebuild_folds_native_presentations_and_removes_retired_actors():
+    identity = "00000000-0000-4000-8000-000000000001"
+    source = "will@newton"
+    values = {"created": "2026-01-01T00:00:00Z",
+              "last_operation_activity": "2026-01-01T00:00:00Z"}
+    live = actor(f"codex-{identity}@newton", evaluator="native", **values)
+    retired = actor("codex-old@newton", evaluator="native", state="retired",
+                    **values)
+    provider = Session(
+        SessionRef(ServerRef(source, "/tmp/tmux", 1, 1, "tmux"), "$1"),
+        "fleet@native-test", 1, 0, 0, 1, "codex", "", "/work", "codex",
+        "waiting", transcript_id=identity)
+    fleet = Fleet()
+    fleet.tmux_sessions = {source: [provider]}
+    fleet.catalogues = {source: [live, retired]}
+
+    fleet.rebuild_sessions()
+
+    [composite] = fleet.sessions[source]
+    assert composite.ref.session_id == live["addr"]
+    assert composite.attachment == provider.ref
+
+
 def test_host_protocol_rejects_missing_and_extra_actor_fields():
     source = RuntimeSource("newton", "will", "/run/alan", "/run/tmux")
     item = actor("codex-a@newton")

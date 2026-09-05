@@ -22,6 +22,7 @@ from .tmux import ControlSlot, capture, capture_target, event_stream, split_key
 from .alan import Watcher as AlanWatcher
 from .quota import read as quota_read
 from .authority import execute as authority_execute
+from .transcripts import fold_adopted
 from . import alan, journal, proc, render
 
 
@@ -739,11 +740,12 @@ class Fleet:
         catalogue = self.composed_catalogue()
         principals = {actor["addr"] for actor in catalogue.values()
                       if actor["kind"] == "principal"}
-        self.sessions = {source: list(sessions) for source, sessions
-                         in self.tmux_sessions.items()}
-        for source, actors in self.catalogues.items():
-            self.sessions.setdefault(source, []).extend(
-                alan.inventory(source, actors, principals))
+        self.sessions = {}
+        for source in self.tmux_sessions.keys() | self.catalogues.keys():
+            sessions = list(self.tmux_sessions.get(source, []))
+            sessions.extend(alan.inventory(
+                source, self.catalogues.get(source, []), principals))
+            self.sessions[source] = fold_adopted(sessions)
 
     async def commander_context(self):
         sessions = sorted(
