@@ -432,9 +432,9 @@ def test_inactive_adopted_actor_folds_according_to_its_lifecycle_state():
                        "codex", "waiting", transcript_id=identity)
 
     retired = Session(SessionRef(alan_server, f"codex-{identity}@newton"), "actor",
-                      1, 0, 0, 1, "alan", "", "/work", "codex", "retired",
+                      1, 0, 0, 1, "alan", "", "/work", "codex", "closed",
                       transcript_id=identity)
-    unavailable = replace(retired, reported_state="unavailable",
+    unavailable = replace(retired, reported_state="failed",
                           evaluator="native", transcript_path="/transcript",
                           hibernation="transcript")
 
@@ -445,8 +445,8 @@ def test_inactive_adopted_actor_folds_according_to_its_lifecycle_state():
     assert historic.attachment is None
 
     [recovery] = fold_adopted([unavailable])
-    assert recovery.state == "unavailable"
-    assert "hibernation recovery" in recovery.summary
+    assert recovery.state == "failed"
+    assert "stop recovery" in recovery.summary
     [folded] = fold_adopted([unavailable, provider])
     assert folded.ref == unavailable.ref
     assert folded.attachment == provider.ref
@@ -484,7 +484,7 @@ def test_retired_actor_with_multiple_presentations_remains_hidden():
     actor = Session(SessionRef(ServerRef("newton", "", 0, 0, "alan"),
                                f"claude-{identity}@newton"),
                     "historic name", 1, 0, 0, 1, "alan", "", "/work",
-                    "claude", "retired", transcript_id=identity)
+                    "claude", "closed", transcript_id=identity)
     providers = [
         Session(SessionRef(ServerRef("newton", "/tmp/tmux", 1, 1), f"${number}"),
                 f"fleet@native-{number}", 1, 0, 0, 1, "claude", "", "/work",

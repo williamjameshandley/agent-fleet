@@ -969,7 +969,7 @@ class Fleet:
             "create": {"operation", "source", "agent", "name", "cwd"},
             "rename": {"operation", "source", "name"},
             "archive": {"operation", "source"},
-            "hibernate": {"operation", "source"},
+            "stop": {"operation", "source"},
             "restore": {"operation", "history", "name"},
         }
         if operation not in fields or set(request) != fields[operation]:
@@ -1011,15 +1011,8 @@ class Fleet:
                     if item["addr"] == key]
                 if len(descriptors) != 1:
                     raise LookupError(f"actor disappeared: {actor}")
-                native = (descriptors[0].get("evaluator") == "native"
-                          and not descriptors[0].get("managed", False))
-                await self.authority(source_key, {"operation": "restore-alan",
+                await self.authority(source_key, {"operation": "open-alan",
                                                   "actor": actor})
-                await self.wait_for_source(
-                    lambda session: session.ref.key == key
-                    and session.state in {"waiting", "working"}
-                    and (not native or session.attachment is not None),
-                    f"restore {key}")
                 return {"source": key}
             try:
                 source_key, agent, transcript = key.split(":", 2)
@@ -1080,26 +1073,26 @@ class Fleet:
                           "target": list(split_key(key)[1:]),
                           "name": name})
             return await self.authority(source_key, authority)
-        if operation == "hibernate":
+        if operation == "stop":
             if session.ref.server.kind != "alan":
-                raise ValueError("hibernate requires an Alan actor")
+                raise ValueError("stop requires an Alan actor")
             if (session.agent not in {"python", "claude", "codex"}
                     or session.hibernation == "unsupported"):
-                raise ValueError("actor does not support hibernation")
-            if session.state not in {"waiting", "unavailable"}:
-                raise ValueError(f"hibernate requires a waiting actor: {session.state}")
-            if (session.state == "unavailable"
+                raise ValueError("actor does not support stop")
+            if session.state not in {"waiting", "failed"}:
+                raise ValueError(f"stop requires a waiting actor: {session.state}")
+            if (session.state == "failed"
                     and (session.hibernation != "transcript" or session.managed
                          or not session.transcript_path)):
-                raise ValueError("hibernate recovery requires a durable transcript identity")
+                raise ValueError("stop recovery requires a durable transcript identity")
             if session.attached:
-                raise ValueError("hibernate requires an unattached presentation")
+                raise ValueError("stop requires an unattached presentation")
             await self.authority(source_key, {
-                "operation": "hibernate-alan", "actor": session.ref.session_id,
+                "operation": "stop-alan", "actor": session.ref.session_id,
             })
             await self.wait_for_source(
                 lambda current: current.ref == session.ref
-                and current.state == "hibernated", f"hibernate {key}")
+                and current.state == "stopped", f"stop {key}")
             return {}
         _, source_key, authority = self.archive_authority(key)
         self.pending_archives.add(key)
@@ -1206,7 +1199,7 @@ class Fleet:
                             actor.get("kind") in {"claude", "codex", "grok", "antigravity"})
                 if native_id:
                     claimed.setdefault(identity, []).append(actor["addr"])
-                if retained and actor.get("state") in {"retired", "unavailable"}:
+                if retained and actor.get("state") in {"closed", "failed"}:
                     if native_id:
                         authorities.add(identity)
                     actor_key = f"alan:{source}:{actor.get('actor', actor['addr'])}"
@@ -1321,15 +1314,8 @@ class Fleet:
         native = (len(descriptors) == 1
                   and descriptors[0].get("evaluator") == "native"
                   and not descriptors[0].get("managed", False))
-        if session.state == "hibernated":
-            task = self.restores.get(key)
-            if task is None:
-                task = asyncio.create_task(self.restore_alan(session))
-                self.restores[key] = task
-                task.add_done_callback(lambda completed: self.restore_task_done(key, completed))
-                self.own_task(task, "restore")
-            await asyncio.shield(task)
-            return self.source(key)
+        if session.state == "stopped":
+            return session
         if session.attachment or not native or session.agent not in {"claude", "codex", "grok"}:
             return session
         if session.attachment_ambiguous:
@@ -1358,16 +1344,6 @@ class Fleet:
         await self.wait_for_source(
             lambda current: current.ref == session.ref
             and current.attachment is not None,
-            f"restore {session.ref.key}")
-
-    async def restore_alan(self, session):
-        await self.authority(session.ref.server.source, {
-            "operation": "restore-alan", "actor": session.ref.session_id,
-        })
-        await self.wait_for_source(
-            lambda current: current.ref == session.ref
-            and current.state in {"waiting", "working"}
-            and (current.agent == "python" or current.attachment is not None),
             f"restore {session.ref.key}")
 
     async def cleanup(self, host, owner, slot):

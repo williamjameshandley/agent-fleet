@@ -424,7 +424,7 @@ class Attachment:
             return socket_path, pid, started, sid
         session = self.find(key)
         actor = key_actor(key)
-        if session.state in {"retired", "unavailable"}:
+        if session.state in {"closed", "failed"}:
             error = RuntimeError(f"Alan actor is {session.state}: {actor}")
             raise ViewerFailure("resolve", "unavailable", error) from error
         if session.attachment:

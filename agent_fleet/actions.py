@@ -98,8 +98,8 @@ def archive(key):
     fleet_action({"operation": "archive", "source": key})
 
 
-def hibernate(key):
-    fleet_action({"operation": "hibernate", "source": key})
+def stop(key):
+    fleet_action({"operation": "stop", "source": key})
 
 
 def next_waiting():

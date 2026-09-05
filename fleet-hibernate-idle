@@ -1,5 +1,0 @@
-#!/usr/bin/python
-from agent_fleet.hibernate_idle import main
-
-
-main()
