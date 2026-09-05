@@ -301,11 +301,36 @@ def test_remote_principal_activity_orders_the_actor_as_most_recent():
         "codex-active@newton", "codex-newer@newton"]
 
 
-def test_duplicate_raw_address_fails_visibly():
-    item = actor("codex-a@newton")
-    catalogue = {**qualified("will@newton", item), **qualified("sophie@newton", item)}
-    with pytest.raises(RuntimeError, match="multiple Alan runtime sources"):
-        alan.project([], catalogue)
+def test_duplicate_raw_addresses_resolve_ancestry_within_their_runtime():
+    parent = actor("codex-parent@newton", evaluator="native")
+    child = actor("claude-child@newton", "claude", spawn="codex-parent@newton#1")
+    catalogue = {
+        **qualified("will@newton", parent, child),
+        **qualified("sophie@newton", parent, child),
+    }
+    projected = alan.project([
+        session(parent["addr"], source="will@newton"),
+        session(child["addr"], "claude", source="will@newton"),
+        session(parent["addr"], source="sophie@newton"),
+        session(child["addr"], "claude", source="sophie@newton"),
+    ], catalogue, expanded={"alan:will@newton:codex-parent@newton",
+                            "alan:sophie@newton:codex-parent@newton"})
+    assert [(item.session.ref.server.source, item.depth) for item in projected] == [
+        ("will@newton", 0), ("will@newton", 1),
+        ("sophie@newton", 0), ("sophie@newton", 1)]
+
+
+def test_ambiguous_cross_runtime_parent_fails_visibly():
+    parent = actor("codex-parent@newton", evaluator="native")
+    child = actor("claude-child@turing", "claude", spawn="codex-parent@newton#1")
+    catalogue = {
+        **qualified("will@newton", parent),
+        **qualified("sophie@newton", parent),
+        **qualified("will@turing", child),
+    }
+    with pytest.raises(RuntimeError, match="ambiguous Alan actor reference"):
+        alan.project([session(child["addr"], "claude", source="will@turing")],
+                     catalogue)
 
 
 def test_host_protocol_rejects_missing_and_extra_actor_fields():

@@ -729,14 +729,9 @@ class Fleet:
 
     def composed_catalogue(self):
         result = {}
-        raw = {}
         for source, actors in self.catalogues.items():
             for actor in actors:
                 addr = actor["addr"]
-                if addr in raw:
-                    raise RuntimeError(
-                        f"multiple Alan runtime sources claim {addr}: {raw[addr]} and {source}")
-                raw[addr] = source
                 result[f"alan:{source}:{addr}"] = actor
         return result
 

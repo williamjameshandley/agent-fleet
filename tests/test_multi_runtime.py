@@ -64,7 +64,7 @@ def test_source_tmux_command_selects_the_exact_configured_socket(monkeypatch):
         "/usr/bin/tmux", "-N", "-S", "/run/user/1004/tmux.sock", "list-sessions"]
 
 
-def test_colliding_same_host_actor_addresses_fail_visibly(tmp_path, monkeypatch):
+def test_colliding_same_host_actor_addresses_remain_runtime_qualified(tmp_path, monkeypatch):
     sources = {principal: runtime(principal, tmp_path / principal)
                for principal in ("will", "sophie")}
     monkeypatch.setattr("agent_fleet.daemon.runtime_sources", lambda: list(sources.values()))
@@ -76,8 +76,11 @@ def test_colliding_same_host_actor_addresses_fail_visibly(tmp_path, monkeypatch)
     fleet.unavailable.clear()
     fleet.observed += 1
 
-    with pytest.raises(RuntimeError, match="multiple Alan runtime sources claim"):
-        fleet.projected()
+    assert set(fleet.composed_catalogue()) == {
+        f"alan:{source.key}:{actor['addr']}"
+        for source in sources.values()
+        for actor in fleet.catalogues[source.key]
+    }
 
 
 def test_preview_and_authority_route_only_to_selected_runtime(tmp_path, monkeypatch):

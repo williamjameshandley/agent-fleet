@@ -194,17 +194,28 @@ def project(sessions, descriptors, expanded=(), show_python=False):
     """Fold centrally qualified actor catalogue entries into Muster rows."""
     raw_index = {}
     for key, descriptor in descriptors.items():
-        addr = descriptor["addr"]
-        if addr in raw_index:
-            raise RuntimeError(f"multiple Alan runtime sources claim {addr}")
-        raw_index[addr] = key
+        raw_index.setdefault(descriptor["addr"], []).append(key)
+
+    def resolve(runtime, addr):
+        candidates = raw_index.get(addr, [])
+        local = [key for key in candidates if key.split(":", 2)[1] == runtime]
+        if local:
+            return local[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        if candidates:
+            raise RuntimeError(f"ambiguous Alan actor reference {addr}")
+        return None
+
     parents = {}
     for key, descriptor in descriptors.items():
         spawn = descriptor.get("spawn")
         if spawn:
+            runtime = key.split(":", 2)[1]
             raw_parent = spawn.rsplit("#", 1)[0]
-            if raw_parent in raw_index:
-                parents[key] = raw_index[raw_parent]
+            parent = resolve(runtime, raw_parent)
+            if parent is not None:
+                parents[key] = parent
 
     def ancestors(actor):
         result = []
@@ -283,7 +294,7 @@ def project(sessions, descriptors, expanded=(), show_python=False):
         emitted.update(visible(root))
 
     attention = {}
-    for source, target, request in _outstanding_requests(descriptors, raw_index):
+    for source, target, request in _outstanding_requests(descriptors, resolve):
         candidates = (set(ancestors(source)) | {source}) & emitted
         if not candidates:
             continue
@@ -320,13 +331,14 @@ def project(sessions, descriptors, expanded=(), show_python=False):
     return result
 
 
-def _outstanding_requests(descriptors, raw_index):
+def _outstanding_requests(descriptors, resolve):
     requests = []
     for target, descriptor in descriptors.items():
         if descriptor["kind"] != "principal":
             continue
+        runtime = target.split(":", 2)[1]
         for reference, request in descriptor["unresolved_requests"].items():
-            source = raw_index.get(reference.rsplit("#", 1)[0])
+            source = resolve(runtime, reference.rsplit("#", 1)[0])
             if source is None:
                 continue
             payload = request["payload"]
